@@ -450,9 +450,6 @@ const make = Effect.gen(function* () {
     ) {
       return yield* new BoardInvalidBatchError({ reason: "invalid-version" });
     }
-    if (JSON.stringify(batch.operations).length > BOARD_BATCH_MAX_ELEMENT_BYTES) {
-      return yield* new BoardInvalidBatchError({ reason: "batch-too-large" });
-    }
 
     const currentRows =
       touchedIds.length === 0
@@ -620,6 +617,9 @@ const make = Effect.gen(function* () {
       0,
     );
     const addedBytes = rows.reduce((total, { payloadJson }) => total + payloadJson.length, 0);
+    if (addedBytes > BOARD_BATCH_MAX_ELEMENT_BYTES) {
+      return yield* new BoardInvalidBatchError({ reason: "batch-too-large" });
+    }
     if ((storedElements?.total ?? 0) - replacedBytes + addedBytes > BOARD_MAX_ELEMENT_BYTES) {
       return yield* new BoardInvalidBatchError({ reason: "board-full" });
     }
