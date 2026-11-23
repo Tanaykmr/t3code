@@ -1,6 +1,7 @@
 import {
   Bot,
   BotError,
+  BotRoom,
   type BotCreateInput,
   type BotDirectory,
   BotId,
@@ -26,7 +27,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
-import { type BotRow, ensureBotSchema } from "./botStore.ts";
+import { type BotRow, ensureBotSchema, readRooms } from "./botStore.ts";
 
 export class BotService extends Context.Service<
   BotService,
@@ -36,10 +37,13 @@ export class BotService extends Context.Service<
     readonly update: (input: BotUpdateInput) => Effect.Effect<BotMutationResult, BotError>;
     readonly archive: (input: BotRefInput) => Effect.Effect<BotMutationResult, BotError>;
     readonly restore: (input: BotRefInput) => Effect.Effect<BotMutationResult, BotError>;
+    /** Rooms live in the same directory; their writer signals here. */
+    readonly notifyDirectoryChanged: Effect.Effect<void>;
   }
 >()("t3/bots/BotService") {}
 
 const decodeBot = Schema.decodeUnknownEffect(Bot);
+const decodeRooms = Schema.decodeUnknownEffect(Schema.Array(BotRoom));
 const decodeModelSelection = Schema.decodeUnknownEffect(Schema.fromJsonString(ModelSelection));
 const encodeModelSelection = Schema.encodeEffect(Schema.fromJsonString(ModelSelection));
 
@@ -116,7 +120,11 @@ const make = Effect.gen(function* () {
         ),
       ),
     );
-    return { bots: bots.flat() } satisfies BotDirectory;
+    const rooms = yield* readRooms(sql).pipe(
+      Effect.flatMap(decodeRooms),
+      Effect.mapError((cause) => botError("Could not list rooms.", undefined, cause)),
+    );
+    return { bots: bots.flat(), rooms } satisfies BotDirectory;
   });
 
   const subscribeDirectory: BotService["Service"]["subscribeDirectory"] = () =>
@@ -288,7 +296,14 @@ const make = Effect.gen(function* () {
     ),
   ).pipe(Effect.forkScoped);
 
-  return BotService.of({ subscribeDirectory, create, update, archive, restore });
+  return BotService.of({
+    subscribeDirectory,
+    create,
+    update,
+    archive,
+    restore,
+    notifyDirectoryChanged: notifyChanged,
+  });
 });
 
 export const layer = Layer.effect(BotService, make);

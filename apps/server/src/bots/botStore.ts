@@ -24,6 +24,100 @@ export const ensureBotSchema = Effect.gen(function* () {
       archived_at TEXT
     )
   `;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS bot_rooms (
+      room_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      default_bot_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT
+    )
+  `;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS bot_room_members (
+      room_id TEXT NOT NULL,
+      bot_id TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      PRIMARY KEY (room_id, bot_id)
+    )
+  `;
+  // A member answers in its own thread; the room shows the shared transcript.
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS bot_room_threads (
+      room_id TEXT NOT NULL,
+      bot_id TEXT NOT NULL,
+      thread_id TEXT NOT NULL UNIQUE,
+      PRIMARY KEY (room_id, bot_id)
+    )
+  `;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS bot_messages (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id TEXT NOT NULL UNIQUE,
+      channel_key TEXT NOT NULL,
+      sender_kind TEXT NOT NULL,
+      sender_bot_id TEXT,
+      text TEXT NOT NULL,
+      mentions_json TEXT NOT NULL,
+      reply_to_id TEXT,
+      origin_thread_id TEXT,
+      created_at TEXT NOT NULL
+    )
+  `;
+  yield* sql`CREATE INDEX IF NOT EXISTS bot_messages_channel ON bot_messages (channel_key, seq)`;
+  // UNIQUE (message, target) is the replay guard: a resend never wakes a bot twice.
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS bot_deliveries (
+      delivery_id TEXT PRIMARY KEY,
+      message_id TEXT NOT NULL,
+      target_bot_id TEXT NOT NULL,
+      root_message_id TEXT NOT NULL,
+      hop INTEGER NOT NULL,
+      expects_reply INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      thread_id TEXT,
+      run_id TEXT,
+      reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (message_id, target_bot_id)
+    )
+  `;
+  yield* sql`CREATE INDEX IF NOT EXISTS bot_deliveries_status ON bot_deliveries (status, created_at)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS bot_deliveries_thread ON bot_deliveries (thread_id, status)`;
+});
+
+export interface BotRoomRow {
+  readonly room_id: string;
+  readonly name: string;
+  readonly default_bot_id: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly archived_at: string | null;
+}
+
+/** Rooms with their members and participant threads, in a shape `BotRoom` decodes. */
+export const readRooms = Effect.fnUntraced(function* (sql: SqlClient.SqlClient) {
+  const rooms = yield* sql<BotRoomRow>`SELECT * FROM bot_rooms ORDER BY created_at, room_id`;
+  const members = yield* sql<{ room_id: string; bot_id: string }>`
+    SELECT room_id, bot_id FROM bot_room_members ORDER BY room_id, position
+  `;
+  const threads = yield* sql<{ room_id: string; bot_id: string; thread_id: string }>`
+    SELECT room_id, bot_id, thread_id FROM bot_room_threads
+  `;
+  return rooms.map((room) => ({
+    id: room.room_id,
+    name: room.name,
+    memberBotIds: members.filter((m) => m.room_id === room.room_id).map((m) => m.bot_id),
+    defaultBotId: room.default_bot_id,
+    participants: threads
+      .filter((t) => t.room_id === room.room_id)
+      .map((t) => ({ botId: t.bot_id, threadId: t.thread_id })),
+    createdAt: room.created_at,
+    updatedAt: room.updated_at,
+    archivedAt: room.archived_at,
+  }));
 });
 
 export interface BotRow {

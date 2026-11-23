@@ -161,6 +161,7 @@ import { environmentProjects } from "../state/projects";
 import { useBotDmThreadKeys } from "../state/bots";
 import { SidebarBotsSection } from "./bots/SidebarBotsSection";
 import { BotEditorDialogHost } from "./bots/BotEditorDialog";
+import { BotRoomDialogHost } from "./bots/BotRoomDialog";
 import { threadEnvironment } from "../state/threads";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../state/olderSettledShelf";
 import { useThreadSearch } from "../state/queries";
@@ -3330,6 +3331,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       >
         <SidebarGroup className="flex-1" role="presentation">
           <BotEditorDialogHost />
+          <BotRoomDialogHost />
           {isSearchingThreads ? null : <SidebarBotsSection routeThreadKey={routeThreadKey} />}
           {isSearchingThreads ? (
             threadSearchResults.length > 0 ? (

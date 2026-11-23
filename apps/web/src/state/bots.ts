@@ -1,5 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
-import { type EnvironmentBot, botDmThreadKeys, sortBots } from "@t3tools/client-runtime/state/bots";
+import {
+  type EnvironmentBot,
+  type EnvironmentBotRoom,
+  botDmThreadKeys,
+  sortBots,
+} from "@t3tools/client-runtime/state/bots";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -9,6 +14,7 @@ import { environmentPresentations, environmentSummaries } from "./presentation";
 import { serverEnvironment } from "./server";
 
 const EMPTY_BOTS: ReadonlyArray<EnvironmentBot> = Object.freeze([]);
+const EMPTY_ROOMS: ReadonlyArray<EnvironmentBotRoom> = Object.freeze([]);
 
 /** Connected environments whose server serves the bot directory. */
 const botEnvironmentIdsAtom = Atom.make((get) => {
@@ -37,9 +43,20 @@ const environmentBotsAtom = Atom.make((get): ReadonlyArray<EnvironmentBot> => {
   return entries.length === 0 ? EMPTY_BOTS : sortBots(entries);
 }).pipe(Atom.withLabel("web-environment-bots"));
 
-const botDmThreadKeysAtom = Atom.make((get) => botDmThreadKeys(get(environmentBotsAtom))).pipe(
-  Atom.withLabel("web-bot-dm-thread-keys"),
-);
+const environmentBotRoomsAtom = Atom.make((get): ReadonlyArray<EnvironmentBotRoom> => {
+  const entries = get(botEnvironmentIdsAtom).flatMap((environmentId) => {
+    const directory = AsyncResult.getOrElse(
+      get(serverEnvironment.botsLive({ environmentId, input: {} })),
+      () => null,
+    );
+    return (directory?.rooms ?? []).map((room) => ({ environmentId, room }));
+  });
+  return entries.length === 0 ? EMPTY_ROOMS : entries;
+}).pipe(Atom.withLabel("web-environment-bot-rooms"));
+
+const botDmThreadKeysAtom = Atom.make((get) =>
+  botDmThreadKeys(get(environmentBotsAtom), get(environmentBotRoomsAtom)),
+).pipe(Atom.withLabel("web-bot-dm-thread-keys"));
 
 const botByDmThreadKeyAtom = Atom.make(
   (get) =>
@@ -53,6 +70,10 @@ const botByDmThreadKeyAtom = Atom.make(
 
 export function useEnvironmentBots(): ReadonlyArray<EnvironmentBot> {
   return useAtomValue(environmentBotsAtom);
+}
+
+export function useEnvironmentBotRooms(): ReadonlyArray<EnvironmentBotRoom> {
+  return useAtomValue(environmentBotRoomsAtom);
 }
 
 export function useBotDmThreadKeys(): ReadonlySet<string> {

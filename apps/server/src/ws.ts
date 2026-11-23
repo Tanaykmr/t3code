@@ -133,6 +133,7 @@ import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts"
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as BotService from "./bots/BotService.ts";
+import * as BotChannelService from "./bots/BotChannelService.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -1499,6 +1500,7 @@ export const layerWsRpc = (
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const bots = yield* BotService.BotService;
+      const botChannels = yield* BotChannelService.BotChannelService;
       const workflows = yield* Workflows.Workflows;
       const workflowDefinitions = yield* WorkflowRuntime.WorkflowDefinitions;
       // The service's messages are built from its own attributes, so they are safe to send.
@@ -2409,6 +2411,11 @@ export const layerWsRpc = (
           Effect.annotateCurrentSpan({ "bot.id": input.botId }).pipe(
             Effect.andThen(bots.restore(input)),
           ),
+        [WS_METHODS.botsCreateRoom]: (input) => botChannels.createRoom(input),
+        [WS_METHODS.botsUpdateRoom]: (input) => botChannels.updateRoom(input),
+        [WS_METHODS.botsSubscribeChannel]: (input) => botChannels.subscribeChannel(input),
+        [WS_METHODS.botsSendRoomMessage]: (input) => botChannels.sendRoomMessage(input),
+        [WS_METHODS.botsHandoff]: (input) => botChannels.handoff(input),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
           scheduledTasks.subscribeList().pipe(Stream.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksUpsert]: (input) => scheduledTasks.upsert(input),

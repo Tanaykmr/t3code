@@ -1,7 +1,14 @@
 import { BotId, EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
-import { botActivity, botDmThreadKeys, isValidBotName, sortBots } from "./bots.ts";
+import {
+  botActivity,
+  botDmThreadKeys,
+  isValidBotName,
+  mentionQueryAt,
+  mentionsInText,
+  sortBots,
+} from "./bots.ts";
 
 const bot = (name: string, thread: string) => ({
   environmentId: EnvironmentId.make("env"),
@@ -51,5 +58,19 @@ describe("bots", () => {
     expect(isValidBotName("code.reviewer-2")).toBe(true);
     expect(isValidBotName("Ada Lovelace")).toBe(false);
     expect(isValidBotName("@Ada")).toBe(false);
+  });
+
+  it("keeps only chips whose @name is still in the text, once each", () => {
+    const bolt = { botId: BotId.make("bolt"), label: "Bolt" };
+    const cora = { botId: BotId.make("cora"), label: "Cora" };
+    expect(mentionsInText("@Bolt and @Bolt, look", [bolt, bolt, cora])).toEqual([bolt]);
+    // Typing a name with no chip routes nowhere.
+    expect(mentionsInText("@Cora hi", [])).toEqual([]);
+  });
+
+  it("finds the @query at the caret", () => {
+    expect(mentionQueryAt("ask @Bo", 7)).toEqual({ start: 4, query: "Bo" });
+    expect(mentionQueryAt("mail a@b", 8)).toBeNull();
+    expect(mentionQueryAt("@", 1)).toEqual({ start: 0, query: "" });
   });
 });

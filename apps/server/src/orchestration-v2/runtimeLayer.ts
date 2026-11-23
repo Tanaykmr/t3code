@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as OrchestrationCommandReceipts from "../persistence/OrchestrationCommandReceipts.ts";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
+import * as BotChannelService from "../bots/BotChannelService.ts";
 import * as BotService from "../bots/BotService.ts";
 import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
@@ -351,6 +352,15 @@ const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
 const layerBotServiceProvided = BotService.layer.pipe(
   Layer.provide(Layer.mergeAll(layerThreadLaunchProvided, layerThreadManagementProvided)),
 );
+const layerBotChannelServiceProvided = BotChannelService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerBotServiceProvided,
+      layerThreadLaunchProvided,
+      layerThreadManagementProvided,
+    ),
+  ),
+);
 const layerScratchThreadPromotionProvided = ScratchThreadPromotion.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -446,6 +456,7 @@ export const layerProduction = Layer.mergeAll(
   layerThreadLaunchProvided,
   layerScheduledTaskProvided,
   layerBotServiceProvided,
+  layerBotChannelServiceProvided,
   layerWorkflowsProvided,
   layerScratchThreadPromotionProvided,
   layerSecretRequestsProvided,
