@@ -9,6 +9,7 @@ import { RefreshControl } from "../../components/ui/RefreshControl";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SettingsScreen } from "./components/SettingsScreen";
+import { BoatMachinesSection } from "../connection/BoatMachines";
 import { CloudEnvironmentRows } from "../connection/CloudEnvironmentRows";
 import { LocalEnvironmentList } from "../connection/LocalEnvironmentList";
 import { PullRequestRoutingSettings } from "../connection/PullRequestRoutingSettings";
@@ -154,6 +155,7 @@ export function SettingsEnvironmentsRouteScreen() {
               }
             : {})}
         />
+        <BoatMachinesSection />
         <PullRequestRoutingSettings />
       </ScrollView>
     </SettingsScreen>

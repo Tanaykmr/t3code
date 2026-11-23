@@ -9,6 +9,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppBar } from "../../components/ui/AppBar";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
+import { BoatMachinesSection } from "./BoatMachines";
 import { LocalEnvironmentList } from "./LocalEnvironmentList";
 import { PullRequestRoutingSettings } from "./PullRequestRoutingSettings";
 import { LinkedEnvironmentsSection } from "./LinkedEnvironmentsSection";
@@ -77,6 +78,7 @@ export function ConnectionsRouteScreen() {
               />
             </Fragment>
           ))}
+        <BoatMachinesSection />
         <PullRequestRoutingSettings />
       </ScrollView>
     </View>

@@ -1480,7 +1480,6 @@ export function createServerEnvironmentAtoms<R, E>(
       sources.map(({ environmentId, atom }) => ({ environmentId, result: get(atom) })),
     ).pipe(Atom.withLabel(`environment-data:server:workflows:live-across:${environmentIdsKey}`));
   });
-  // One change of a run or file at a time per target, so a double click does not act twice.
   const boatConcurrency = {
     mode: "serial" as const,
     key: ({
@@ -1491,6 +1490,7 @@ export function createServerEnvironmentAtoms<R, E>(
       input: { managedId: string };
     }) => JSON.stringify([environmentId, input.managedId]),
   };
+  // One change of a run or file at a time per target, so a double click does not act twice.
   const workflowRunConcurrency = {
     mode: "singleFlight" as const,
     key: ({ environmentId, input }: { environmentId: EnvironmentId; input: { runId: string } }) =>
