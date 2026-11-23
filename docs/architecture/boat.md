@@ -132,3 +132,9 @@ Claude's active-turn TTL extension would make interruption less likely while the
 ## Decisions for Tanay
 
 Confirm whether Boat-managed public HTTPS with T3 authentication is acceptable for the first release, or whether the guest must use a private route. Confirm Small and one hour as defaults and whether the first cohort needs organization wallets. Before live acceptance, supply a dedicated Boat test wallet and scoped key through the approved secret input, and designate the trusted guest release channel if a fork build is required. This architecture pass used published sources and source inspection. It did not allocate a VM or exercise a credential.
+
+## Implementation notes
+
+- "Explicitly authorized controller owners" is the existing `environment:maintain` permission: it gates create, stop, resume, delete and the key write on both the client and the server. Reading the list needs `orchestration:read`. [Permission gates](../../packages/contracts/src/clientRpcPermissions.ts)
+- Clients mint request IDs with their own UUID helpers, since `crypto.randomUUID` is missing on plain-HTTP LAN origins and in Hermes. The managed ID is derived from the create request ID, so a repeated create cannot allocate a second record.
+- Until Stage 2 proves guest installation and sealed pairing on a live Boat, release builds have no bootstrap: a real create ends Failed and the controller asks Boat to stop the machine. Source builds can run the whole lifecycle against an in-memory Boat with `T3CODE_DEV_BOAT_FAKE=1`. [BoatService](../../apps/server/src/boat/BoatService.ts)

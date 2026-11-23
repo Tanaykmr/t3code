@@ -62,6 +62,8 @@ export const BoatFailureCode = Schema.Literals([
   "snapshot-expired",
   "not-found",
   "unresolved-create",
+  /** Delete refused: Boat still reports the machine running. */
+  "machine-running",
 ]);
 export type BoatFailureCode = typeof BoatFailureCode.Type;
 
@@ -133,6 +135,8 @@ export const BoatSnapshot = Schema.Struct({
   }),
   rates: ForwardCompatibleArray(BoatRate),
   servers: ForwardCompatibleArray(BoatServer),
+  /** False while this server cannot install T3 on a new machine; Create and Resume are refused. */
+  createAvailable: Schema.optionalKey(Schema.Boolean),
 });
 export type BoatSnapshot = typeof BoatSnapshot.Type;
 
@@ -179,6 +183,8 @@ export const BoatErrorCode = Schema.Literals([
   "provider-unavailable",
   "unauthorized",
   "persistence",
+  /** The key write arrived over plain HTTP from another machine. */
+  "insecure-transport",
 ]);
 export type BoatErrorCode = typeof BoatErrorCode.Type;
 

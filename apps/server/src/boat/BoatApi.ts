@@ -122,6 +122,8 @@ export interface BoatGuest {
 export class BoatGuestBootstrap extends Context.Service<
   BoatGuestBootstrap,
   {
+    /** False until guest installation is proven on a live Boat; Create and Resume wait for it. */
+    readonly available: boolean;
     readonly ensure: (input: {
       readonly key: BoatKey;
       readonly sandboxId: string;

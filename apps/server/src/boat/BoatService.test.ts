@@ -293,6 +293,58 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("refuses Create and Resume while this server cannot install T3 on a machine", () => {
+    const { layer, fake } = setup({ bootstrapAvailable: false });
+    return Effect.gen(function* () {
+      yield* configure;
+      expect((yield* Effect.flip(createSmall)).code).toBe("invalid-state");
+      expect((yield* snapshot).createAvailable).toBe(false);
+      expect(fake.sandboxes.size).toBe(0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refuses to purge a machine Boat reports running, and shows it running", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+      fake.resumeExternally(sandboxId);
+
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "running",
+        observedPower: "running",
+        operation: { kind: "delete", failure: "machine-running" },
+      });
+      expect(fake.calls).not.toContain("delete");
+      expect(fake.sandboxes.has(sandboxId)).toBe(true);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("after a restart, does not stop again a machine that already archived", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      // As if the controller restarted before recording that the stop finished.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE boat_operations SET stage = 'stopping' WHERE kind = 'stop'`;
+      yield* settle;
+      expect(fake.calls.filter((name) => name === "stop")).toHaveLength(1);
+      expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("keeps the key while it still manages machines", () => {
     const { layer } = setup();
     return Effect.gen(function* () {

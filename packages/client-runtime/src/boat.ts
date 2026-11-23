@@ -66,6 +66,13 @@ export function boatCost(
   return { usd: hours * rate.usdPerHour, source: "estimate", asOf: null };
 }
 
+function actionsFor(server: BoatServer, snapshot: BoatSnapshot): ReadonlySet<BoatAction> {
+  const actions = new Set(boatAllowedActions(server));
+  // A controller that cannot install T3 refuses Resume, so the button would only fail.
+  if (snapshot.createAvailable === false) actions.delete("resume");
+  return actions;
+}
+
 /**
  * Managed rows from every controller that advertises Boat, joined to the guests this device has
  * already paired so a paired guest is one row, not two.
@@ -82,7 +89,8 @@ export function boatRows(input: {
       controllerEnvironmentId: environmentId,
       server,
       tone: TONES[server.lifecycle],
-      actions: connected && input.canManage(environmentId) ? boatAllowedActions(server) : new Set(),
+      actions:
+        connected && input.canManage(environmentId) ? actionsFor(server, snapshot) : new Set(),
       stale: !connected,
       paired:
         server.guestEnvironmentId !== null &&

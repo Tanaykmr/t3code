@@ -263,6 +263,7 @@ export const make = Effect.gen(function* () {
           : { status: account.status, label: account.label },
       rates: RATES,
       servers,
+      createAvailable: bootstrap.available,
     } satisfies BoatSnapshot;
   });
 
@@ -285,6 +286,8 @@ export const make = Effect.gen(function* () {
     );
 
   const locks = new Map<string, Semaphore.Semaphore>();
+  // Key changes and create acceptance take turns, so no create binds to a key being replaced.
+  const accountLock = Semaphore.makeUnsafe(1);
   const lockFor = (managedId: string) => {
     let lock = locks.get(managedId);
     if (lock === undefined) {
@@ -397,8 +400,10 @@ export const make = Effect.gen(function* () {
       sandboxId,
       expected: server.guest_environment_id as EnvironmentId | null,
     });
+    // A stop that arrived during bootstrap runs next; the row must not flash Running first.
+    const stopWaiting = yield* hasPendingStop(server.managed_id);
     yield* setServer(server.managed_id, {
-      lifecycle: "running",
+      ...(stopWaiting ? {} : { lifecycle: "running" as const }),
       guest_environment_id: guest.environmentId,
       origin: guest.origin,
       last_started_at: yield* nowIso,
@@ -424,7 +429,7 @@ export const make = Effect.gen(function* () {
       const now = DateTime.toEpochMillis(yield* DateTime.now);
       let sandbox: BoatSandbox;
       if (now - Date.parse(op.created_at) < IDEMPOTENCY_WINDOW_MS) {
-        sandbox = yield* retryTransient(
+        const created = yield* retryTransient(
           api.create(key, {
             idempotencyKey: op.request_id,
             name: server.display_name,
@@ -432,7 +437,13 @@ export const make = Effect.gen(function* () {
             ttlSeconds: server.ttl_seconds,
             labels,
           }),
+        ).pipe(
+          Effect.asSome,
+          Effect.catchIf(isTransient, () => Effect.succeedNone),
         );
+        // Boat may have accepted it: keep the operation pending and replay the same key later.
+        if (Option.isNone(created)) return false;
+        sandbox = created.value;
       } else {
         // The key no longer fences allocation: adopt exactly one labeled match, never create.
         const matches = yield* retryTransient(api.list(key, labels));
@@ -445,10 +456,23 @@ export const make = Effect.gen(function* () {
       sandboxId = sandbox.id;
       yield* setServer(server.managed_id, { sandbox_id: sandboxId });
     }
-    const live = yield* pollUntil(key, server.managed_id, sandboxId, (s) => isLiveState(s.state));
-    if (Option.isNone(live)) return false;
+    const settledState = yield* pollUntil(
+      key,
+      server.managed_id,
+      sandboxId,
+      (s) => isLiveState(s.state) || s.state === "archived",
+    );
+    if (Option.isNone(settledState)) return false;
     // A stop requested during provisioning wins before the guest is exposed.
     if (yield* hasPendingStop(server.managed_id)) return true;
+    if (settledState.value.state === "archived") {
+      // Boat's TTL archived it while the controller was away; nothing is billing.
+      yield* setServer(server.managed_id, {
+        lifecycle: "stopped",
+        last_stopped_at: settledState.value.stoppedAt ?? (yield* nowIso),
+      });
+      return true;
+    }
     yield* bootstrapGuest(key, op, server, sandboxId);
     return true;
   });
@@ -462,7 +486,9 @@ export const make = Effect.gen(function* () {
     if (sandboxId === null) return true;
     yield* setStage(op.request_id, "stopping");
     yield* setServer(server.managed_id, { lifecycle: "stopping" });
-    yield* retryTransient(api.stop(key, sandboxId));
+    // After a restart the earlier stop may have finished; do not send another.
+    const current = yield* retryTransient(api.get(key, sandboxId));
+    if (current.state !== "archived") yield* retryTransient(api.stop(key, sandboxId));
     const archived = yield* pollUntil(
       key,
       server.managed_id,
@@ -487,7 +513,12 @@ export const make = Effect.gen(function* () {
     if (sandboxId === null) return yield* new OperationFailed({ code: "not-found" });
     yield* setStage(op.request_id, "resuming");
     yield* setServer(server.managed_id, { lifecycle: "provisioning" });
-    yield* retryTransient(api.resume(key, sandboxId, server.ttl_seconds));
+    // A resume whose reply was lost may already have woken it; replaying would be refused.
+    const current = yield* retryTransient(api.get(key, sandboxId));
+    yield* observe(server.managed_id, current);
+    if (!isLiveState(current.state)) {
+      yield* retryTransient(api.resume(key, sandboxId, server.ttl_seconds));
+    }
     const live = yield* pollUntil(key, server.managed_id, sandboxId, (s) => isLiveState(s.state));
     if (Option.isNone(live)) return false;
     yield* bootstrapGuest(key, op, server, sandboxId);
@@ -504,17 +535,33 @@ export const make = Effect.gen(function* () {
     if (server.sandbox_id !== null) {
       let operationId = op.provider_operation_id;
       if (operationId === null) {
-        // A 404 from a key that still authenticates means nothing is left to purge.
-        const accepted = yield* retryTransient(api.delete(key, server.sandbox_id)).pipe(
+        // Purge only what Boat reports archived right now, on the same account.
+        const current = yield* retryTransient(api.get(key, server.sandbox_id)).pipe(
           Effect.asSome,
           Effect.catchIf(
             (error) => error.category === "not-found",
             () => Effect.succeedNone,
           ),
         );
+        if (Option.isSome(current) && current.value.state !== "archived") {
+          yield* observe(server.managed_id, current.value);
+          return yield* new OperationFailed({ code: "machine-running" });
+        }
+        const accepted = Option.isNone(current)
+          ? Option.none<string>()
+          : yield* retryTransient(api.delete(key, server.sandbox_id)).pipe(
+              Effect.asSome,
+              Effect.catchIf(
+                (error) => error.category === "not-found",
+                () => Effect.succeedNone,
+              ),
+            );
         if (Option.isSome(accepted)) {
           operationId = accepted.value;
           yield* setStage(op.request_id, "deleting", { provider_operation_id: operationId });
+        } else {
+          // Absent for a key that still authenticates; with no receipt, purge status is unknown.
+          yield* retryTransient(api.account(key));
         }
       }
       if (operationId !== null) {
@@ -551,7 +598,10 @@ export const make = Effect.gen(function* () {
         op.managed_id,
         op.kind === "resume" && failure === "snapshot-expired"
           ? { lifecycle: "stopped", retention: "expired" }
-          : { lifecycle: "failed" },
+          : failure === "machine-running"
+            ? // Restarted outside T3 after it stopped; show it running so Stop comes first.
+              { lifecycle: "running" }
+            : { lifecycle: "failed" },
       );
       // A failed create or resume must not keep billing: ask Boat to stop what this server owns.
       if ((op.kind === "create" || op.kind === "resume") && server.sandbox_id !== null) {
@@ -659,29 +709,40 @@ export const make = Effect.gen(function* () {
 
   const create = Effect.fn("BoatService.create")(function* (input: BoatCreateInput) {
     const payload = createPayload(input);
-    return yield* accept(
-      Effect.gen(function* () {
-        const existing = yield* existingReceipt(input.requestId, "create", payload);
-        if (Option.isSome(existing)) return existing.value;
-        const account = yield* readAccount;
-        if (account === null || account.status !== "configured") {
-          return yield* fail("not-configured", "Add a working Boat API key on this server first.");
-        }
-        if (account.zero_data_retention !== 0) {
-          return yield* fail(
-            "invalid-state",
-            "This Boat account deletes stopped disks right away, so a stopped machine could not resume.",
-          );
-        }
-        const managedId = BoatManagedId.make(`boat_${input.requestId}`);
-        const now = yield* nowIso;
-        yield* sql`
+    return yield* accountLock.withPermits(1)(
+      accept(
+        Effect.gen(function* () {
+          const existing = yield* existingReceipt(input.requestId, "create", payload);
+          if (Option.isSome(existing)) return existing.value;
+          if (!bootstrap.available) {
+            return yield* fail(
+              "invalid-state",
+              "This server cannot set up T3 Code on a Boat machine yet, so it does not create one.",
+            );
+          }
+          const account = yield* readAccount;
+          if (account === null || account.status !== "configured") {
+            return yield* fail(
+              "not-configured",
+              "Add a working Boat API key on this server first.",
+            );
+          }
+          if (account.zero_data_retention !== 0) {
+            return yield* fail(
+              "invalid-state",
+              "This Boat account deletes stopped disks right away, so a stopped machine could not resume.",
+            );
+          }
+          const managedId = BoatManagedId.make(`boat_${input.requestId}`);
+          const now = yield* nowIso;
+          yield* sql`
           INSERT INTO boat_servers (managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at)
           VALUES (${managedId}, ${account.account_id}, ${input.displayName}, ${input.size}, ${input.ttlSeconds}, 'provisioning', 'unknown', ${now})
         `;
-        yield* insertOperation(input.requestId, managedId, "create", payload, now);
-        return { managedId, requestId: input.requestId, kind: "create" as const };
-      }),
+          yield* insertOperation(input.requestId, managedId, "create", payload, now);
+          return { managedId, requestId: input.requestId, kind: "create" as const };
+        }),
+      ),
     );
   });
 
@@ -707,7 +768,7 @@ export const make = Effect.gen(function* () {
             retention: server.retention,
             operation: null,
           });
-          if (!allowed.has(kind)) {
+          if (!allowed.has(kind) || (kind === "resume" && !bootstrap.available)) {
             return yield* fail("invalid-state", `This Boat machine cannot ${kind} right now.`);
           }
           const now = yield* nowIso;
@@ -722,6 +783,12 @@ export const make = Effect.gen(function* () {
     });
 
   const setApiKey = Effect.fn("BoatService.setApiKey")(function* (input: BoatSetApiKeyInput) {
+    return yield* accountLock.withPermits(1)(replaceApiKey(input));
+  });
+
+  const replaceApiKey = Effect.fn("BoatService.replaceApiKey")(function* (
+    input: BoatSetApiKeyInput,
+  ) {
     const servers = yield* persistence(readServers);
     const current = yield* persistence(readAccount);
     if (input.apiKey === null) {
@@ -791,6 +858,9 @@ export const make = Effect.gen(function* () {
           lifecycle: "stopped",
           last_stopped_at: sandbox.value.stoppedAt ?? (yield* nowIso),
         });
+      } else if (server.lifecycle === "failed" && isLiveState(sandbox.value.state)) {
+        // A failed create or resume left it billing and the first cleanup did not land.
+        yield* api.stop(key, server.sandbox_id).pipe(Effect.ignore);
       } else if (server.lifecycle === "stopped" && isLiveState(sandbox.value.state)) {
         // Restarted outside T3; show it with its new deadline rather than hiding it.
         yield* setServer(server.managed_id, { lifecycle: "running" });

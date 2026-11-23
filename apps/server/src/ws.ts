@@ -1,4 +1,4 @@
-import { GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import { BoatError, GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
 import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
@@ -133,6 +133,7 @@ import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts"
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as Boat from "./boat/BoatService.ts";
+import { isLoopbackHost } from "./startupAccess.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -815,7 +816,12 @@ function hasCompatibleOrchestrationProtocol(url: URL): boolean {
 
 function readSettingsClient(url: URL) {
   const capabilities = url.searchParams.get(CLIENT_CAPABILITIES_QUERY_PARAM)?.split(",") ?? [];
-  return { secretReferences: capabilities.includes(SETTINGS_SECRET_REFERENCES_CAPABILITY) };
+  return {
+    secretReferences: capabilities.includes(SETTINGS_SECRET_REFERENCES_CAPABILITY),
+    // TLS (directly or at a proxy that sets X-Forwarded-Proto) or this machine itself.
+    privateTransport:
+      url.protocol === "https:" || url.protocol === "wss:" || isLoopbackHost(url.hostname),
+  };
 }
 
 function shouldUseBoundedThreadSnapshot(input: {
@@ -1448,7 +1454,7 @@ export const layerWsRpc = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
   reportProfiles: ServerBrowser.ProfileReporter,
-  settingsClient: { readonly secretReferences: boolean },
+  settingsClient: { readonly secretReferences: boolean; readonly privateTransport?: boolean },
 ) =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -2398,7 +2404,17 @@ export const layerWsRpc = (
         [WS_METHODS.boatStop]: (input) => boat.stop(input),
         [WS_METHODS.boatResume]: (input) => boat.resume(input),
         [WS_METHODS.boatDelete]: (input) => boat.delete(input),
-        [WS_METHODS.boatSetApiKey]: (input) => boat.setApiKey(input),
+        // A reusable account key must not cross a plain-HTTP LAN route.
+        [WS_METHODS.boatSetApiKey]: (input) =>
+          input.apiKey !== null && settingsClient.privateTransport !== true
+            ? Effect.fail(
+                new BoatError({
+                  code: "insecure-transport",
+                  message:
+                    "Enter the Boat key over HTTPS, T3 Connect, or on this machine, not over plain HTTP.",
+                }),
+              )
+            : boat.setApiKey(input),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
           scheduledTasks.subscribeList().pipe(Stream.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksUpsert]: (input) => scheduledTasks.upsert(input),

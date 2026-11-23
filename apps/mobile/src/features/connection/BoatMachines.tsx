@@ -117,6 +117,9 @@ function BoatMachineRow({ row, nowMs }: { readonly row: BoatRow; readonly nowMs:
     minutesLeft === null ? null : gt("Stops in {minutes} min", { minutes: minutesLeft }),
     row.cost === null ? null : `$${row.cost.usd.toFixed(row.cost.usd < 0.01 ? 4 : 2)}`,
     server.retention === "expired" ? gt("Disk expired") : null,
+    server.lifecycle === "failed" && server.observedPower === "running"
+      ? gt("Boat reports it running")
+      : null,
     row.stale ? gt("Controller offline") : null,
   ].filter((part): part is string => part !== null);
   const failed = server.lifecycle === "failed" && server.operation?.failure != null;
@@ -317,17 +320,23 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
   const [name, setName] = useState("");
   const [size, setSize] = useState<BoatMachineSize>("small");
   const [ttlSeconds, setTtlSeconds] = useState<number>(BOAT_TTL_CHOICES_SECONDS[0]);
-  // Kept across a failed attempt so a retry resolves to the same operation.
-  const [requestId, setRequestId] = useState(newRequestId);
+  // Kept across a failed attempt to the same controller so a retry resolves to the same operation.
+  const [pending, setPending] = useState<{
+    readonly controllerId: EnvironmentId;
+    readonly requestId: BoatRequestId;
+  } | null>(null);
   const [creating, setCreating] = useState(false);
   const controller = eligible[0];
-  if (controller === undefined) return null;
+  if (controller === undefined || controller.snapshot.createAvailable === false) return null;
   const rate = controller.snapshot.rates.find((entry) => entry.size === size);
   const submit = async () => {
+    const controllerId = controller.environment.environmentId;
+    const requestId = pending?.controllerId === controllerId ? pending.requestId : newRequestId();
+    setPending({ controllerId, requestId });
     setCreating(true);
     const outcome = await sendBoatRequest({
       kind: "create",
-      environmentId: controller.environment.environmentId,
+      environmentId: controllerId,
       input: { requestId, displayName: name.trim(), size, ttlSeconds },
     });
     setCreating(false);
@@ -337,7 +346,7 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
       }
       return;
     }
-    setRequestId(newRequestId());
+    setPending(null);
     setName("");
     props.onCreated();
   };

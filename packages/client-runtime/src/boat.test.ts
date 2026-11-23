@@ -149,6 +149,24 @@ describe("boatRows", () => {
   });
 });
 
+describe("boatRows on a controller that cannot install T3", () => {
+  it("offers no Resume", () => {
+    const list = boatRows({
+      controllers: [
+        {
+          environmentId: CONTROLLER,
+          snapshot: { ...snapshot, createAvailable: false },
+          connected: true,
+        },
+      ],
+      pairedEnvironmentIds: new Set(),
+      canManage: () => true,
+      nowMs,
+    });
+    expect([...(byId(list, "boat_stopped")?.actions ?? [])]).toEqual(["delete"]);
+  });
+});
+
 describe("boatCost", () => {
   it("prefers Boat's reported usage, else estimates wall time at the list rate", () => {
     const stopped = byId(rows(true), "boat_stopped")!.server;

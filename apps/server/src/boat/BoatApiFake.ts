@@ -29,6 +29,8 @@ interface FakeSandbox {
 export interface FakeBoatOptions {
   /** Applied to every call so a dev UI can show each stage. */
   readonly latency?: Effect.Effect<void>;
+  /** False stands in for a release build, which cannot install T3 on a machine yet. */
+  readonly bootstrapAvailable?: boolean;
 }
 
 const iso = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(millis));
@@ -193,6 +195,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
   });
 
   const bootstrap = BoatGuestBootstrap.of({
+    available: options.bootstrapAvailable ?? true,
     ensure: Effect.fn("FakeBoat.bootstrap")(function* ({ key, sandboxId, expected }) {
       yield* enter("bootstrap", key);
       const entry = yield* find(sandboxId);
@@ -215,6 +218,11 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
     archiveExternally: (sandboxId: string, now: number) => {
       const entry = sandboxes.get(sandboxId);
       if (entry !== undefined) archive(entry, now);
+    },
+    /** As if someone resumed the sandbox from Boat's dashboard. */
+    resumeExternally: (sandboxId: string) => {
+      const entry = sandboxes.get(sandboxId);
+      if (entry !== undefined) patch(entry, { state: "running", stoppedAt: null });
     },
     /** As if someone deleted the sandbox from Boat's dashboard. */
     deleteExternally: (sandboxId: string) => sandboxes.delete(sandboxId),

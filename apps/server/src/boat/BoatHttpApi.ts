@@ -27,7 +27,8 @@ const SandboxBody = Schema.Struct({
   archiveAfter: Schema.optional(Schema.NullOr(Schema.String)),
   stoppedAt: Schema.optional(Schema.NullOr(Schema.String)),
   dataExpiredAt: Schema.optional(Schema.NullOr(Schema.String)),
-  snapshotAvailable: Schema.Boolean,
+  // Boat reports a cancelled sandbox once with only id, state and error.
+  snapshotAvailable: Schema.optional(Schema.Boolean),
 });
 const SandboxEnvelope = Schema.Struct({ sandbox: SandboxBody });
 const ListEnvelope = Schema.Struct({
@@ -60,7 +61,7 @@ const toSandbox = (body: typeof SandboxBody.Type): BoatSandbox => ({
   archiveAfter: body.archiveAfter ?? null,
   stoppedAt: body.stoppedAt ?? null,
   dataExpiredAt: body.dataExpiredAt ?? null,
-  snapshotAvailable: body.snapshotAvailable,
+  snapshotAvailable: body.snapshotAvailable ?? false,
 });
 
 function categoryFor(status: number, code: string | undefined): BoatApiErrorCategory {
@@ -234,6 +235,7 @@ export const layer = Layer.effect(BoatApi, make);
 export const layerBootstrapUnavailable = Layer.succeed(
   BoatGuestBootstrap,
   BoatGuestBootstrap.of({
+    available: false,
     ensure: Effect.fn("BoatGuestBootstrap.unavailable")(function* () {
       return yield* new BoatBootstrapError({ reason: "unavailable" });
     }),

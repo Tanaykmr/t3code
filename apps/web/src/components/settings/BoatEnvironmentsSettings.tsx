@@ -111,6 +111,7 @@ function useBoatLabels() {
     "snapshot-expired": gt("The saved disk has expired."),
     "not-found": gt("Boat no longer has this machine."),
     "unresolved-create": gt("Could not tell which machine Boat made. Check the Boat dashboard."),
+    "machine-running": gt("Boat reports it running again. Stop it before deleting."),
   };
   const action: Record<BoatAction, string> = {
     stop: gt("Stop"),
@@ -192,6 +193,13 @@ function BoatRowView({ row, nowMs }: { readonly row: BoatRow; readonly nowMs: nu
       : server.retention === "expired"
         ? gt("Disk expired")
         : null,
+    server.lifecycle === "failed" && server.observedPower !== null
+      ? server.observedPower === "running"
+        ? gt("Boat reports it running")
+        : server.observedPower === "stopped"
+          ? gt("Boat reports it stopped")
+          : null
+      : null,
     row.paired ? gt("Connected on this device") : null,
     row.stale ? gt("Controller offline; last known state") : null,
   ].filter((part): part is string => part !== null);
@@ -397,14 +405,27 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
   const [name, setName] = useState("");
   const [size, setSize] = useState<BoatMachineSize>("small");
   const [ttlSeconds, setTtlSeconds] = useState<number>(BOAT_DEFAULT_TTL_SECONDS);
-  // Kept across a failed attempt so a retry resolves to the same operation.
-  const [requestId, setRequestId] = useState(newRequestId);
+  // Kept across a failed attempt to the same controller so a retry resolves to the same operation.
+  const [pending, setPending] = useState<{
+    readonly controllerId: EnvironmentId;
+    readonly requestId: BoatRequestId;
+  } | null>(null);
   const [creating, setCreating] = useState(false);
   const create = useAtomCommand(serverEnvironment.createBoat, {
     label: "boat create",
     reportFailure: false,
   });
 
+  if (controller !== undefined && controller.snapshot.createAvailable === false) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        {gt(
+          "{environment} cannot set up T3 Code on a new Boat machine yet. Update it to a release that can.",
+          { environment: controller.environment.label },
+        )}
+      </p>
+    );
+  }
   if (controller === undefined) {
     return (
       <p className="text-sm text-muted-foreground">
@@ -418,9 +439,12 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
   }
   const rate = controller.snapshot.rates.find((entry) => entry.size === size);
   const submit = async () => {
+    const controllerId = controller.environment.environmentId;
+    const requestId = pending?.controllerId === controllerId ? pending.requestId : newRequestId();
+    setPending({ controllerId, requestId });
     setCreating(true);
     const result = await create({
-      environmentId: controller.environment.environmentId,
+      environmentId: controllerId,
       input: { requestId, displayName: name.trim(), size, ttlSeconds },
     });
     setCreating(false);
@@ -434,7 +458,7 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
       }
       return;
     }
-    setRequestId(newRequestId());
+    setPending(null);
     toastManager.add({
       type: "success",
       title: gt("Creating {name}", { name: name.trim() }),
