@@ -3356,6 +3356,8 @@
   "c3cb3fe916f6fec5": "No bots yet.",
   "f15a46fd65bc6906": "Rooms",
   "85cb47ffa4f48bd3": "No rooms yet.",
+  "fbbae5b31766aeec": "Could not hand off to the bot",
+  "a0753692f70d9400": "Sent to {bots}",
   "49cc06e79f21f85a": "{seconds}s",
   "8603d41c52392f1d": "{minutes}m {seconds}s",
   "f2a955905704b91d": "{hours}h {minutes}m",

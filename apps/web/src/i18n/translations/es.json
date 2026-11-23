@@ -3356,6 +3356,8 @@
   "c3cb3fe916f6fec5": "Aún no hay bots.",
   "f15a46fd65bc6906": "Salas",
   "85cb47ffa4f48bd3": "Aún no hay salas.",
+  "fbbae5b31766aeec": "No se pudo pasar al bot",
+  "a0753692f70d9400": "Enviado a {bots}",
   "49cc06e79f21f85a": "{seconds} s",
   "8603d41c52392f1d": "{minutes} min {seconds} s",
   "f2a955905704b91d": "{hours} h {minutes} min",
