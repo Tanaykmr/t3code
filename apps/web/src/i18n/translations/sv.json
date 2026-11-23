@@ -3211,10 +3211,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "på datorn som öppnade den här sidan"
-      ]
+      "c": [" ", "på datorn som öppnade den här sidan"]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3226,10 +3223,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "· den som kör den får den här åtkomsten"
-      ]
+      "c": [" ", "· den som kör den får den här åtkomsten"]
     }
   ],
   "c54cc9c75db9dc58": "Godkänn bara en inloggning som du själv precis har startat.",
@@ -5524,6 +5518,18 @@
   "f0d79aa56f06663f": "Den här filen är för stor för att visas i sin helhet. Antalen inkluderar alla ändringar.",
   "7fdde2b893ba1b9d": "Borttagen",
   "e58ce271d835b447": "Tillagd",
+  "0453e9af053cbdd6": "Inte sparat än · försöker igen",
+  "c6fa2905d56a750c": "Sparat",
+  "280d236ac1c43321": "Läser in tavla…",
+  "b43755e1830c95c9": "Uppdatera den här miljöns T3 Code-server för att använda tavlor.",
+  "83293e871d9ef1e9": "Tavlan kunde inte läsas in.",
+  "2d2ea26e8137f78b": "Den här tråden har ingen tavla än.",
+  "97401a83f8a70e5e": "Skapa tavla",
+  "3948f138af0ad286": "Offline · skrivskyddad",
+  "9af4d074ea6bef17": "Någon ändrade detta först. Din ändring sparades inte.",
+  "03f1a3ab1ab06e84": "Ändringen kunde inte sparas.",
+  "97585565390197f6": "Kasta",
+  "64a52ec7f792cc6e": "Behåll som kopia",
   "07b9970b662ab70d": "Visa Mermaid-källa",
   "5a422b7be35243f5": "Visa renderat diagram",
   "c0628ad999cbbbf5": "Visa Markdown-källa",
@@ -11209,7 +11215,6 @@
       }
     }
   ],
-  "97585565390197f6": "Kasta",
   "c0fce4a3555c5c17": "Anslut",
   "0d1eba54ff075d77": "Använd den",
   "035dc7d3b0f3e526": "Trådtitlar och annan genererad text",
@@ -12386,7 +12391,6 @@
   "8d1dfbc57b91d58e": "Tomma cachepriser använder indatapriset. Ange 0 för gratis token. En mappad modells användning räknas som den modell den mappas till.",
   "3823a9490a8a4778": "Blandade celler behåller varje miljös pris tills du redigerar dem.",
   "a6b9c952d640c03a": "Inte sparat · {error}",
-  "c6fa2905d56a750c": "Sparat",
   "d9e3a6d46b5fb3e2": "Ändringarna gäller {destination}",
   "faa23eb0efd2a753": "Kasta väntande ändringar",
   "8b2c842e0f21cf71": "Kasta ändringar",

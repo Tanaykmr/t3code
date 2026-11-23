@@ -3211,10 +3211,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "sur l’ordinateur qui a ouvert cette page"
-      ]
+      "c": [" ", "sur l’ordinateur qui a ouvert cette page"]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3226,10 +3223,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "· quiconque l’exécute obtient cet accès"
-      ]
+      "c": [" ", "· quiconque l’exécute obtient cet accès"]
     }
   ],
   "c54cc9c75db9dc58": "N’approuvez qu’une connexion que vous venez de lancer.",
@@ -5524,6 +5518,18 @@
   "f0d79aa56f06663f": "Ce fichier est trop volumineux pour être affiché en entier. Les totaux incluent toutes les modifications.",
   "7fdde2b893ba1b9d": "Supprimé",
   "e58ce271d835b447": "Ajouté",
+  "0453e9af053cbdd6": "Pas encore enregistré · nouvel essai",
+  "c6fa2905d56a750c": "Enregistré",
+  "280d236ac1c43321": "Chargement du tableau…",
+  "b43755e1830c95c9": "Mettez à jour le serveur T3 Code de cet environnement pour utiliser les tableaux.",
+  "83293e871d9ef1e9": "Impossible de charger ce tableau.",
+  "2d2ea26e8137f78b": "Ce fil n’a pas encore de tableau.",
+  "97401a83f8a70e5e": "Créer un tableau",
+  "3948f138af0ad286": "Hors ligne · lecture seule",
+  "9af4d074ea6bef17": "Quelqu’un l’a modifié avant vous. Votre modification n’a pas été enregistrée.",
+  "03f1a3ab1ab06e84": "Cette modification n’a pas pu être enregistrée.",
+  "97585565390197f6": "Ignorer",
+  "64a52ec7f792cc6e": "Garder une copie",
   "07b9970b662ab70d": "Afficher la source Mermaid",
   "5a422b7be35243f5": "Afficher le diagramme rendu",
   "c0628ad999cbbbf5": "Afficher la source Markdown",
@@ -11201,7 +11207,6 @@
       }
     }
   ],
-  "97585565390197f6": "Abandonner",
   "c0fce4a3555c5c17": "Connexion",
   "0d1eba54ff075d77": "L’utiliser",
   "035dc7d3b0f3e526": "Titres des fils et autres textes générés",
@@ -12378,7 +12383,6 @@
   "8d1dfbc57b91d58e": "Les tarifs de cache vides utilisent le prix d’entrée. Saisissez 0 pour des tokens gratuits. L’utilisation d’un modèle mis en correspondance est comptée comme celle du modèle cible.",
   "3823a9490a8a4778": "Les cellules mixtes gardent le tarif de chaque environnement jusqu’à ce que vous les modifiiez.",
   "a6b9c952d640c03a": "Non enregistré · {error}",
-  "c6fa2905d56a750c": "Enregistré",
   "d9e3a6d46b5fb3e2": "Les modifications s’appliquent à {destination}",
   "faa23eb0efd2a753": "Abandonner les modifications en attente",
   "8b2c842e0f21cf71": "Abandonner les modifications",

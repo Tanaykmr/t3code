@@ -482,6 +482,20 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
+import {
+  BoardApplyError,
+  BoardApplyResult,
+  BoardCreateInput,
+  BoardEditBatch,
+  BoardFileData,
+  BoardGetFilesInput,
+  BoardGetInput,
+  BoardHeader,
+  BoardReadError,
+  BoardSnapshot,
+  BoardStreamEvent,
+  BoardSubscribeInput,
+} from "./board.ts";
 
 export const WS_METHODS = {
   projectsListEntries: "projects.listEntries",
@@ -568,6 +582,12 @@ export const WS_METHODS = {
   previewReportProfiles: "preview.reportProfiles",
   previewReportStatus: "preview.reportStatus",
   previewStopLocalServer: "preview.stopLocalServer",
+
+  boardGet: "board.get",
+  boardCreate: "board.create",
+  boardApply: "board.apply",
+  boardGetFiles: "board.getFiles",
+  boardSubscribe: "board.subscribe",
 
   deviceConfigure: "device.configure",
   deviceList: "device.list",
@@ -2453,6 +2473,37 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
   stream: true,
 });
 
+const WsBoardGetRpc = Rpc.make(WS_METHODS.boardGet, {
+  payload: BoardGetInput,
+  success: Schema.NullOr(BoardSnapshot),
+  error: Schema.Union([BoardReadError, EnvironmentAuthorizationError]),
+});
+
+const WsBoardCreateRpc = Rpc.make(WS_METHODS.boardCreate, {
+  payload: BoardCreateInput,
+  success: BoardHeader,
+  error: Schema.Union([BoardReadError, EnvironmentAuthorizationError]),
+});
+
+const WsBoardApplyRpc = Rpc.make(WS_METHODS.boardApply, {
+  payload: BoardEditBatch,
+  success: BoardApplyResult,
+  error: Schema.Union([BoardApplyError, EnvironmentAuthorizationError]),
+});
+
+const WsBoardGetFilesRpc = Rpc.make(WS_METHODS.boardGetFiles, {
+  payload: BoardGetFilesInput,
+  success: Schema.Array(BoardFileData),
+  error: Schema.Union([BoardReadError, EnvironmentAuthorizationError]),
+});
+
+const WsBoardSubscribeRpc = Rpc.make(WS_METHODS.boardSubscribe, {
+  payload: BoardSubscribeInput,
+  success: BoardStreamEvent,
+  error: Schema.Union([BoardReadError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthorization>()(
   "t3/contracts/RpcScopeAuthorization",
   { error: EnvironmentAuthorizationError },
@@ -2678,6 +2729,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribePreviewEventsRpc,
   WsPreviewStopLocalServerRpc,
   WsSubscribeDiscoveredLocalServersRpc,
+  WsBoardGetRpc,
+  WsBoardCreateRpc,
+  WsBoardApplyRpc,
+  WsBoardGetFilesRpc,
+  WsBoardSubscribeRpc,
   WsDeviceConfigureRpc,
   WsDeviceListRpc,
   WsDeviceTestHostRpc,

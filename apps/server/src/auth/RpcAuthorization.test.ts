@@ -5,6 +5,7 @@ import {
   AuthProvidersManageScope,
   AuthSettingsWriteScope,
   AuthAccessWriteScope,
+  BoardId,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProviderDriverKind,
@@ -214,6 +215,47 @@ it.effect("allows issue reads but requires a source-control grant before comment
     );
     yield* writer[WS_METHODS.issuesComment](comment);
     expect(comments).toEqual(["Repro attached."]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("lets a read-only session view a board but rejects its edits", () =>
+  Effect.gen(function* () {
+    const tested = [WS_METHODS.boardGet, WS_METHODS.boardApply] as const;
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+          !(tested as ReadonlyArray<string>).includes(tag),
+      ),
+    );
+    let applied = 0;
+    const handlers = Layer.mergeAll(
+      group.toLayerHandler(WS_METHODS.boardGet, () => Effect.succeed(null)),
+      group.toLayerHandler(WS_METHODS.boardApply, () =>
+        Effect.sync(() => {
+          applied++;
+          return { revision: 1, orderRevision: 0, elements: [] };
+        }),
+      ),
+    );
+    const reader = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthOrchestrationReadScope]))),
+    );
+    const threadId = ThreadId.make("thread-board");
+
+    expect(yield* reader[WS_METHODS.boardGet]({ threadId })).toBeNull();
+    expect(
+      yield* reader[WS_METHODS.boardApply]({
+        threadId,
+        boardId: BoardId.make("board-1"),
+        mutationId: "mutation-1",
+        operations: [],
+        settings: { viewBackgroundColor: "#000000" },
+      }).pipe(Effect.flip),
+    ).toMatchObject({
+      _tag: "EnvironmentAuthorizationError",
+      requiredPermission: AuthOrchestrationOperateScope,
+    });
+    expect(applied).toBe(0);
   }).pipe(Effect.scoped),
 );
 

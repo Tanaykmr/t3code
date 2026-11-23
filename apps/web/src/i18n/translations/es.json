@@ -3211,10 +3211,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "en el ordenador que abrió esta página"
-      ]
+      "c": [" ", "en el ordenador que abrió esta página"]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3226,10 +3223,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "· quien lo ejecute obtiene este acceso"
-      ]
+      "c": [" ", "· quien lo ejecute obtiene este acceso"]
     }
   ],
   "c54cc9c75db9dc58": "Aprueba solo un inicio de sesión que acabes de iniciar.",
@@ -5523,6 +5517,18 @@
   "f0d79aa56f06663f": "Este archivo es demasiado grande para mostrarlo completo. Los recuentos incluyen todos los cambios.",
   "7fdde2b893ba1b9d": "Eliminado",
   "e58ce271d835b447": "Añadido",
+  "0453e9af053cbdd6": "Aún no guardado · reintentando",
+  "c6fa2905d56a750c": "Guardado",
+  "280d236ac1c43321": "Cargando tablero…",
+  "b43755e1830c95c9": "Actualiza el servidor de T3 Code de este entorno para usar tableros.",
+  "83293e871d9ef1e9": "No se pudo cargar este tablero.",
+  "2d2ea26e8137f78b": "Este hilo aún no tiene tablero.",
+  "97401a83f8a70e5e": "Crear tablero",
+  "3948f138af0ad286": "Sin conexión · solo lectura",
+  "9af4d074ea6bef17": "Alguien lo cambió antes. Tu edición no se guardó.",
+  "03f1a3ab1ab06e84": "No se pudo guardar esta edición.",
+  "97585565390197f6": "Descartar",
+  "64a52ec7f792cc6e": "Conservar como copia",
   "07b9970b662ab70d": "Mostrar el código fuente de Mermaid",
   "5a422b7be35243f5": "Mostrar el diagrama renderizado",
   "c0628ad999cbbbf5": "Mostrar el código fuente markdown",
@@ -11196,7 +11202,6 @@
       }
     }
   ],
-  "97585565390197f6": "Descartar",
   "c0fce4a3555c5c17": "Conectar",
   "0d1eba54ff075d77": "Usarlo",
   "035dc7d3b0f3e526": "Títulos de hilos y otros textos generados",
@@ -12373,7 +12378,6 @@
   "8d1dfbc57b91d58e": "Las tarifas de caché en blanco usan el precio de entrada. Introduce 0 para tokens gratuitos. El uso de un modelo asignado cuenta como el del modelo al que se asigna.",
   "3823a9490a8a4778": "Las celdas mixtas mantienen la tarifa de cada entorno hasta que las edites.",
   "a6b9c952d640c03a": "No guardado · {error}",
-  "c6fa2905d56a750c": "Guardado",
   "d9e3a6d46b5fb3e2": "Los cambios se aplican a {destination}",
   "faa23eb0efd2a753": "Descartar cambios pendientes",
   "8b2c842e0f21cf71": "Descartar cambios",

@@ -3212,10 +3212,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "auf dem Computer, der diese Seite geöffnet hat"
-      ]
+      "c": [" ", "auf dem Computer, der diese Seite geöffnet hat"]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3227,10 +3224,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "· wer es ausführt, erhält diesen Zugriff"
-      ]
+      "c": [" ", "· wer es ausführt, erhält diesen Zugriff"]
     }
   ],
   "c54cc9c75db9dc58": "Genehmige nur eine Anmeldung, die du gerade selbst gestartet hast.",
@@ -5524,6 +5518,18 @@
   "f0d79aa56f06663f": "Diese Datei ist zu groß für die vollständige Anzeige. Die Zahlen umfassen alle Änderungen.",
   "7fdde2b893ba1b9d": "Entfernt",
   "e58ce271d835b447": "Hinzugefügt",
+  "0453e9af053cbdd6": "Noch nicht gespeichert · neuer Versuch",
+  "c6fa2905d56a750c": "Gespeichert",
+  "280d236ac1c43321": "Board wird geladen…",
+  "b43755e1830c95c9": "Aktualisiere den T3 Code-Server dieser Umgebung, um Boards zu nutzen.",
+  "83293e871d9ef1e9": "Dieses Board konnte nicht geladen werden.",
+  "2d2ea26e8137f78b": "Dieser Thread hat noch kein Board.",
+  "97401a83f8a70e5e": "Board erstellen",
+  "3948f138af0ad286": "Offline · nur lesen",
+  "9af4d074ea6bef17": "Jemand anderes war schneller. Deine Änderung wurde nicht gespeichert.",
+  "03f1a3ab1ab06e84": "Diese Änderung konnte nicht gespeichert werden.",
+  "97585565390197f6": "Verwerfen",
+  "64a52ec7f792cc6e": "Als Kopie behalten",
   "07b9970b662ab70d": "Mermaid-Quelltext anzeigen",
   "5a422b7be35243f5": "Gerendertes Diagramm anzeigen",
   "c0628ad999cbbbf5": "Markdown-Quelltext anzeigen",
@@ -11202,7 +11208,6 @@
       }
     }
   ],
-  "97585565390197f6": "Verwerfen",
   "c0fce4a3555c5c17": "Verbinden",
   "0d1eba54ff075d77": "Verwenden",
   "035dc7d3b0f3e526": "Thread-Titel und andere generierte Texte",
@@ -12380,7 +12385,6 @@
   "8d1dfbc57b91d58e": "Leere Cache-Preise verwenden den Eingabepreis. Gib 0 für kostenlose Tokens ein. Die Nutzung eines zugeordneten Modells zählt als das Modell, dem es zugeordnet ist.",
   "3823a9490a8a4778": "Gemischte Zellen behalten den Preis jeder Umgebung, bis du sie bearbeitest.",
   "a6b9c952d640c03a": "Nicht gespeichert · {error}",
-  "c6fa2905d56a750c": "Gespeichert",
   "d9e3a6d46b5fb3e2": "Änderungen gelten für {destination}",
   "faa23eb0efd2a753": "Ausstehende Änderungen verwerfen",
   "8b2c842e0f21cf71": "Änderungen verwerfen",

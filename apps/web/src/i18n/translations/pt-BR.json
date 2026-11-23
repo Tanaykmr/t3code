@@ -3211,10 +3211,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "no computador que abriu esta página"
-      ]
+      "c": [" ", "no computador que abriu esta página"]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3226,10 +3223,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "· quem executar recebe este acesso"
-      ]
+      "c": [" ", "· quem executar recebe este acesso"]
     }
   ],
   "c54cc9c75db9dc58": "Aprove apenas um login que você acabou de iniciar.",
@@ -5523,6 +5517,18 @@
   "f0d79aa56f06663f": "Este arquivo é grande demais para ser mostrado por inteiro. As contagens incluem todas as alterações.",
   "7fdde2b893ba1b9d": "Removido",
   "e58ce271d835b447": "Adicionado",
+  "0453e9af053cbdd6": "Ainda não salvo · tentando novamente",
+  "c6fa2905d56a750c": "Salvo",
+  "280d236ac1c43321": "Carregando quadro…",
+  "b43755e1830c95c9": "Atualize o servidor do T3 Code deste ambiente para usar quadros.",
+  "83293e871d9ef1e9": "Não foi possível carregar este quadro.",
+  "2d2ea26e8137f78b": "Esta conversa ainda não tem quadro.",
+  "97401a83f8a70e5e": "Criar quadro",
+  "3948f138af0ad286": "Offline · somente leitura",
+  "9af4d074ea6bef17": "Alguém alterou isto antes. Sua edição não foi salva.",
+  "03f1a3ab1ab06e84": "Não foi possível salvar esta edição.",
+  "97585565390197f6": "Descartar",
+  "64a52ec7f792cc6e": "Manter como cópia",
   "07b9970b662ab70d": "Mostrar o código Mermaid",
   "5a422b7be35243f5": "Mostrar o diagrama renderizado",
   "c0628ad999cbbbf5": "Mostrar o código Markdown",
@@ -11201,7 +11207,6 @@
       }
     }
   ],
-  "97585565390197f6": "Descartar",
   "c0fce4a3555c5c17": "Conectar",
   "0d1eba54ff075d77": "Usar",
   "035dc7d3b0f3e526": "Títulos de threads e outros textos gerados",
@@ -12378,7 +12383,6 @@
   "8d1dfbc57b91d58e": "Taxas de cache em branco usam o preço de entrada. Informe 0 para tokens gratuitos. O uso de um modelo mapeado conta como o modelo para o qual ele é mapeado.",
   "3823a9490a8a4778": "Células mistas mantêm a taxa de cada ambiente até você editá-las.",
   "a6b9c952d640c03a": "Não salvo · {error}",
-  "c6fa2905d56a750c": "Salvo",
   "d9e3a6d46b5fb3e2": "As alterações valem para {destination}",
   "faa23eb0efd2a753": "Descartar alterações pendentes",
   "8b2c842e0f21cf71": "Descartar alterações",

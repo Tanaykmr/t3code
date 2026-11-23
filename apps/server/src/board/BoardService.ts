@@ -1,0 +1,662 @@
+// @effect-diagnostics nodeBuiltinImport:off - hashing file bytes and batch payloads.
+import * as NodeCrypto from "node:crypto";
+
+import {
+  BOARD_BATCH_MAX_BYTES,
+  BOARD_FILE_MAX_BYTES,
+  BOARD_MAX_ELEMENTS,
+  BOARD_SCENE_FORMAT_VERSION,
+  BoardApplyResult,
+  BoardConflictError,
+  BoardEditBatch,
+  BoardElement,
+  BoardId,
+  BoardInvalidBatchError,
+  BoardMutationReuseError,
+  BoardNotFoundError,
+  BoardStorageError,
+  type BoardConflict,
+  type BoardDelta,
+  type BoardElementToken,
+  type BoardFileData,
+  BoardFileMimeType,
+  type BoardFileRef,
+  type BoardGetFilesInput,
+  type BoardHeader,
+  type BoardSettings,
+  type BoardSnapshot,
+  type BoardStreamEvent,
+  type ThreadId,
+} from "@t3tools/contracts";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as PubSub from "effect/PubSub";
+import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
+import { generateKeyBetween } from "fractional-indexing";
+
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+
+type BoardReadFailure = BoardNotFoundError | BoardStorageError;
+type BoardApplyFailure =
+  | BoardNotFoundError
+  | BoardConflictError
+  | BoardMutationReuseError
+  | BoardInvalidBatchError
+  | BoardStorageError;
+
+export class BoardService extends Context.Service<
+  BoardService,
+  {
+    /** The thread's board, or null when none was created. Never creates one. */
+    readonly get: (threadId: ThreadId) => Effect.Effect<BoardSnapshot | null, BoardReadFailure>;
+    /** Idempotent per owning thread. */
+    readonly create: (threadId: ThreadId) => Effect.Effect<BoardHeader, BoardReadFailure>;
+    /** `actor` scopes mutation receipts: the authenticated session or agent that sent the batch. */
+    readonly apply: (input: {
+      readonly actor: string;
+      readonly batch: BoardEditBatch;
+    }) => Effect.Effect<BoardApplyResult, BoardApplyFailure>;
+    readonly getFiles: (
+      input: BoardGetFilesInput,
+    ) => Effect.Effect<ReadonlyArray<BoardFileData>, BoardReadFailure>;
+    /** A `missing` or `snapshot` event, then committed changes in order. */
+    readonly subscribe: (threadId: ThreadId) => Stream.Stream<BoardStreamEvent, BoardReadFailure>;
+  }
+>()("t3/board/BoardService") {}
+
+/** Boards belong to their thread. A project-shared board would change only this key. */
+const boardOwnerKey = (threadId: ThreadId): string => threadId;
+
+const DEFAULT_SETTINGS: BoardSettings = { viewBackgroundColor: "#ffffff" };
+const SUBSCRIBER_BUFFER = 1_024;
+const MAX_VERSION_NONCE = 2 ** 31;
+
+interface BoardRow {
+  readonly board_id: string;
+  readonly thread_id: string;
+  readonly revision: number;
+  readonly order_revision: number;
+  readonly view_background_color: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+interface ElementRow {
+  readonly element_id: string;
+  readonly version: number;
+  readonly version_nonce: number;
+  readonly idx: string | null;
+  readonly payload_json: string;
+}
+
+interface FileRefRow {
+  readonly file_id: string;
+  readonly mime_type: string;
+  readonly size: number;
+  readonly digest: string;
+  readonly created: number;
+}
+
+const decodeElementJson = Schema.decodeUnknownSync(Schema.fromJsonString(BoardElement));
+const decodeApplyResultJson = Schema.decodeUnknownEffect(Schema.fromJsonString(BoardApplyResult));
+const encodeApplyResultJson = Schema.encodeEffect(Schema.fromJsonString(BoardApplyResult));
+const encodeElementJson = Schema.encodeEffect(Schema.fromJsonString(BoardElement));
+const encodeBatchJson = Schema.encodeEffect(Schema.fromJsonString(BoardEditBatch));
+const isBoardInvalidBatchError = Schema.is(BoardInvalidBatchError);
+const isBoardMimeType = Schema.is(BoardFileMimeType);
+
+const toHeader = (row: BoardRow, threadId: ThreadId): BoardHeader => ({
+  boardId: BoardId.make(row.board_id),
+  threadId,
+  sceneFormatVersion: BOARD_SCENE_FORMAT_VERSION,
+  revision: row.revision,
+  orderRevision: row.order_revision,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+const toFileRef = (row: FileRefRow): BoardFileRef | null =>
+  isBoardMimeType(row.mime_type)
+    ? {
+        id: row.file_id,
+        mimeType: row.mime_type,
+        size: row.size,
+        digest: row.digest,
+        created: row.created,
+      }
+    : null;
+
+const tokenOf = (row: ElementRow): BoardElementToken => ({
+  version: row.version,
+  versionNonce: row.version_nonce,
+});
+
+/** Excalidraw orders by plain string comparison of fractional indices. */
+const compareIndex = (a: string | null, b: string | null): number => {
+  if (a === b) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return a < b ? -1 : 1;
+};
+
+const compareCanonical = (
+  a: { readonly id: string; readonly index: string | null },
+  b: { readonly id: string; readonly index: string | null },
+): number => compareIndex(a.index, b.index) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+const isValidIndex = (index: string): boolean => {
+  try {
+    generateKeyBetween(index, null);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Gives every proposed element whose index is missing, invalid, or shared with another element a
+ * fresh index between its neighbours. Committed elements keep theirs, so only this batch moves.
+ */
+const repairIndices = (
+  committed: ReadonlyArray<{ readonly id: string; readonly index: string | null }>,
+  proposed: ReadonlyArray<{ readonly id: string; readonly index: string | null }>,
+): ReadonlyMap<string, string> => {
+  const proposedIds = new Set(proposed.map((entry) => entry.id));
+  const stable: Array<{ id: string; index: string }> = [];
+  for (const entry of committed) {
+    if (!proposedIds.has(entry.id) && entry.index !== null) {
+      stable.push({ id: entry.id, index: entry.index });
+    }
+  }
+  const taken = new Set(stable.map((entry) => entry.index));
+  const needsRepair: Array<{ id: string; index: string | null }> = [];
+  for (const entry of [...proposed].toSorted(compareCanonical)) {
+    if (entry.index !== null && isValidIndex(entry.index) && !taken.has(entry.index)) {
+      taken.add(entry.index);
+      stable.push({ id: entry.id, index: entry.index });
+    } else {
+      needsRepair.push({ id: entry.id, index: entry.index });
+    }
+  }
+  stable.sort(compareCanonical);
+  const repaired = new Map<string, string>();
+  for (const entry of needsRepair) {
+    const anchor = entry.index !== null && isValidIndex(entry.index) ? entry.index : null;
+    // Place after every element at or below the proposed index, so a collision lands just above.
+    const position =
+      anchor === null
+        ? stable.length
+        : stable.findIndex((candidate) => candidate.index > anchor) === -1
+          ? stable.length
+          : stable.findIndex((candidate) => candidate.index > anchor);
+    const index = generateKeyBetween(
+      stable[position - 1]?.index ?? null,
+      stable[position]?.index ?? null,
+    );
+    stable.splice(position, 0, { id: entry.id, index });
+    repaired.set(entry.id, index);
+  }
+  return repaired;
+};
+
+const DATA_URL_PATTERN = /^data:([^;,]+);base64,([A-Za-z0-9+/]*={0,2})$/;
+
+const decodeFileUpload = (
+  file: BoardFileData,
+): { readonly bytes: Buffer; readonly digest: string } | BoardInvalidBatchError => {
+  const match = DATA_URL_PATTERN.exec(file.dataURL);
+  if (match === null || match[1] !== file.mimeType) {
+    return new BoardInvalidBatchError({ reason: "file-invalid" });
+  }
+  const bytes = Buffer.from(match[2] ?? "", "base64");
+  if (bytes.byteLength === 0) return new BoardInvalidBatchError({ reason: "file-invalid" });
+  if (bytes.byteLength > BOARD_FILE_MAX_BYTES) {
+    return new BoardInvalidBatchError({ reason: "file-too-large" });
+  }
+  return { bytes, digest: NodeCrypto.createHash("sha256").update(bytes).digest("hex") };
+};
+
+const sameToken = (row: ElementRow, expected: BoardElementToken) =>
+  row.version === expected.version && row.version_nonce === expected.versionNonce;
+
+const operationElementId = (operation: BoardEditBatch["operations"][number]) =>
+  operation.type === "delete" ? operation.id : operation.element.id;
+
+interface BoardChannel {
+  readonly lock: Semaphore.Semaphore;
+  readonly events: PubSub.PubSub<BoardStreamEvent>;
+}
+
+const make = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const random = yield* SecureRandom.SecureRandom;
+  const channels = new Map<string, BoardChannel>();
+
+  const channelFor = Effect.fnUntraced(function* (ownerKey: string) {
+    const existing = channels.get(ownerKey);
+    if (existing !== undefined) return existing;
+    const events = yield* PubSub.sliding<BoardStreamEvent>(SUBSCRIBER_BUFFER);
+    const raced = channels.get(ownerKey);
+    if (raced !== undefined) return raced;
+    const channel: BoardChannel = { lock: Semaphore.makeUnsafe(1), events };
+    channels.set(ownerKey, channel);
+    return channel;
+  });
+
+  const storage =
+    (operation: "read" | "write") =>
+    <A, R>(effect: Effect.Effect<A, SqlError.SqlError, R>) =>
+      effect.pipe(
+        Effect.tapError((cause) =>
+          Effect.logWarning("Board storage failed").pipe(Effect.annotateLogs({ operation, cause })),
+        ),
+        Effect.mapError(() => new BoardStorageError({ operation })),
+      );
+
+  const requireThread = Effect.fn("BoardService.requireThread")(function* (threadId: ThreadId) {
+    const titles = yield* projections
+      .getThreadTitles([threadId])
+      .pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Board thread lookup failed").pipe(
+            Effect.annotateLogs({ cause }),
+            Effect.andThen(Effect.fail(new BoardStorageError({ operation: "read" }))),
+          ),
+        ),
+      );
+    if (!Object.hasOwn(titles, threadId)) return yield* new BoardNotFoundError({ threadId });
+  });
+
+  const findBoard = (ownerKey: string) =>
+    sql<BoardRow>`
+      SELECT board_id, thread_id, revision, order_revision, view_background_color, created_at,
+        updated_at
+      FROM board
+      WHERE thread_id = ${ownerKey}
+    `.pipe(Effect.map((rows) => rows[0] ?? null));
+
+  const readSnapshot = (ownerKey: string, threadId: ThreadId) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const board = yield* findBoard(ownerKey);
+          if (board === null) return null;
+          const elements = yield* sql<Pick<ElementRow, "payload_json">>`
+            SELECT payload_json FROM board_element WHERE board_id = ${board.board_id}
+          `;
+          const files = yield* sql<FileRefRow>`
+            SELECT file_id, mime_type, size, digest, created
+            FROM board_file
+            WHERE board_id = ${board.board_id}
+          `;
+          const snapshot: BoardSnapshot = {
+            board: toHeader(board, threadId),
+            elements: elements
+              .map((row) => decodeElementJson(row.payload_json))
+              .toSorted(compareCanonical),
+            settings: { viewBackgroundColor: board.view_background_color },
+            files: files.flatMap((row) => toFileRef(row) ?? []),
+          };
+          return snapshot;
+        }),
+      )
+      .pipe(storage("read"));
+
+  const get: BoardService["Service"]["get"] = Effect.fn("BoardService.get")(function* (threadId) {
+    yield* Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": threadId });
+    yield* requireThread(threadId);
+    return yield* readSnapshot(boardOwnerKey(threadId), threadId);
+  });
+
+  const create: BoardService["Service"]["create"] = Effect.fn("BoardService.create")(
+    function* (threadId) {
+      yield* Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": threadId });
+      yield* requireThread(threadId);
+      const ownerKey = boardOwnerKey(threadId);
+      const channel = yield* channelFor(ownerKey);
+      return yield* Semaphore.withPermit(
+        channel.lock,
+        Effect.gen(function* () {
+          const existing = yield* findBoard(ownerKey).pipe(storage("read"));
+          if (existing !== null) return toHeader(existing, threadId);
+          const boardId = yield* random.uuidV4();
+          const now = DateTime.formatIso(yield* DateTime.now);
+          const row: BoardRow = {
+            board_id: boardId,
+            thread_id: ownerKey,
+            revision: 0,
+            order_revision: 0,
+            view_background_color: DEFAULT_SETTINGS.viewBackgroundColor,
+            created_at: now,
+            updated_at: now,
+          };
+          yield* sql`
+            INSERT INTO board (board_id, thread_id, scene_format_version, revision, order_revision,
+              view_background_color, created_at, updated_at)
+            VALUES (${row.board_id}, ${row.thread_id}, ${BOARD_SCENE_FORMAT_VERSION}, 0, 0,
+              ${row.view_background_color}, ${now}, ${now})
+          `.pipe(storage("write"));
+          const board = toHeader(row, threadId);
+          yield* PubSub.publish(channel.events, {
+            type: "snapshot",
+            snapshot: { board, elements: [], settings: DEFAULT_SETTINGS, files: [] },
+          });
+          return board;
+        }),
+      );
+    },
+  );
+
+  const commit = Effect.fn("BoardService.commit")(function* (
+    channel: BoardChannel,
+    actor: string,
+    batch: BoardEditBatch,
+  ) {
+    const ownerKey = boardOwnerKey(batch.threadId);
+    const board = yield* findBoard(ownerKey).pipe(storage("read"));
+    if (board === null || board.board_id !== batch.boardId) {
+      return yield* new BoardNotFoundError({ threadId: batch.threadId, boardId: batch.boardId });
+    }
+
+    const payload = yield* encodeBatchJson(batch).pipe(Effect.orDie);
+    if (payload.length > BOARD_BATCH_MAX_BYTES) {
+      return yield* new BoardInvalidBatchError({ reason: "batch-too-large" });
+    }
+    const payloadDigest = NodeCrypto.createHash("sha256").update(payload).digest("hex");
+    const [receipt] = yield* sql<{
+      readonly actor: string;
+      readonly payload_digest: string;
+      readonly result_json: string;
+    }>`
+      SELECT actor, payload_digest, result_json
+      FROM board_mutation
+      WHERE board_id = ${board.board_id} AND mutation_id = ${batch.mutationId}
+    `.pipe(storage("read"));
+    if (receipt !== undefined) {
+      if (receipt.actor !== actor || receipt.payload_digest !== payloadDigest) {
+        return yield* new BoardMutationReuseError({ mutationId: batch.mutationId });
+      }
+      return yield* decodeApplyResultJson(receipt.result_json).pipe(
+        Effect.catchTags({
+          SchemaError: (cause) =>
+            Effect.logWarning("Board receipt is unreadable").pipe(
+              Effect.annotateLogs({ cause }),
+              Effect.andThen(Effect.fail(new BoardStorageError({ operation: "read" }))),
+            ),
+        }),
+      );
+    }
+
+    const files = batch.files ?? [];
+    if (batch.operations.length === 0 && batch.settings === undefined && files.length === 0) {
+      return yield* new BoardInvalidBatchError({ reason: "empty" });
+    }
+    const touchedIds = batch.operations.map(operationElementId);
+    if (new Set(touchedIds).size !== touchedIds.length) {
+      return yield* new BoardInvalidBatchError({ reason: "duplicate-element" });
+    }
+
+    const currentRows =
+      touchedIds.length === 0
+        ? []
+        : yield* sql<ElementRow>`
+            SELECT element_id, version, version_nonce, idx, payload_json
+            FROM board_element
+            WHERE board_id = ${board.board_id} AND element_id IN ${sql.in(touchedIds)}
+          `.pipe(storage("read"));
+    const current = new Map(currentRows.map((row) => [row.element_id, row]));
+
+    const conflicts: Array<BoardConflict> = [];
+    for (const operation of batch.operations) {
+      const id = operationElementId(operation);
+      const row = current.get(id);
+      if (operation.type === "create") {
+        if (row !== undefined) conflicts.push({ id, current: tokenOf(row) });
+      } else if (row === undefined) {
+        conflicts.push({ id, current: null });
+      } else if (!sameToken(row, operation.expected)) {
+        conflicts.push({ id, current: tokenOf(row) });
+      }
+    }
+    if (
+      conflicts.length > 0 ||
+      (batch.expectedOrderRevision !== undefined &&
+        batch.expectedOrderRevision !== board.order_revision)
+    ) {
+      return yield* new BoardConflictError({ conflicts, orderRevision: board.order_revision });
+    }
+
+    const createCount = batch.operations.filter((operation) => operation.type === "create").length;
+    if (createCount > 0) {
+      const [count] = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count FROM board_element WHERE board_id = ${board.board_id}
+      `.pipe(storage("read"));
+      if ((count?.count ?? 0) + createCount > BOARD_MAX_ELEMENTS) {
+        return yield* new BoardInvalidBatchError({ reason: "board-full" });
+      }
+    }
+
+    const fileIds = [...new Set(files.map((file) => file.id))];
+    const existingFiles =
+      fileIds.length === 0
+        ? []
+        : yield* sql<{ readonly file_id: string; readonly digest: string }>`
+            SELECT file_id, digest FROM board_file
+            WHERE board_id = ${board.board_id} AND file_id IN ${sql.in(fileIds)}
+          `.pipe(storage("read"));
+    const knownDigests = new Map(existingFiles.map((row) => [row.file_id, row.digest]));
+    const nowMillis = DateTime.toEpochMillis(yield* DateTime.now);
+    const newFiles: Array<{ readonly ref: BoardFileRef; readonly bytes: Buffer }> = [];
+    for (const file of files) {
+      const decoded = decodeFileUpload(file);
+      if (isBoardInvalidBatchError(decoded)) return yield* decoded;
+      const known = knownDigests.get(file.id);
+      if (known !== undefined) {
+        if (known !== decoded.digest) {
+          return yield* new BoardInvalidBatchError({ reason: "file-conflict" });
+        }
+        continue;
+      }
+      knownDigests.set(file.id, decoded.digest);
+      newFiles.push({
+        ref: {
+          id: file.id,
+          mimeType: file.mimeType,
+          size: decoded.bytes.byteLength,
+          digest: decoded.digest,
+          created: nowMillis,
+        },
+        bytes: decoded.bytes,
+      });
+    }
+
+    const stamped: Array<BoardElement> = [];
+    for (const operation of batch.operations) {
+      const row = current.get(operationElementId(operation));
+      const prior = row === undefined ? null : decodeElementJson(row.payload_json);
+      const proposal = operation.type === "delete" ? prior : operation.element;
+      if (proposal === null) continue;
+      const versionNonce = yield* random.intBetween(0, MAX_VERSION_NONCE, { halfOpen: true });
+      stamped.push({
+        ...proposal,
+        version:
+          Math.max(prior?.version ?? 0, operation.type === "delete" ? 0 : proposal.version) + 1,
+        versionNonce,
+        isDeleted:
+          operation.type === "delete"
+            ? true
+            : operation.type === "restore"
+              ? false
+              : proposal.isDeleted,
+      });
+    }
+
+    const indexChanged = stamped.some(
+      (element) => current.get(element.id)?.idx !== element.index || !current.has(element.id),
+    );
+    let changed = stamped;
+    if (indexChanged) {
+      const committed = yield* sql<{ readonly element_id: string; readonly idx: string | null }>`
+        SELECT element_id, idx FROM board_element WHERE board_id = ${board.board_id}
+      `.pipe(storage("read"));
+      const repaired = repairIndices(
+        committed.map((row) => ({ id: row.element_id, index: row.idx })),
+        stamped,
+      );
+      changed = stamped.map((element) => {
+        const index = repaired.get(element.id);
+        return index === undefined ? element : { ...element, index };
+      });
+    }
+    changed = changed.toSorted(compareCanonical);
+
+    const revision = board.revision + 1;
+    const orderRevision = indexChanged ? board.order_revision + 1 : board.order_revision;
+    const settings = batch.settings;
+    const result: BoardApplyResult = {
+      revision,
+      orderRevision,
+      elements: changed.map((element) => ({
+        id: element.id,
+        version: element.version,
+        versionNonce: element.versionNonce,
+        index: element.index,
+      })),
+    };
+    const updatedAt = DateTime.formatIso(yield* DateTime.now);
+    const resultJson = yield* encodeApplyResultJson(result).pipe(Effect.orDie);
+    const rows = yield* Effect.forEach(changed, (element) =>
+      encodeElementJson(element).pipe(
+        Effect.orDie,
+        Effect.map((payloadJson) => ({ element, payloadJson })),
+      ),
+    );
+
+    yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          for (const { element, payloadJson } of rows) {
+            yield* sql`
+              INSERT INTO board_element (board_id, element_id, version, version_nonce, idx,
+                is_deleted, payload_json)
+              VALUES (${board.board_id}, ${element.id}, ${element.version},
+                ${element.versionNonce}, ${element.index}, ${element.isDeleted ? 1 : 0},
+                ${payloadJson})
+              ON CONFLICT (board_id, element_id) DO UPDATE SET
+                version = excluded.version,
+                version_nonce = excluded.version_nonce,
+                idx = excluded.idx,
+                is_deleted = excluded.is_deleted,
+                payload_json = excluded.payload_json
+            `;
+          }
+          for (const file of newFiles) {
+            yield* sql`
+              INSERT INTO board_file (board_id, file_id, mime_type, size, digest, created, bytes)
+              VALUES (${board.board_id}, ${file.ref.id}, ${file.ref.mimeType}, ${file.ref.size},
+                ${file.ref.digest}, ${file.ref.created}, ${new Uint8Array(file.bytes)})
+            `;
+          }
+          yield* sql`
+            UPDATE board SET
+              revision = ${revision},
+              order_revision = ${orderRevision},
+              view_background_color = ${settings?.viewBackgroundColor ?? board.view_background_color},
+              updated_at = ${updatedAt}
+            WHERE board_id = ${board.board_id}
+          `;
+          yield* sql`
+            INSERT INTO board_mutation (board_id, mutation_id, actor, payload_digest, result_json)
+            VALUES (${board.board_id}, ${batch.mutationId}, ${actor}, ${payloadDigest},
+              ${resultJson})
+          `;
+        }),
+      )
+      .pipe(storage("write"));
+
+    const delta: BoardDelta = {
+      boardId: batch.boardId,
+      revision,
+      orderRevision,
+      mutationId: batch.mutationId,
+      elements: changed,
+      ...(settings === undefined ? {} : { settings }),
+      ...(newFiles.length === 0 ? {} : { files: newFiles.map((file) => file.ref) }),
+    };
+    yield* PubSub.publish(channel.events, { type: "delta", delta });
+    return result;
+  });
+
+  const apply: BoardService["Service"]["apply"] = Effect.fn("BoardService.apply")(function* ({
+    actor,
+    batch,
+  }) {
+    yield* Effect.annotateCurrentSpan({
+      "orchestration_v2.thread_id": batch.threadId,
+      "board.operations": batch.operations.length,
+    });
+    yield* requireThread(batch.threadId);
+    const channel = yield* channelFor(boardOwnerKey(batch.threadId));
+    return yield* Semaphore.withPermit(channel.lock, commit(channel, actor, batch));
+  });
+
+  const getFiles: BoardService["Service"]["getFiles"] = Effect.fn("BoardService.getFiles")(
+    function* (input) {
+      yield* Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId });
+      yield* requireThread(input.threadId);
+      const board = yield* findBoard(boardOwnerKey(input.threadId)).pipe(storage("read"));
+      if (board === null || board.board_id !== input.boardId) {
+        return yield* new BoardNotFoundError({ threadId: input.threadId, boardId: input.boardId });
+      }
+      if (input.fileIds.length === 0) return [];
+      const rows = yield* sql<{
+        readonly file_id: string;
+        readonly mime_type: string;
+        readonly bytes: Uint8Array;
+      }>`
+        SELECT file_id, mime_type, bytes FROM board_file
+        WHERE board_id = ${board.board_id} AND file_id IN ${sql.in([...input.fileIds])}
+      `.pipe(storage("read"));
+      return rows.flatMap((row) =>
+        isBoardMimeType(row.mime_type)
+          ? [
+              {
+                id: row.file_id,
+                mimeType: row.mime_type,
+                dataURL: `data:${row.mime_type};base64,${Buffer.from(row.bytes).toString("base64")}`,
+              },
+            ]
+          : [],
+      );
+    },
+  );
+
+  const subscribe: BoardService["Service"]["subscribe"] = (threadId) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        yield* requireThread(threadId);
+        const ownerKey = boardOwnerKey(threadId);
+        const channel = yield* channelFor(ownerKey);
+        // Subscribing and reading under the commit lock means no commit falls between the two.
+        const [subscription, snapshot] = yield* Semaphore.withPermit(
+          channel.lock,
+          Effect.all([PubSub.subscribe(channel.events), readSnapshot(ownerKey, threadId)]),
+        );
+        const initial: BoardStreamEvent =
+          snapshot === null ? { type: "missing" } : { type: "snapshot", snapshot };
+        return Stream.concat(Stream.make(initial), Stream.fromSubscription(subscription));
+      }),
+    );
+
+  return BoardService.of({ get, create, apply, getFiles, subscribe });
+});
+
+export const layer = Layer.effect(BoardService, make);

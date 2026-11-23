@@ -3211,10 +3211,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "on the computer that opened this page"
-      ]
+      "c": [" ", "on the computer that opened this page"]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3226,10 +3223,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "· whoever runs it gets this access"
-      ]
+      "c": [" ", "· whoever runs it gets this access"]
     }
   ],
   "c54cc9c75db9dc58": "Only approve a sign-in you just started.",
@@ -5525,6 +5519,18 @@
   "f0d79aa56f06663f": "This file is too large to show in full. Counts include all changes.",
   "7fdde2b893ba1b9d": "Removed",
   "e58ce271d835b447": "Added",
+  "0453e9af053cbdd6": "Not saved yet · retrying",
+  "c6fa2905d56a750c": "Saved",
+  "280d236ac1c43321": "Loading board…",
+  "b43755e1830c95c9": "Update this environment's T3 Code server to use boards.",
+  "83293e871d9ef1e9": "This board could not be loaded.",
+  "2d2ea26e8137f78b": "This thread has no board yet.",
+  "97401a83f8a70e5e": "Create board",
+  "3948f138af0ad286": "Offline · read-only",
+  "9af4d074ea6bef17": "Someone changed this first. Your edit was not saved.",
+  "03f1a3ab1ab06e84": "This edit could not be saved.",
+  "97585565390197f6": "Discard",
+  "64a52ec7f792cc6e": "Keep as copy",
   "07b9970b662ab70d": "Show Mermaid source",
   "5a422b7be35243f5": "Show rendered diagram",
   "c0628ad999cbbbf5": "Show markdown source",
@@ -11211,7 +11217,6 @@
       }
     }
   ],
-  "97585565390197f6": "Discard",
   "c0fce4a3555c5c17": "Connect",
   "0d1eba54ff075d77": "Use it",
   "035dc7d3b0f3e526": "Thread titles and other generated text",
@@ -12388,7 +12393,6 @@
   "8d1dfbc57b91d58e": "Blank cache rates use the input price. Enter 0 for free tokens. A mapped model’s usage counts as the model it maps to.",
   "3823a9490a8a4778": "Mixed cells keep each environment’s rate until you edit them.",
   "a6b9c952d640c03a": "Not saved · {error}",
-  "c6fa2905d56a750c": "Saved",
   "d9e3a6d46b5fb3e2": "Changes apply to {destination}",
   "faa23eb0efd2a753": "Discard pending changes",
   "8b2c842e0f21cf71": "Discard changes",

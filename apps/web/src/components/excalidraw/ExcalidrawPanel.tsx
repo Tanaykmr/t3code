@@ -1,16 +1,20 @@
+import { useAtomValue } from "@effect/atom-react";
 import { Excalidraw, defaultLang, languages } from "@excalidraw/excalidraw";
-import type {
-  ExcalidrawInitialDataState,
-  ExcalidrawProps,
-  LibraryItems,
-} from "@excalidraw/excalidraw/types";
+import type { LibraryItems } from "@excalidraw/excalidraw/types";
 import "@excalidraw/excalidraw/index.css";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { AuthOrchestrationOperateScope, type ScopedThreadRef } from "@t3tools/contracts";
-import { useLocale } from "gt-react";
-import { useRef, useState } from "react";
+import { AsyncResult } from "effect/reactivity";
+import { T, useGT, useLocale } from "gt-react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useTheme } from "../../hooks/useTheme";
+import { boardEnvironment } from "../../state/board";
+import { useServerConfigs } from "../../state/entities";
+import { useConnectedEnvironmentIds } from "../../state/environments";
 import { useEnvironmentScope } from "../../state/session";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { Button } from "../ui/button";
+import { type ReadyBoardView, boardController } from "./boardController";
 
 declare global {
   interface Window {
@@ -24,14 +28,6 @@ window.EXCALIDRAW_ASSET_PATH = new URL(
 ).href;
 
 const LIBRARY_KEY = "t3code:excalidraw-library";
-
-type SceneDraft = {
-  elements: Parameters<NonNullable<ExcalidrawProps["onChange"]>>[0];
-  files: NonNullable<ExcalidrawInitialDataState["files"]>;
-  appState: { viewBackgroundColor: string };
-};
-
-const drafts = new Map<string, SceneDraft>();
 
 function readLibrary(): LibraryItems | undefined {
   try {
@@ -52,58 +48,110 @@ function editorLanguage(locale: string): string {
 }
 
 export function ExcalidrawPanel({ threadRef }: { threadRef: ScopedThreadRef }) {
-  const threadKey = scopedThreadKey(threadRef);
+  const config = useServerConfigs().get(threadRef.environmentId);
+  if (config === undefined) {
+    return (
+      <div role="status" className="p-4 text-sm text-muted-foreground">
+        <T>Loading board…</T>
+      </div>
+    );
+  }
+  if (config.environment.capabilities.boards !== true) {
+    return (
+      <div role="status" className="p-4 text-sm text-muted-foreground">
+        <T>Update this environment's T3 Code server to use boards.</T>
+      </div>
+    );
+  }
+  return <ThreadBoard threadRef={threadRef} />;
+}
+
+function ThreadBoard({ threadRef }: { threadRef: ScopedThreadRef }) {
+  const { environmentId, threadId } = threadRef;
+  const result = useAtomValue(boardEnvironment.view({ environmentId, input: { threadId } }));
+  const canEdit = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
+  const createBoard = useAtomCommand(boardEnvironment.create, { reportFailure: true });
+  const view = AsyncResult.getOrElse(result, () => null);
+
+  if (view === null) {
+    return (
+      <div role="status" className="p-4 text-sm text-muted-foreground">
+        {result._tag === "Failure" ? <T>This board could not be loaded.</T> : <T>Loading board…</T>}
+      </div>
+    );
+  }
+  if (view.status === "missing") {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-sm text-muted-foreground">
+        <T>This thread has no board yet.</T>
+        {canEdit ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void createBoard({ environmentId, input: { threadId } })}
+          >
+            <T>Create board</T>
+          </Button>
+        ) : null}
+      </div>
+    );
+  }
+  return (
+    <BoardEditor
+      key={`${scopedThreadKey(threadRef)}:${view.board.boardId}`}
+      threadRef={threadRef}
+      view={view}
+      canEdit={canEdit}
+    />
+  );
+}
+
+function BoardEditor(props: {
+  threadRef: ScopedThreadRef;
+  view: ReadyBoardView;
+  canEdit: boolean;
+}) {
+  const { threadRef, view, canEdit } = props;
+  const { environmentId, threadId } = threadRef;
+  const gt = useGT();
   const { resolvedTheme } = useTheme();
   const langCode = editorLanguage(useLocale());
-  const canEdit = useEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope);
+  const online = useConnectedEnvironmentIds().includes(environmentId);
+  const controller = boardController(`${scopedThreadKey(threadRef)}:${view.board.boardId}`, {
+    environmentId,
+    threadId,
+    boardId: view.board.boardId,
+  });
+  const saveState = useSyncExternalStore(controller.subscribe, controller.getSaveState);
   const composing = useRef(false);
-  const [initialData] = useState<ExcalidrawInitialDataState>(() => {
+  const [initialData] = useState(() => {
+    const scene = controller.initialScene(view);
     const libraryItems = readLibrary();
-    const draft = drafts.get(threadKey);
     return {
-      ...structuredClone(draft),
+      elements: scene.elements,
+      appState: { viewBackgroundColor: scene.viewBackgroundColor },
+      scrollToContent: scene.elements.length > 0,
       ...(libraryItems ? { libraryItems } : {}),
-      scrollToContent: draft !== undefined,
     };
   });
 
-  const capture: NonNullable<ExcalidrawProps["onChange"]> = (elements, appState, files) => {
-    if (
-      !canEdit ||
-      composing.current ||
-      appState.cursorButton === "down" ||
-      appState.newElement ||
-      appState.multiElement ||
-      appState.editingTextElement ||
-      appState.isResizing ||
-      appState.isRotating
-    ) {
-      return;
-    }
-    const previous = drafts.get(threadKey);
-    const { viewBackgroundColor } = appState;
-    const previousElements = previous?.elements ?? [];
-    const previousFiles = previous?.files ?? {};
-    const fileIds = Object.keys(files);
-    if (
-      (previous?.appState.viewBackgroundColor ?? "#ffffff") === viewBackgroundColor &&
-      previousElements.length === elements.length &&
-      elements.every((element, index) => {
-        const prior = previousElements[index];
-        return (
-          prior?.id === element.id &&
-          prior.version === element.version &&
-          prior.versionNonce === element.versionNonce &&
-          prior.index === element.index
-        );
-      }) &&
-      Object.keys(previousFiles).length === fileIds.length &&
-      fileIds.every((id) => previousFiles[id]?.dataURL === files[id]?.dataURL)
-    ) {
-      return;
-    }
-    drafts.set(threadKey, structuredClone({ elements, appState: { viewBackgroundColor }, files }));
-  };
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Pushes committed board state into the imperative editor.
+  useEffect(() => {
+    controller.setView(view);
+  }, [controller, view]);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Releases the imperative editor when it unmounts.
+  useEffect(() => () => controller.detach(), [controller]);
+
+  const status = !online
+    ? null
+    : saveState === "saving"
+      ? gt("Saving…")
+      : saveState === "retrying"
+        ? gt("Not saved yet · retrying")
+        : saveState === "saved"
+          ? gt("Saved")
+          : null;
 
   return (
     <div
@@ -117,13 +165,16 @@ export function ExcalidrawPanel({ threadRef }: { threadRef: ScopedThreadRef }) {
       }}
     >
       <Excalidraw
+        excalidrawAPI={controller.attach}
         initialData={initialData}
         theme={resolvedTheme}
         langCode={langCode}
-        viewModeEnabled={!canEdit}
+        viewModeEnabled={!canEdit || !online}
         handleKeyboardGlobally={false}
         validateEmbeddable={false}
-        onChange={capture}
+        onChange={(elements, appState) =>
+          controller.onChange(elements, appState, { composing: composing.current, canEdit })
+        }
         onLibraryChange={(items) => {
           try {
             window.localStorage.setItem(LIBRARY_KEY, JSON.stringify(items));
@@ -131,7 +182,42 @@ export function ExcalidrawPanel({ threadRef }: { threadRef: ScopedThreadRef }) {
             // Retain the editor's in-memory library if storage is blocked or full.
           }
         }}
+        renderTopRightUI={() =>
+          status === null || !canEdit ? null : (
+            <span role="status" className="self-center px-2 text-xs text-muted-foreground">
+              {status}
+            </span>
+          )
+        }
       />
+      {!online && canEdit ? (
+        <div
+          role="status"
+          className="pointer-events-none absolute inset-x-0 top-4 z-10 mx-auto w-fit rounded-md border bg-background px-3 py-1 text-xs text-muted-foreground"
+        >
+          <T>Offline · read-only</T>
+        </div>
+      ) : null}
+      {saveState === "conflict" || saveState === "rejected" ? (
+        <div
+          role="alert"
+          className="absolute inset-x-4 top-16 z-10 mx-auto flex max-w-md flex-wrap items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm shadow-sm"
+        >
+          <span className="min-w-0 flex-1">
+            {saveState === "conflict" ? (
+              <T>Someone changed this first. Your edit was not saved.</T>
+            ) : (
+              <T>This edit could not be saved.</T>
+            )}
+          </span>
+          <Button variant="ghost" size="sm" onClick={() => controller.discardRejected()}>
+            <T>Discard</T>
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => controller.keepRejectedAsCopy()}>
+            <T>Keep as copy</T>
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

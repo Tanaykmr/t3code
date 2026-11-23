@@ -26,10 +26,12 @@ mutation receipts for the lifetime of the board in the first release.
 The environment server owns the latest scene in its existing `statev2.sqlite`. Use a dedicated
 board service and tables for board metadata, element payloads keyed by ID, file references, and
 mutation receipts. Update changed element rows, the revision, and the receipt in one
-transaction. Keep file contents in the environment's authenticated asset storage. Stage uploads
-before commit, verify that a file belongs to this board before accepting a reference, and retain
-images reachable from tombstones so restoring an element also restores its image. Unreferenced
-staged uploads can expire. Opening a board after a restart reads committed rows directly.
+transaction. Image bytes ride inline in the edit batch and are stored in a `board_file` table in
+the same transaction, so a file always belongs to the board it was committed with and there is
+no staging to expire. Files are immutable and kept for the board's lifetime, so restoring an
+element also restores its image. (Note: this replaces the earlier asset-storage plan; the asset
+store would have needed staging and a second commit.) Opening a board after a restart reads
+committed rows directly.
 
 Create a board explicitly from the sidebar or the thread's agent, idempotently for its owning
 thread. Displaying a missing board has no write side effect. Closing a panel, ending a turn,
