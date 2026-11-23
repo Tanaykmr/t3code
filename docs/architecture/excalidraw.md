@@ -144,7 +144,9 @@ version, which is why normalized canonical order and echo suppression are releas
 | `board_apply`  | Apply a single create, patch, delete, or restore batch of typed element edits. Return actual committed IDs, their tokens and the board revision, or structured conflicts. Resolve new labels and arrow endpoints in the batch and enforce preconditions for existing dependencies. The agent rereads after a conflict before making another edit. |
 
 Use a small model-facing vocabulary for rectangles, diamonds, ellipses, text, arrows, and
-lines at launch, with optional labels and endpoint IDs. The server materializes native
+lines at launch, with optional labels and endpoint IDs. (Note: the first slice has no agent
+`restore`, and only arrows take endpoint IDs or labels, because 0.18.1 binds neither to lines.)
+The server materializes native
 records and updates safe fields on existing records without dropping the rest. Geometry,
 text wrapping, and two-way bindings need real fixtures from the pinned editor. Use a small
 headless materializer with explicit layout inputs and deterministic defaults. Excalidraw's
