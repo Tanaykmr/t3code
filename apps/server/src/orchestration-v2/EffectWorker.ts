@@ -643,6 +643,17 @@ export const layerExecutor: Layer.Layer<
                   }),
               ),
             );
+          case "board.cleanup":
+            return resourceCleanup.cleanupBoard(effect.threadId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "preview.cleanup":
             return resourceCleanup.cleanupPreviews(effect.threadId).pipe(
               Effect.mapError(

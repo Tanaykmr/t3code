@@ -326,4 +326,36 @@ describe("BoardService subscriptions", () => {
       ),
     ),
   );
+  it.effect("removes a deleted thread's board and tells its subscribers", () =>
+    Effect.gen(function* () {
+      const boards = yield* BoardService.BoardService;
+      const board = yield* boards.create(threadId);
+      yield* boards.apply({
+        actor: "session-a",
+        batch: batch(board, "r1", [{ type: "create", element: element("doomed") }]),
+      });
+      const ready = yield* Deferred.make<void>();
+      const fiber = yield* boards.subscribe(threadId).pipe(
+        Stream.tap(() => Deferred.succeed(ready, undefined)),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Deferred.await(ready);
+      yield* boards.remove(threadId);
+      const events: ReadonlyArray<BoardStreamEvent> = yield* Fiber.join(fiber);
+      expect(events.map((event) => event.type)).toEqual(["snapshot", "missing"]);
+      expect(yield* boards.get(threadId)).toBeNull();
+      yield* boards.remove(threadId);
+      expect((yield* boards.create(threadId)).boardId).not.toBe(board.boardId);
+    }).pipe(
+      Effect.provide(
+        BoardService.layer.pipe(
+          Layer.provide(SqlitePersistence.layerMemory),
+          Layer.provide(layerThreads),
+          Layer.provide(SecureRandom.layerWebCrypto),
+        ),
+      ),
+    ),
+  );
 });

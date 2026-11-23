@@ -68,6 +68,8 @@ export class BoardService extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<BoardFileData>, BoardReadFailure>;
     /** A `missing` or `snapshot` event, then committed changes in order. */
     readonly subscribe: (threadId: ThreadId) => Stream.Stream<BoardStreamEvent, BoardReadFailure>;
+    /** Deletes the thread's board with its files and receipts, for permanent thread deletion. */
+    readonly remove: (threadId: ThreadId) => Effect.Effect<void, BoardStorageError>;
   }
 >()("t3/board/BoardService") {}
 
@@ -656,7 +658,30 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  return BoardService.of({ get, create, apply, getFiles, subscribe });
+  const remove: BoardService["Service"]["remove"] = Effect.fn("BoardService.remove")(
+    function* (threadId) {
+      const ownerKey = boardOwnerKey(threadId);
+      const channel = yield* channelFor(ownerKey);
+      yield* Semaphore.withPermit(
+        channel.lock,
+        Effect.gen(function* () {
+          const board = yield* findBoard(ownerKey);
+          if (board === null) return;
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`DELETE FROM board_element WHERE board_id = ${board.board_id}`;
+              yield* sql`DELETE FROM board_file WHERE board_id = ${board.board_id}`;
+              yield* sql`DELETE FROM board_mutation WHERE board_id = ${board.board_id}`;
+              yield* sql`DELETE FROM board WHERE board_id = ${board.board_id}`;
+            }),
+          );
+          yield* PubSub.publish(channel.events, { type: "missing" });
+        }).pipe(storage("write")),
+      );
+    },
+  );
+
+  return BoardService.of({ get, create, apply, getFiles, subscribe, remove });
 });
 
 export const layer = Layer.effect(BoardService, make);
