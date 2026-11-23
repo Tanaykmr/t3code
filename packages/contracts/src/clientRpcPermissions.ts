@@ -99,6 +99,12 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksPairClient]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksPairLink]: AuthAccessWriteScope,
+  // Boat machines spend the owner's wallet and hold a workspace; deleting one is irreversible.
+  [WS_METHODS.boatCreate]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.boatStop]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.boatResume]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.boatDelete]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.boatSetApiKey]: AuthEnvironmentMaintainScope,
   // Send stores and sends a report from a thread's turn: the bar of running that thread.
   [WS_METHODS.agentFeedbackAnswerRequest]: AuthOrchestrationOperateScope,
 } as const;
