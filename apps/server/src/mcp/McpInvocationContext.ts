@@ -164,6 +164,8 @@ export interface McpInvocationScope {
   readonly origin?: string | undefined;
   /** False when the calling thread's project is on no forge T3 reads; `/mcp` reads it per request. */
   readonly forge?: boolean;
+  /** True when the calling thread is a bot's DM or room seat; `/mcp` reads it per request. */
+  readonly bot?: boolean;
 }
 
 /**
@@ -244,6 +246,13 @@ export const hiddenUnlessWorkflowEvents = (): boolean => {
   const fiber = Fiber.getCurrent();
   const scope = fiber && Context.getOrUndefined(fiber.context, McpInvocationContext);
   return scope !== undefined && scope.thread === undefined && scope.workflows === true;
+};
+
+/** `McpSchema.EnabledWhen` for bot tools: only a bot's own threads see them. */
+export const hiddenUnlessBotThread = (): boolean => {
+  const fiber = Fiber.getCurrent();
+  const scope = fiber && Context.getOrUndefined(fiber.context, McpInvocationContext);
+  return scope?.bot === true;
 };
 
 /** `McpSchema.EnabledWhen` for tools that act on the thread's forge, hidden where it has none. */

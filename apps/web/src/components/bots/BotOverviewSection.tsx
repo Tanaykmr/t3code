@@ -3,12 +3,14 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { BotId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/reactivity";
 import { ArchiveIcon, ArchiveRestoreIcon, FolderIcon, PencilIcon } from "lucide-react";
-import { T, useGT } from "gt-react";
+import { T, msg, useGT, useMessages } from "gt-react";
 import { useState } from "react";
 
-import { useBotForThread } from "../../state/bots";
+import { useBotForThread, useEnvironmentBots } from "../../state/bots";
 import { useProject } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -106,6 +108,62 @@ export function BotOverviewSection(props: {
           {archived ? <T>Restore bot</T> : <T>Archive bot</T>}
         </ThreadDetailsControl>
       </div>
+      <BotPeerActivity environmentId={props.environmentId} botId={bot.id} />
     </ThreadDetailsSection>
   );
 }
+
+const PEER_ACTIVITY_ROWS = 5;
+
+/** Messages this bot exchanged with other bots, and hand-offs out of its DM, newest first. */
+function BotPeerActivity(props: { readonly environmentId: EnvironmentId; readonly botId: BotId }) {
+  const gt = useGT();
+  const m = useMessages();
+  const channel = AsyncResult.getOrElse(
+    useAtomValue(
+      serverEnvironment.botChannelLive({
+        environmentId: props.environmentId,
+        input: { kind: "bot", botId: props.botId },
+      }),
+    ),
+    () => null,
+  );
+  const names = new Map(useEnvironmentBots().map(({ bot }) => [bot.id, bot.name]));
+  const rows = (channel?.messages ?? []).toReversed().slice(0, PEER_ACTIVITY_ROWS);
+  if (rows.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-col gap-2 border-t border-border/65 px-2.5 pt-3">
+      <h4 className="text-2xs font-medium text-muted-foreground">
+        <T>Bot messages</T>
+      </h4>
+      <ul className="flex flex-col gap-2">
+        {rows.map((message) => {
+          const from =
+            message.sender.kind === "bot"
+              ? (names.get(message.sender.botId) ?? gt("Bot"))
+              : gt("You");
+          const deliveries = (channel?.deliveries ?? []).filter((d) => d.messageId === message.id);
+          const to = deliveries.map((d) => names.get(d.targetBotId) ?? gt("Bot")).join(", ");
+          const status = deliveries[0]?.status;
+          return (
+            <li key={message.id} className="flex flex-col gap-0.5 text-xs">
+              <span className="text-muted-foreground">
+                {to === "" ? from : gt("{from} to {to}", { from, to })}
+                {status === undefined ? null : ` · ${m(DELIVERY_STATUS_LABEL[status])}`}
+              </span>
+              <span className="line-clamp-2 text-foreground/80">{message.text}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+const DELIVERY_STATUS_LABEL = {
+  queued: msg("Queued", { $context: "bot delivery status" }),
+  accepted: msg("Working", { $context: "bot delivery status" }),
+  settled: msg("Delivered", { $context: "bot delivery status" }),
+  blocked: msg("Blocked", { $context: "bot delivery status" }),
+  cancelled: msg("Stopped", { $context: "bot delivery status" }),
+} as const;

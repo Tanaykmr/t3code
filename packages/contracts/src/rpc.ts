@@ -454,11 +454,19 @@ import {
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
 import {
+  BotChannelQuery,
+  BotChannelSnapshot,
   BotCreateInput,
   BotDirectory,
   BotError,
+  BotHandoffInput,
   BotMutationResult,
   BotRefInput,
+  BotRoomCreateInput,
+  BotRoomMutationResult,
+  BotRoomSendInput,
+  BotRoomUpdateInput,
+  BotSendResult,
   BotUpdateInput,
 } from "./bots.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
@@ -656,6 +664,11 @@ export const WS_METHODS = {
   botsUpdate: "bots.update",
   botsArchive: "bots.archive",
   botsRestore: "bots.restore",
+  botsCreateRoom: "bots.createRoom",
+  botsUpdateRoom: "bots.updateRoom",
+  botsSubscribeChannel: "bots.subscribeChannel",
+  botsSendRoomMessage: "bots.sendRoomMessage",
+  botsHandoff: "bots.handoff",
 
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksUpsert: "scheduledTasks.upsert",
@@ -2410,6 +2423,37 @@ const WsBotsRestoreRpc = Rpc.make(WS_METHODS.botsRestore, {
   error: Schema.Union([BotError, EnvironmentAuthorizationError]),
 });
 
+const WsBotsCreateRoomRpc = Rpc.make(WS_METHODS.botsCreateRoom, {
+  payload: BotRoomCreateInput,
+  success: BotRoomMutationResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsUpdateRoomRpc = Rpc.make(WS_METHODS.botsUpdateRoom, {
+  payload: BotRoomUpdateInput,
+  success: BotRoomMutationResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsSubscribeChannelRpc = Rpc.make(WS_METHODS.botsSubscribeChannel, {
+  payload: BotChannelQuery,
+  success: BotChannelSnapshot,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsBotsSendRoomMessageRpc = Rpc.make(WS_METHODS.botsSendRoomMessage, {
+  payload: BotRoomSendInput,
+  success: BotSendResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsHandoffRpc = Rpc.make(WS_METHODS.botsHandoff, {
+  payload: BotHandoffInput,
+  success: BotSendResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2599,6 +2643,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsUpdateRpc,
   WsBotsArchiveRpc,
   WsBotsRestoreRpc,
+  WsBotsCreateRoomRpc,
+  WsBotsUpdateRoomRpc,
+  WsBotsSubscribeChannelRpc,
+  WsBotsSendRoomMessageRpc,
+  WsBotsHandoffRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,

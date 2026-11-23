@@ -40,8 +40,13 @@ export const layer = Layer.effect(
     const sql = yield* SqlClient.SqlClient;
     yield* ensureBotSchema;
     const forThread = Effect.fn("BotTurnContext.forThread")(function* (threadId: ThreadId) {
+      // A bot's DM or its seat in a room.
       const rows = yield* sql<{ name: string; title: string; persona: string }>`
         SELECT name, title, persona FROM bots WHERE dm_thread_id = ${threadId}
+        UNION ALL
+        SELECT bots.name, bots.title, bots.persona FROM bot_room_threads
+        JOIN bots ON bots.bot_id = bot_room_threads.bot_id
+        WHERE bot_room_threads.thread_id = ${threadId}
       `.pipe(
         NodeSqliteClient.readOnly,
         Effect.catch((cause) =>

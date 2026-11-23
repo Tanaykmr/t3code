@@ -1662,6 +1662,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:bots:live",
       tag: WS_METHODS.botsSubscribe,
     }),
+    botChannelLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:bots:channel",
+      tag: WS_METHODS.botsSubscribeChannel,
+    }),
     scheduledTasksLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,
@@ -1943,6 +1947,22 @@ export function createServerEnvironmentAtoms<R, E>(
     restoreBot: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bot:restore",
       tag: WS_METHODS.botsRestore,
+    }),
+    createBotRoom: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot-room:create",
+      tag: WS_METHODS.botsCreateRoom,
+    }),
+    updateBotRoom: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot-room:update",
+      tag: WS_METHODS.botsUpdateRoom,
+    }),
+    sendBotRoomMessage: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot-room:send",
+      tag: WS_METHODS.botsSendRoomMessage,
+    }),
+    handoffToBots: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:handoff",
+      tag: WS_METHODS.botsHandoff,
     }),
     upsertScheduledTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:upsert",

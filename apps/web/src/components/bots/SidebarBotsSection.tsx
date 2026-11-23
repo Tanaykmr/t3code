@@ -1,13 +1,13 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import { type EnvironmentBot, botActivity } from "@t3tools/client-runtime/state/bots";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { ChevronDownIcon, PlusIcon } from "lucide-react";
+import { ChevronDownIcon, MessagesSquareIcon, PlusIcon } from "lucide-react";
 import { T, useGT } from "gt-react";
 import { memo, useState } from "react";
 import * as Schema from "effect/Schema";
 
 import { useLocalStorage } from "../../hooks/useLocalStorage";
-import { useBotEnvironmentIds, useEnvironmentBots } from "../../state/bots";
+import { useBotEnvironmentIds, useEnvironmentBotRooms, useEnvironmentBots } from "../../state/bots";
 import { useQuietThreadShell } from "../../state/entities";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { cn } from "~/lib/utils";
@@ -15,6 +15,7 @@ import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { BotAvatarIcon } from "./BotAvatarIcon";
 import { openBotEditor } from "./BotEditorDialog";
+import { openBotRoomEditor } from "./BotRoomDialog";
 
 /** The Bots directory above the thread list: one row per bot, opening its DM. */
 export function SidebarBotsSection(props: { readonly routeThreadKey: string | null }) {
@@ -84,7 +85,73 @@ export function SidebarBotsSection(props: { readonly routeThreadKey: string | nu
             : null}
         </ul>
       )}
+      {collapsed ? null : <SidebarRooms environmentId={environmentIds[0]!} />}
     </section>
+  );
+}
+
+/** Rooms sit under the bots: shared chats where @-chips pick who answers. */
+function SidebarRooms(props: { readonly environmentId: EnvironmentBot["environmentId"] }) {
+  const gt = useGT();
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const rooms = useEnvironmentBotRooms();
+  const shown = rooms.filter((entry) => entry.room.archivedAt === null);
+  const archived = rooms.length - shown.length;
+  return (
+    <div className="mt-1">
+      <div className="flex h-7 items-center">
+        <span className="flex-1 px-(--sidebar-row-content-inset) text-xs text-sidebar-muted-foreground">
+          <T>Rooms</T>
+        </span>
+        <Button
+          size="icon-xs"
+          variant="ghost-muted"
+          aria-label={gt("New room")}
+          onClick={() => openBotRoomEditor({ mode: "create", environmentId: props.environmentId })}
+        >
+          <PlusIcon aria-hidden />
+        </Button>
+      </div>
+      <ul className="flex flex-col gap-px">
+        {[...shown, ...rooms.filter((entry) => entry.room.archivedAt !== null)].map((entry) => {
+          const href = `/rooms/${entry.environmentId}/${entry.room.id}`;
+          const isActive = pathname === href;
+          return (
+            <li key={href} className="list-none">
+              <Link
+                to="/rooms/$environmentId/$roomId"
+                params={{ environmentId: entry.environmentId, roomId: entry.room.id }}
+                aria-current={isActive ? "page" : undefined}
+                className={cn(
+                  "flex w-full items-center gap-2.5 rounded-md px-(--sidebar-row-content-inset) py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  isActive
+                    ? "bg-sidebar-row-active text-sidebar-foreground"
+                    : "text-sidebar-foreground hover:bg-sidebar-row-hover",
+                  entry.room.archivedAt !== null && !isActive && "text-sidebar-muted-foreground",
+                )}
+              >
+                <MessagesSquareIcon
+                  aria-hidden
+                  strokeWidth={1.75}
+                  className="size-4 shrink-0 text-(--sidebar-icon-color)"
+                />
+                <span className="min-w-0 flex-1 truncate">{entry.room.name}</span>
+                <span className="shrink-0 text-xs text-sidebar-muted-foreground">
+                  {entry.room.archivedAt !== null
+                    ? gt("Archived")
+                    : gt("{count} bots", { count: String(entry.room.memberBotIds.length) })}
+                </span>
+              </Link>
+            </li>
+          );
+        })}
+        {rooms.length === 0 || (shown.length === 0 && archived === 0) ? (
+          <li className="px-(--sidebar-row-content-inset) py-1 text-xs text-sidebar-muted-foreground">
+            <T>No rooms yet.</T>
+          </li>
+        ) : null}
+      </ul>
+    </div>
   );
 }
 

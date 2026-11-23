@@ -1,4 +1,4 @@
-import type { Bot, EnvironmentId } from "@t3tools/contracts";
+import type { Bot, BotMention, BotRoom, EnvironmentId } from "@t3tools/contracts";
 
 import { scopedThreadKey } from "../environment/scoped.ts";
 
@@ -9,13 +9,53 @@ export interface EnvironmentBot {
 
 const ACTIVE_RUN_STATUSES = new Set(["preparing", "queued", "starting", "running", "waiting"]);
 
-/** The DM threads bots own, keyed like thread shells, so thread lists can leave them out. */
-export function botDmThreadKeys(entries: ReadonlyArray<EnvironmentBot>): ReadonlySet<string> {
-  return new Set(
-    entries.map(({ environmentId, bot }) =>
+export interface EnvironmentBotRoom {
+  readonly environmentId: EnvironmentId;
+  readonly room: BotRoom;
+}
+
+/**
+ * The threads bots own (DMs and room seats), keyed like thread shells, so
+ * thread lists can leave them out.
+ */
+export function botDmThreadKeys(
+  entries: ReadonlyArray<EnvironmentBot>,
+  rooms: ReadonlyArray<EnvironmentBotRoom> = [],
+): ReadonlySet<string> {
+  return new Set([
+    ...entries.map(({ environmentId, bot }) =>
       scopedThreadKey({ environmentId, threadId: bot.dmThreadId }),
     ),
-  );
+    ...rooms.flatMap(({ environmentId, room }) =>
+      room.participants.map((seat) => scopedThreadKey({ environmentId, threadId: seat.threadId })),
+    ),
+  ]);
+}
+
+/**
+ * The chips a composer keeps, in order, for names still present in the text. A typed
+ * `@Name` with no chip routes nowhere.
+ */
+export function mentionsInText(
+  text: string,
+  chips: ReadonlyArray<BotMention>,
+): ReadonlyArray<BotMention> {
+  const seen = new Set<string>();
+  return chips.filter((chip) => {
+    if (seen.has(chip.botId) || !text.includes(`@${chip.label}`)) return false;
+    seen.add(chip.botId);
+    return true;
+  });
+}
+
+/** The `@query` being typed at the caret, if any. */
+export function mentionQueryAt(
+  text: string,
+  caret: number,
+): { start: number; query: string } | null {
+  const match = /(^|\s)@([\p{L}\p{N}_.-]*)$/u.exec(text.slice(0, caret));
+  if (match === null) return null;
+  return { start: caret - match[2]!.length - 1, query: match[2]! };
 }
 
 export function sortBots(entries: ReadonlyArray<EnvironmentBot>): ReadonlyArray<EnvironmentBot> {
