@@ -61,11 +61,13 @@ describe("workspace root navigation", () => {
     expect(workspaceUsesColumns("usage", true)).toBe(true);
     expect(workspaceUsesColumns("threads")).toBe(true);
     expect(workspaceUsesColumns("pullRequests")).toBe(true);
+    expect(workspaceUsesColumns("bots")).toBe(true);
   });
 
   it("keeps the registered defaults while customization is unavailable", () => {
     expect(resolveWorkspaceTabOrder(undefined)).toEqual([
       "threads",
+      "bots",
       "pullRequests",
       "issues",
       "usage",
@@ -267,6 +269,7 @@ vi.mock("../../pull-requests/PullRequestFilterMenuContext", () => ({
 }));
 vi.mock("../../pull-requests/PullRequestsScreen", () => ({ PullRequestsScreen: () => null }));
 vi.mock("../../issues/IssuesScreen", () => ({ IssuesScreen: () => null }));
+vi.mock("../../bots/BotsScreen", () => ({ BotsScreen: () => null }));
 vi.mock("./ListSearchToolbar.android", () => ({ ListSearchToolbar: () => null }));
 vi.mock("./AndroidWorkspaceNavigation", () => ({
   AndroidWorkspaceNavigation: () => null,
