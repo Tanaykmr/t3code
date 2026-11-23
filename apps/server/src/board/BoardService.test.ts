@@ -358,4 +358,58 @@ describe("BoardService subscriptions", () => {
       ),
     ),
   );
+  it.effect("rejects invalid tombstone transitions, missing image bytes, and huge versions", () =>
+    Effect.gen(function* () {
+      const boards = yield* BoardService.BoardService;
+      const board = yield* boards.create(threadId);
+      const created = yield* boards.apply({
+        actor: "session-a",
+        batch: batch(board, "t1", [{ type: "create", element: element("live") }]),
+      });
+      const live = created.elements[0];
+      assert(live !== undefined);
+      const replaceAsDelete = yield* boards
+        .apply({
+          actor: "session-a",
+          batch: batch(board, "t2", [
+            {
+              type: "restore",
+              element: element("live", { version: live.version }),
+              expected: token(live),
+            },
+          ]),
+        })
+        .pipe(Effect.flip);
+      expect(replaceAsDelete).toMatchObject({
+        _tag: "BoardConflictError",
+        conflicts: [{ id: "live", current: token(live) }],
+      });
+      const missingFile = yield* boards
+        .apply({
+          actor: "session-a",
+          batch: batch(board, "t3", [
+            { type: "create", element: element("picture", { type: "image", fileId: "nope" }) },
+          ]),
+        })
+        .pipe(Effect.flip);
+      expect(missingFile).toMatchObject({ _tag: "BoardInvalidBatchError", reason: "file-missing" });
+      const huge = yield* boards
+        .apply({
+          actor: "session-a",
+          batch: batch(board, "t4", [
+            { type: "create", element: element("huge", { version: Number.MAX_SAFE_INTEGER }) },
+          ]),
+        })
+        .pipe(Effect.flip);
+      expect(huge).toMatchObject({ _tag: "BoardInvalidBatchError", reason: "invalid-version" });
+    }).pipe(
+      Effect.provide(
+        BoardService.layer.pipe(
+          Layer.provide(SqlitePersistence.layerMemory),
+          Layer.provide(layerThreads),
+          Layer.provide(SecureRandom.layerWebCrypto),
+        ),
+      ),
+    ),
+  );
 });

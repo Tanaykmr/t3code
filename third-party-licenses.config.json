@@ -237,6 +237,46 @@
       ]
     },
     {
+      "bundles": ["web", "desktop"],
+      "license": "OFL-1.1",
+      "name": "Excalidraw editor fonts",
+      "sourceUrl": "https://github.com/excalidraw/excalidraw/tree/a2ec2889babf7d2295469c6d90ebe77fae57df84/packages/excalidraw/fonts",
+      "generatedNotices": [
+        {
+          "licenseId": "OFL-1.1",
+          "copyrights": [
+            "Copyright (c) 2024 by Excalidraw (Excalifont)",
+            "Copyright (c) 2021 - Present, Ellinor Rapp, with Reserved Font Name Virgil",
+            "Copyright (c) 2020 LXGW (Xiaolai)",
+            "Copyright 2014 The Nunito Project Authors (https://github.com/googlefonts/nunito)",
+            "Copyright (c) 2011 Juan Montoreano, with Reserved Font Name Lilita One",
+            "Copyright (c) 2012 Red Hat, Inc. (Liberation Sans)",
+            "Copyright (c) 2019 - Present, Microsoft Corporation, with Reserved Font Name Cascadia Code",
+            "Copyright 2010 The Assistant Project Authors, with Reserved Font Name 'Source'"
+          ],
+          "preamble": [
+            "Font files bundled with @excalidraw/excalidraw 0.18.1 and served under assets/excalidraw/fonts."
+          ]
+        }
+      ]
+    },
+    {
+      "bundles": ["web", "desktop"],
+      "license": "MIT",
+      "name": "Comic Shanns font (Excalidraw editor)",
+      "sourceUrl": "https://github.com/shannpersand/comic-shanns",
+      "generatedNotices": [
+        {
+          "licenseId": "MIT",
+          "copyrights": [
+            "Copyright (c) 2018 Shannon Miwa",
+            "Copyright (c) 2023 Jesus Gonzalez",
+            "Copyright (c) 2023 Rodrigo Batista de Moraes"
+          ]
+        }
+      ]
+    },
+    {
       "bundles": ["ios", "android", "mobile", "web", "desktop"],
       "license": "OFL-1.1",
       "name": "KaTeX mathematical fonts",

@@ -26,7 +26,8 @@ const element = (id: string, overrides: Partial<BoardElement> = {}): BoardElemen
 const take = (session: ReturnType<typeof createBoardSession>, mutationId = "m1") =>
   takeBatch(session, { committedFileIds: new Set(), editorFiles: {}, mutationId });
 
-const scene = (elements: ReadonlyArray<BoardElement>, orderRevision = 1) => ({
+const scene = (elements: ReadonlyArray<BoardElement>, orderRevision = 1, revision = 1) => ({
+  revision,
   elements,
   orderRevision,
   viewBackgroundColor: "#ffffff",
@@ -53,14 +54,14 @@ describe("board sync", () => {
     });
     expect(session.drafts.size).toBe(0);
     expect(observeEditor(session, [element("a")], "#ffffff")).toBe(false);
-    expect(
-      reconcile(
-        session,
-        scene([element("a", { version: 2, versionNonce: 99 })]),
-        [element("a")],
-        new Set(),
-      ),
-    ).toBeNull();
+    // Before the stream reaches the commit, the older record must not roll the editor back.
+    expect(reconcile(session, scene([], 1, 0), [element("a")], new Set())).toBeNull();
+    const canonical = element("a", { version: 2, versionNonce: 99, index: "aa" });
+    const next = reconcile(session, scene([canonical]), [element("a")], new Set());
+    expect(next?.applied).toEqual([canonical]);
+    markApplied(session, next!.applied, new Map([["a", 2]]), scene([canonical]));
+    expect(reconcile(session, scene([canonical]), [canonical], new Set())).toBeNull();
+    expect(observeEditor(session, [canonical], "#ffffff")).toBe(false);
   });
 
   it("expects the token of the record the edit started from, and extends its own receipt", () => {
@@ -102,9 +103,74 @@ describe("board sync", () => {
     expect(take(session)?.expectedOrderRevision).toBe(1);
   });
 
+  it("freezes the reorder fence at the order the edit started from", () => {
+    const session = synced([element("a"), element("b")]);
+    observeEditor(session, [element("a", { version: 2, index: "b0" }), element("b")], "#ffffff");
+    // Another client reorders before this draft is sent.
+    session.shownOrderRevision = 4;
+    expect(take(session)?.expectedOrderRevision).toBe(1);
+  });
+
+  it("deletes records that a scene-replacing import dropped", () => {
+    const session = synced([element("a")]);
+    expect(observeEditor(session, [element("b")], "#ffffff")).toBe(true);
+    expect(take(session)?.operations).toEqual(
+      expect.arrayContaining([
+        { type: "delete", id: "a", expected: { version: 1, versionNonce: 10 } },
+        { type: "create", element: element("b") },
+      ]),
+    );
+  });
+
+  it("sends each new image with its bytes and holds images whose bytes are missing", () => {
+    const session = synced([]);
+    const images = Array.from({ length: 10 }, (_, index) =>
+      element(`i${index}`, { type: "image", fileId: `f${index}` }),
+    );
+    observeEditor(session, images, "#ffffff");
+    const editorFiles = Object.fromEntries(
+      images
+        .slice(0, 9)
+        .map((_, index) => [`f${index}`, { mimeType: "image/png", dataURL: "data:" }]),
+    );
+    const batch = takeBatch(session, {
+      committedFileIds: new Set(),
+      editorFiles,
+      mutationId: "m1",
+    });
+    expect(batch?.files.map((file) => file.id)).toEqual(
+      batch?.operations.map((operation) =>
+        operation.type === "create" ? operation.element["fileId"] : null,
+      ),
+    );
+    expect(batch?.operations).toHaveLength(8);
+    expect(session.drafts.has("i8") && session.drafts.has("i9")).toBe(true);
+  });
+
+  it("records the sent deletion state, not a newer local undo", () => {
+    const session = synced([element("a")]);
+    observeEditor(session, [element("a", { version: 2, isDeleted: true })], "#ffffff");
+    take(session);
+    // The user undoes the delete before the receipt arrives.
+    observeEditor(session, [element("a", { version: 3 })], "#ffffff");
+    acknowledge(session, {
+      revision: 2,
+      orderRevision: 1,
+      elements: [{ id: "a", version: 2, versionNonce: 20, index: "aa" }],
+    });
+    expect(take(session, "m2")?.operations[0]).toMatchObject({
+      type: "restore",
+      expected: { version: 2, versionNonce: 20 },
+    });
+  });
+
   it("holds remote records under local drafts and gestures, and applies the rest", () => {
     const session = synced([element("a"), element("b"), element("c")]);
-    observeEditor(session, [element("a", { version: 2, x: 5 })], "#ffffff");
+    observeEditor(
+      session,
+      [element("a", { version: 2, x: 5 }), element("b"), element("c")],
+      "#ffffff",
+    );
     const remote = [
       element("a", { version: 3, versionNonce: 30 }),
       element("b", { version: 3, versionNonce: 30 }),

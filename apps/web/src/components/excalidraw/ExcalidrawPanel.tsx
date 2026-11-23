@@ -172,8 +172,8 @@ function BoardEditor(props: {
         viewModeEnabled={!canEdit || !online}
         handleKeyboardGlobally={false}
         validateEmbeddable={false}
-        onChange={(elements, appState) =>
-          controller.onChange(elements, appState, { composing: composing.current, canEdit })
+        onChange={(elements, appState, files) =>
+          controller.onChange(elements, appState, files, { composing: composing.current, canEdit })
         }
         onLibraryChange={(items) => {
           try {

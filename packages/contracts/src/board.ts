@@ -15,6 +15,13 @@ export const BOARD_BATCH_MAX_FILES = 8;
 /** Serialized size of one edit batch, files included. */
 export const BOARD_BATCH_MAX_BYTES = 24 * 1024 * 1024;
 export const BOARD_GET_FILES_MAX = 64;
+/** Element JSON a board, or one edit batch, may hold; image bytes are counted separately. */
+export const BOARD_MAX_ELEMENT_BYTES = 16 * 1024 * 1024;
+export const BOARD_BATCH_MAX_ELEMENT_BYTES = 4 * 1024 * 1024;
+/** Image bytes one board may hold. */
+export const BOARD_MAX_FILE_BYTES = 64 * 1024 * 1024;
+/** Image bytes one `getFiles` response may carry; the client asks again for the rest. */
+export const BOARD_GET_FILES_MAX_BYTES = 12 * 1024 * 1024;
 
 export const BoardId = TrimmedNonEmptyString.pipe(Schema.brand("BoardId"));
 export type BoardId = typeof BoardId.Type;
@@ -237,11 +244,13 @@ export class BoardMutationReuseError extends Schema.TaggedError<BoardMutationReu
 const BOARD_INVALID_BATCH_MESSAGES = {
   empty: "The edit changes nothing.",
   "duplicate-element": "The edit changes one element more than once.",
-  "board-full": `A board holds at most ${BOARD_MAX_ELEMENTS} elements.`,
+  "board-full": "The board is full.",
   "batch-too-large": "The edit is too large.",
   "file-invalid": "A file is not a supported image.",
   "file-too-large": "A file is too large.",
   "file-conflict": "A file id already holds different content.",
+  "file-missing": "An image refers to a file this board does not have.",
+  "invalid-version": "An element version is out of range.",
 } as const;
 
 export class BoardInvalidBatchError extends Schema.TaggedError<BoardInvalidBatchError>()(
@@ -255,6 +264,8 @@ export class BoardInvalidBatchError extends Schema.TaggedError<BoardInvalidBatch
       "file-invalid",
       "file-too-large",
       "file-conflict",
+      "file-missing",
+      "invalid-version",
     ]),
   },
 ) {

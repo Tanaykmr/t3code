@@ -22,8 +22,13 @@ export interface PendingBatch {
   readonly operations: ReadonlyArray<BoardOperation>;
   readonly settings: BoardSettings | undefined;
   readonly files: ReadonlyArray<BoardFileData>;
-  /** Editor version of each record as sent. */
-  readonly sent: ReadonlyMap<string, number>;
+  /** Each record as sent: its editor version and whether it was a deletion. */
+  readonly sent: ReadonlyMap<string, { readonly version: number; readonly isDeleted: boolean }>;
+}
+
+/** A committed edit of ours whose canonical record the stream has not delivered yet. */
+interface Receipt extends ShownRecord {
+  readonly revision: number;
 }
 
 /**
@@ -36,6 +41,9 @@ export interface BoardSession {
   readonly baseline: Map<string, number>;
   /** Unacknowledged local records, copied by value because the editor mutates its own. */
   readonly drafts: Map<string, BoardElement>;
+  /** Order revision each draft started from, so a reorder is fenced by what the user saw. */
+  readonly draftOrderRevision: Map<string, number>;
+  readonly receipts: Map<string, Receipt>;
   shownBackground: string | null;
   draftBackground: string | null;
   shownOrderRevision: number;
@@ -50,6 +58,8 @@ export function createBoardSession(): BoardSession {
     shown: new Map(),
     baseline: new Map(),
     drafts: new Map(),
+    draftOrderRevision: new Map(),
+    receipts: new Map(),
     shownBackground: null,
     draftBackground: null,
     shownOrderRevision: 0,
@@ -70,12 +80,22 @@ export function observeEditor(
   viewBackgroundColor: string,
 ): boolean {
   let changed = false;
+  const present = new Set<string>();
   for (const element of elements) {
+    present.add(element.id);
     if (session.baseline.get(element.id) === element.version) continue;
     const draft = session.drafts.get(element.id);
     if (draft?.version === element.version && draft.versionNonce === element.versionNonce) continue;
+    if (draft === undefined) session.draftOrderRevision.set(element.id, session.shownOrderRevision);
     // JSON drops the editor's `undefined` fields, which the wire format cannot carry.
     session.drafts.set(element.id, JSON.parse(JSON.stringify(element)) as BoardElement);
+    changed = true;
+  }
+  // Opening a file replaces the editor's scene; records it dropped are deletions.
+  for (const [id, shown] of session.shown) {
+    if (shown.isDeleted || present.has(id) || session.drafts.has(id)) continue;
+    session.drafts.set(id, { id, type: "deleted", ...base(session, id, shown), isDeleted: true });
+    session.draftOrderRevision.set(id, session.shownOrderRevision);
     changed = true;
   }
   const background =
@@ -88,6 +108,16 @@ export function observeEditor(
   }
   return changed;
 }
+
+const base = (session: BoardSession, id: string, shown: ShownRecord) => ({
+  version: (session.baseline.get(id) ?? shown.version) + 1,
+  versionNonce: shown.versionNonce,
+  index: shown.index,
+});
+
+/** The record a new edit is based on: our own unconfirmed receipt, else what the editor shows. */
+const basis = (session: BoardSession, id: string): ShownRecord | undefined =>
+  session.receipts.get(id) ?? session.shown.get(id);
 
 const isImage = (element: BoardElement): element is BoardElement & { readonly fileId: string } =>
   element.type === "image" && typeof element["fileId"] === "string";
@@ -106,15 +136,28 @@ export function takeBatch(
   if (session.pending !== null) return null;
   const operations: BoardOperation[] = [];
   const files: BoardFileData[] = [];
-  const sent = new Map<string, number>();
-  let reordered = false;
+  const sent = new Map<string, { readonly version: number; readonly isDeleted: boolean }>();
+  let fence: number | undefined;
   for (const [id, element] of session.drafts) {
     // Larger edits go out over several batches; the rest stay drafts for the next one.
     if (operations.length >= BOARD_MAX_OPERATIONS) break;
-    const shown = session.shown.get(id);
+    // An image travels with its bytes, or waits until they are loaded and the batch has room.
+    if (isImage(element) && !element.isDeleted && !input.committedFileIds.has(element.fileId)) {
+      if (!files.some((entry) => entry.id === element.fileId)) {
+        const file = input.editorFiles[element.fileId];
+        if (file === undefined || files.length >= BOARD_BATCH_MAX_FILES) continue;
+        files.push({
+          id: element.fileId,
+          mimeType: file.mimeType as BoardFileMimeType,
+          dataURL: file.dataURL,
+        });
+      }
+    }
+    const shown = basis(session, id);
     if (shown === undefined) {
       if (element.isDeleted) {
         session.drafts.delete(id);
+        session.draftOrderRevision.delete(id);
         session.baseline.set(id, element.version);
         continue;
       }
@@ -125,30 +168,19 @@ export function takeBatch(
       else if (!element.isDeleted && shown.isDeleted)
         operations.push({ type: "restore", element, expected });
       else operations.push({ type: "replace", element, expected });
-      if (element.index !== shown.index) reordered = true;
-    }
-    sent.set(id, element.version);
-    if (isImage(element) && !element.isDeleted && !input.committedFileIds.has(element.fileId)) {
-      const file = input.editorFiles[element.fileId];
-      if (
-        file !== undefined &&
-        files.length < BOARD_BATCH_MAX_FILES &&
-        !files.some((entry) => entry.id === element.fileId)
-      ) {
-        files.push({
-          id: element.fileId,
-          mimeType: file.mimeType as BoardFileMimeType,
-          dataURL: file.dataURL,
-        });
+      if (!element.isDeleted && element.index !== shown.index) {
+        const started = session.draftOrderRevision.get(id) ?? session.shownOrderRevision;
+        fence = fence === undefined ? started : Math.min(fence, started);
       }
     }
+    sent.set(id, { version: element.version, isDeleted: element.isDeleted });
   }
   const settings =
     session.draftBackground === null ? undefined : { viewBackgroundColor: session.draftBackground };
   if (operations.length === 0 && settings === undefined) return null;
   session.pending = {
     mutationId: input.mutationId,
-    expectedOrderRevision: reordered ? session.shownOrderRevision : undefined,
+    expectedOrderRevision: fence,
     operations,
     settings,
     files,
@@ -157,22 +189,28 @@ export function takeBatch(
   return session.pending;
 }
 
-/** Applies a receipt: later edits to the same records extend the accepted tokens. */
+/**
+ * Applies a receipt. The editor keeps its local copy until the stream delivers the canonical
+ * record, and later edits to the same records extend the accepted tokens.
+ */
 export function acknowledge(session: BoardSession, result: BoardApplyResult): void {
   const pending = session.pending;
   if (pending === null) return;
   for (const accepted of result.elements) {
-    const sentVersion = pending.sent.get(accepted.id);
-    const draft = session.drafts.get(accepted.id);
-    session.shown.set(accepted.id, {
+    const sent = pending.sent.get(accepted.id);
+    if (sent === undefined) continue;
+    session.receipts.set(accepted.id, {
       version: accepted.version,
       versionNonce: accepted.versionNonce,
       index: accepted.index,
-      isDeleted: draft?.isDeleted ?? false,
+      isDeleted: sent.isDeleted,
+      revision: result.revision,
     });
-    if (sentVersion === undefined) continue;
-    session.baseline.set(accepted.id, sentVersion);
-    if (draft?.version === sentVersion) session.drafts.delete(accepted.id);
+    session.baseline.set(accepted.id, sent.version);
+    if (session.drafts.get(accepted.id)?.version === sent.version) {
+      session.drafts.delete(accepted.id);
+      session.draftOrderRevision.delete(accepted.id);
+    }
   }
   if (pending.settings !== undefined) {
     session.shownBackground = pending.settings.viewBackgroundColor;
@@ -180,7 +218,6 @@ export function acknowledge(session: BoardSession, result: BoardApplyResult): vo
       session.draftBackground = null;
     }
   }
-  session.shownOrderRevision = Math.max(session.shownOrderRevision, result.orderRevision);
   session.pending = null;
 }
 
@@ -194,9 +231,11 @@ export function rejectPending(session: BoardSession): void {
   const rejected: BoardElement[] = [];
   for (const id of pending.sent.keys()) {
     const draft = session.drafts.get(id);
-    if (draft !== undefined) rejected.push(draft);
+    if (draft !== undefined && draft.type !== "deleted") rejected.push(draft);
     session.drafts.delete(id);
+    session.draftOrderRevision.delete(id);
     session.baseline.delete(id);
+    session.receipts.delete(id);
     if (session.shown.has(id)) session.shown.delete(id);
     else session.discard.add(id);
   }
@@ -206,6 +245,7 @@ export function rejectPending(session: BoardSession): void {
 }
 
 export interface CanonicalScene {
+  readonly revision: number;
   readonly elements: ReadonlyArray<BoardElement>;
   readonly orderRevision: number;
   readonly viewBackgroundColor: string;
@@ -238,6 +278,19 @@ export function reconcile<T extends { readonly id: string; readonly index: strin
   const applied: BoardElement[] = [];
   const next = new Map<string, T | BoardElement>(editor.map((element) => [element.id, element]));
   for (const record of canonical.elements) {
+    const receipt = session.receipts.get(record.id);
+    if (receipt !== undefined) {
+      // Until the stream reaches our commit, its older record must not roll the editor back.
+      if (canonical.revision < receipt.revision) continue;
+      session.receipts.delete(record.id);
+      const ours =
+        receipt.version === record.version && receipt.versionNonce === record.versionNonce;
+      if (session.drafts.has(record.id) || held.has(record.id)) {
+        // A newer local edit continues from our record; a later remote change makes it stale.
+        session.shown.set(record.id, ours ? toShown(record) : receipt);
+        continue;
+      }
+    }
     const shown = session.shown.get(record.id);
     if (shown?.version === record.version && shown.versionNonce === record.versionNonce) continue;
     if (session.drafts.has(record.id) || held.has(record.id)) continue;
@@ -254,6 +307,13 @@ export function reconcile<T extends { readonly id: string; readonly index: strin
   return { elements: [...next.values()].toSorted(order), applied };
 }
 
+const toShown = (record: BoardElement): ShownRecord => ({
+  version: record.version,
+  versionNonce: record.versionNonce,
+  index: record.index,
+  isDeleted: record.isDeleted,
+});
+
 /** Records what the editor holds after an inbound apply, so it never echoes back as an edit. */
 export function markApplied(
   session: BoardSession,
@@ -262,12 +322,7 @@ export function markApplied(
   canonical: Pick<CanonicalScene, "orderRevision">,
 ): void {
   for (const record of applied) {
-    session.shown.set(record.id, {
-      version: record.version,
-      versionNonce: record.versionNonce,
-      index: record.index,
-      isDeleted: record.isDeleted,
-    });
+    session.shown.set(record.id, toShown(record));
     session.baseline.set(record.id, editorVersions.get(record.id) ?? record.version);
   }
   session.shownOrderRevision = canonical.orderRevision;

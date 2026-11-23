@@ -37,6 +37,8 @@ export class BoardStreamGapError extends Schema.TaggedError<BoardStreamGapError>
   { expected: Schema.Number, received: Schema.Number },
 ) {}
 
+const MAX_GAP_REOPENS = 5;
+
 export const isBoardStreamGapError = Schema.is(BoardStreamGapError);
 
 const byIndex = (left: BoardElement, right: BoardElement) => {
@@ -104,6 +106,27 @@ export function reduceBoardEvent(
   }
 }
 
+/** Folds every event in order. A gap means this subscriber fell behind, so it reopens. */
+export function foldBoardStream<E, R>(
+  stream: Stream.Stream<BoardStreamEvent, E, R>,
+  reopened = 0,
+): Stream.Stream<BoardView, E, R> {
+  return stream.pipe(
+    Stream.mapAccumEffect(
+      (): BoardView | null => null,
+      (view, event) => {
+        const next = reduceBoardEvent(view, event);
+        return isBoardStreamGapError(next)
+          ? Effect.fail(next)
+          : Effect.succeed([next, [next]] as const);
+      },
+    ),
+    Stream.catchIf(isBoardStreamGapError, (gap) =>
+      reopened < MAX_GAP_REOPENS ? foldBoardStream(stream, reopened + 1) : Stream.die(gap),
+    ),
+  );
+}
+
 export function createBoardEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
@@ -113,19 +136,7 @@ export function createBoardEnvironmentAtoms<R, E>(
       label: "environment-data:board:view",
       tag: WS_METHODS.boardSubscribe,
       idleTtlMs: 0,
-      // Every delta must be folded in order; the atom then exposes only the latest view.
-      transform: (stream) =>
-        stream.pipe(
-          Stream.mapAccumEffect(
-            (): BoardView | null => null,
-            (view, event) => {
-              const next = reduceBoardEvent(view, event);
-              return isBoardStreamGapError(next)
-                ? Effect.die(next)
-                : Effect.succeed([next, [next]] as const);
-            },
-          ),
-        ),
+      transform: (stream) => foldBoardStream(stream),
     }),
     create: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:board:create",

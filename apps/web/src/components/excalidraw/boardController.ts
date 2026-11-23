@@ -3,6 +3,7 @@ import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 import type {
   AppState,
   BinaryFileData,
+  BinaryFiles,
   ExcalidrawImperativeAPI,
 } from "@excalidraw/excalidraw/types";
 import type { BoardView } from "@t3tools/client-runtime/state/board";
@@ -79,6 +80,8 @@ export class BoardController {
   private api: ExcalidrawImperativeAPI | null = null;
   private view: ReadyBoardView | null = null;
   private held: ReadonlySet<string> = new Set();
+  /** The editor's image bytes, kept so unsent images still save after the panel closes. */
+  private files: BinaryFiles = {};
   private readonly fetching = new Set<string>();
   private flushTimer: number | null = null;
   private retryTimer: number | null = null;
@@ -122,13 +125,16 @@ export class BoardController {
   readonly attach = (api: ExcalidrawImperativeAPI) => {
     this.api = api;
     this.sync();
+    if (hasUnsavedWork(this.session) && this.flushTimer === null) this.send();
   };
 
   detach() {
     this.api = null;
     this.held = new Set();
-    if (this.flushTimer !== null) window.clearTimeout(this.flushTimer);
+    if (this.flushTimer === null) return;
+    window.clearTimeout(this.flushTimer);
     this.flushTimer = null;
+    this.send();
   }
 
   setView(view: ReadyBoardView) {
@@ -139,8 +145,10 @@ export class BoardController {
   onChange(
     elements: ReadonlyArray<ExcalidrawElement>,
     appState: AppState,
+    files: BinaryFiles,
     input: { readonly composing: boolean; readonly canEdit: boolean },
   ) {
+    this.files = files;
     const gesture = gestureIds(appState, input.composing);
     const wasHeld = this.held.size > 0;
     this.held = gesture ?? new Set();
@@ -191,6 +199,7 @@ export class BoardController {
     const next = reconcile(
       session,
       {
+        revision: view.board.revision,
         elements: view.elements,
         orderRevision: view.board.orderRevision,
         viewBackgroundColor: view.settings.viewBackgroundColor,
@@ -263,16 +272,21 @@ export class BoardController {
   }
 
   private send() {
-    const { api, session, view } = this;
-    if (api === null || view === null) return;
+    const { session, view } = this;
+    if (view === null) return;
     const batch =
       session.pending ??
       takeBatch(session, {
         committedFileIds: new Set(view.files.map((file) => file.id)),
-        editorFiles: api.getFiles(),
+        editorFiles: this.api?.getFiles() ?? this.files,
         mutationId: randomUUID(),
       });
-    if (batch === null) return;
+    if (batch === null) {
+      // Drafts that cannot go yet, such as an image whose bytes are still loading, wait for
+      // the next edit or reopen.
+      this.setSaveState(hasUnsavedWork(session) ? "retrying" : "saved");
+      return;
+    }
     this.retryTimer = null;
     this.setSaveState("saving");
     void runAtomCommand(
@@ -298,8 +312,7 @@ export class BoardController {
       if (outcome._tag === "Success") {
         acknowledge(session, outcome.value);
         this.showCanonical();
-        if (hasUnsavedWork(session)) this.send();
-        else this.setSaveState("saved");
+        this.send();
         return;
       }
       const failure = squashAtomCommandFailure(outcome);

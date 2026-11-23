@@ -1,7 +1,9 @@
-import type { BoardElement, BoardSnapshot } from "@t3tools/contracts";
+import type { BoardElement, BoardSnapshot, BoardStreamEvent } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 import { describe, expect, it } from "@effect/vitest";
 
-import { isBoardStreamGapError, reduceBoardEvent } from "./board.ts";
+import { foldBoardStream, isBoardStreamGapError, reduceBoardEvent } from "./board.ts";
 
 const element = (id: string, index: string, version = 1): BoardElement => ({
   id,
@@ -64,4 +66,26 @@ describe("reduceBoardEvent", () => {
     const missing = reduceBoardEvent(ready, { type: "missing" });
     expect(missing).toEqual({ status: "missing" });
   });
+});
+
+describe("foldBoardStream", () => {
+  it.effect("reopens with a fresh snapshot after a gap", () =>
+    Effect.gen(function* () {
+      let opened = 0;
+      const source = Stream.suspend(() => {
+        opened += 1;
+        return opened === 1
+          ? Stream.make<Array<BoardStreamEvent>>({ type: "snapshot", snapshot }, delta(5, []))
+          : Stream.make<Array<BoardStreamEvent>>({
+              type: "snapshot",
+              snapshot: { ...snapshot, board: { ...snapshot.board, revision: 5 } },
+            });
+      });
+      const views = yield* Stream.runCollect(foldBoardStream(source));
+      expect(opened).toBe(2);
+      expect(views.map((view) => (view.status === "ready" ? view.board.revision : null))).toEqual([
+        3, 5,
+      ]);
+    }),
+  );
 });

@@ -3,7 +3,11 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   BOARD_BATCH_MAX_BYTES,
+  BOARD_BATCH_MAX_ELEMENT_BYTES,
   BOARD_FILE_MAX_BYTES,
+  BOARD_GET_FILES_MAX_BYTES,
+  BOARD_MAX_ELEMENT_BYTES,
+  BOARD_MAX_FILE_BYTES,
   BOARD_MAX_ELEMENTS,
   BOARD_SCENE_FORMAT_VERSION,
   BoardApplyResult,
@@ -77,7 +81,10 @@ export class BoardService extends Context.Service<
 const boardOwnerKey = (threadId: ThreadId): string => threadId;
 
 const DEFAULT_SETTINGS: BoardSettings = { viewBackgroundColor: "#ffffff" };
-const SUBSCRIBER_BUFFER = 1_024;
+// A subscriber that falls this far behind sees a revision gap and reopens with a snapshot.
+const SUBSCRIBER_BUFFER = 64;
+// Leaves headroom below the largest safe integer for the server's +1 stamp.
+const MAX_PROPOSAL_VERSION = 2 ** 52;
 const MAX_VERSION_NONCE = 2 ** 31;
 
 interface BoardRow {
@@ -95,6 +102,7 @@ interface ElementRow {
   readonly version: number;
   readonly version_nonce: number;
   readonly idx: string | null;
+  readonly is_deleted?: number;
   readonly payload_json: string;
 }
 
@@ -231,6 +239,23 @@ const sameToken = (row: ElementRow, expected: BoardElementToken) =>
 const operationElementId = (operation: BoardEditBatch["operations"][number]) =>
   operation.type === "delete" ? operation.id : operation.element.id;
 
+/** Delete needs a live element, restore a tombstone, and replace keeps the deleted state. */
+const transitionAllowed = (
+  operation: BoardEditBatch["operations"][number],
+  currentlyDeleted: boolean,
+): boolean => {
+  switch (operation.type) {
+    case "create":
+      return true;
+    case "delete":
+      return !currentlyDeleted;
+    case "restore":
+      return currentlyDeleted;
+    case "replace":
+      return operation.element.isDeleted === currentlyDeleted;
+  }
+};
+
 interface BoardChannel {
   readonly lock: Semaphore.Semaphore;
   readonly events: PubSub.PubSub<BoardStreamEvent>;
@@ -345,13 +370,23 @@ const make = Effect.gen(function* () {
               view_background_color, created_at, updated_at)
             VALUES (${row.board_id}, ${row.thread_id}, ${BOARD_SCENE_FORMAT_VERSION}, 0, 0,
               ${row.view_background_color}, ${now}, ${now})
-          `.pipe(storage("write"));
-          const board = toHeader(row, threadId);
-          yield* PubSub.publish(channel.events, {
-            type: "snapshot",
-            snapshot: { board, elements: [], settings: DEFAULT_SETTINGS, files: [] },
-          });
-          return board;
+          `.pipe(
+            storage("write"),
+            // A committed board must reach subscribers that saw it missing.
+            Effect.andThen(
+              PubSub.publish(channel.events, {
+                type: "snapshot",
+                snapshot: {
+                  board: toHeader(row, threadId),
+                  elements: [],
+                  settings: DEFAULT_SETTINGS,
+                  files: [],
+                },
+              }),
+            ),
+            Effect.uninterruptible,
+          );
+          return toHeader(row, threadId);
         }),
       );
     },
@@ -406,11 +441,24 @@ const make = Effect.gen(function* () {
       return yield* new BoardInvalidBatchError({ reason: "duplicate-element" });
     }
 
+    if (
+      batch.operations.some(
+        (operation) =>
+          operation.type !== "delete" &&
+          (operation.element.version < 0 || operation.element.version > MAX_PROPOSAL_VERSION),
+      )
+    ) {
+      return yield* new BoardInvalidBatchError({ reason: "invalid-version" });
+    }
+    if (JSON.stringify(batch.operations).length > BOARD_BATCH_MAX_ELEMENT_BYTES) {
+      return yield* new BoardInvalidBatchError({ reason: "batch-too-large" });
+    }
+
     const currentRows =
       touchedIds.length === 0
         ? []
         : yield* sql<ElementRow>`
-            SELECT element_id, version, version_nonce, idx, payload_json
+            SELECT element_id, version, version_nonce, idx, is_deleted, payload_json
             FROM board_element
             WHERE board_id = ${board.board_id} AND element_id IN ${sql.in(touchedIds)}
           `.pipe(storage("read"));
@@ -425,6 +473,9 @@ const make = Effect.gen(function* () {
       } else if (row === undefined) {
         conflicts.push({ id, current: null });
       } else if (!sameToken(row, operation.expected)) {
+        conflicts.push({ id, current: tokenOf(row) });
+      } else if (!transitionAllowed(operation, row.is_deleted === 1)) {
+        // The caller's view of whether this element is deleted is out of date.
         conflicts.push({ id, current: tokenOf(row) });
       }
     }
@@ -446,7 +497,12 @@ const make = Effect.gen(function* () {
       }
     }
 
-    const fileIds = [...new Set(files.map((file) => file.id))];
+    const referencedFileIds = batch.operations.flatMap((operation) => {
+      if (operation.type === "delete" || operation.element.isDeleted) return [];
+      const fileId = operation.element["fileId"];
+      return operation.element.type === "image" && typeof fileId === "string" ? [fileId] : [];
+    });
+    const fileIds = [...new Set([...files.map((file) => file.id), ...referencedFileIds])];
     const existingFiles =
       fileIds.length === 0
         ? []
@@ -478,6 +534,19 @@ const make = Effect.gen(function* () {
         },
         bytes: decoded.bytes,
       });
+    }
+
+    if (referencedFileIds.some((fileId) => !knownDigests.has(fileId))) {
+      return yield* new BoardInvalidBatchError({ reason: "file-missing" });
+    }
+    if (newFiles.length > 0) {
+      const [stored] = yield* sql<{ readonly total: number | null }>`
+        SELECT SUM(size) AS total FROM board_file WHERE board_id = ${board.board_id}
+      `.pipe(storage("read"));
+      const added = newFiles.reduce((total, file) => total + file.ref.size, 0);
+      if ((stored?.total ?? 0) + added > BOARD_MAX_FILE_BYTES) {
+        return yield* new BoardInvalidBatchError({ reason: "board-full" });
+      }
     }
 
     const stamped: Array<BoardElement> = [];
@@ -542,6 +611,29 @@ const make = Effect.gen(function* () {
       ),
     );
 
+    const [storedElements] = yield* sql<{ readonly total: number | null }>`
+      SELECT SUM(LENGTH(payload_json)) AS total FROM board_element
+      WHERE board_id = ${board.board_id}
+    `.pipe(storage("read"));
+    const replacedBytes = rows.reduce(
+      (total, { element }) => total + (current.get(element.id)?.payload_json.length ?? 0),
+      0,
+    );
+    const addedBytes = rows.reduce((total, { payloadJson }) => total + payloadJson.length, 0);
+    if ((storedElements?.total ?? 0) - replacedBytes + addedBytes > BOARD_MAX_ELEMENT_BYTES) {
+      return yield* new BoardInvalidBatchError({ reason: "board-full" });
+    }
+
+    const delta: BoardDelta = {
+      boardId: batch.boardId,
+      revision,
+      orderRevision,
+      mutationId: batch.mutationId,
+      elements: changed,
+      ...(settings === undefined ? {} : { settings }),
+      ...(newFiles.length === 0 ? {} : { files: newFiles.map((file) => file.ref) }),
+    };
+    // A durable receipt without a published delta would leave other editors stale.
     yield* sql
       .withTransaction(
         Effect.gen(function* () {
@@ -582,18 +674,11 @@ const make = Effect.gen(function* () {
           `;
         }),
       )
-      .pipe(storage("write"));
-
-    const delta: BoardDelta = {
-      boardId: batch.boardId,
-      revision,
-      orderRevision,
-      mutationId: batch.mutationId,
-      elements: changed,
-      ...(settings === undefined ? {} : { settings }),
-      ...(newFiles.length === 0 ? {} : { files: newFiles.map((file) => file.ref) }),
-    };
-    yield* PubSub.publish(channel.events, { type: "delta", delta });
+      .pipe(
+        storage("write"),
+        Effect.andThen(PubSub.publish(channel.events, { type: "delta", delta })),
+        Effect.uninterruptible,
+      );
     return result;
   });
 
@@ -619,13 +704,25 @@ const make = Effect.gen(function* () {
         return yield* new BoardNotFoundError({ threadId: input.threadId, boardId: input.boardId });
       }
       if (input.fileIds.length === 0) return [];
+      const sizes = yield* sql<{ readonly file_id: string; readonly size: number }>`
+        SELECT file_id, size FROM board_file
+        WHERE board_id = ${board.board_id} AND file_id IN ${sql.in([...input.fileIds])}
+      `.pipe(storage("read"));
+      // Always send at least one file; the client asks again for the ones left out.
+      let budget = BOARD_GET_FILES_MAX_BYTES;
+      const selected = sizes.flatMap((row, index) => {
+        if (index > 0 && row.size > budget) return [];
+        budget -= row.size;
+        return [row.file_id];
+      });
+      if (selected.length === 0) return [];
       const rows = yield* sql<{
         readonly file_id: string;
         readonly mime_type: string;
         readonly bytes: Uint8Array;
       }>`
         SELECT file_id, mime_type, bytes FROM board_file
-        WHERE board_id = ${board.board_id} AND file_id IN ${sql.in([...input.fileIds])}
+        WHERE board_id = ${board.board_id} AND file_id IN ${sql.in(selected)}
       `.pipe(storage("read"));
       return rows.flatMap((row) =>
         isBoardMimeType(row.mime_type)
