@@ -41,6 +41,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -723,6 +724,7 @@ export const layer: Layer.Layer<
     const providerEventIngestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const mcpAppModelContext = yield* McpAppModelContext.McpAppModelContext;
+    const botTurnContext = yield* BotTurnContext.optional;
     const previewAgentActivity = yield* PreviewAgentActivity.PreviewAgentActivity;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
@@ -2271,10 +2273,10 @@ export const layer: Layer.Layer<
           }),
         );
         yield* touchMcpCredential;
-        const appContext = yield* McpAppModelContext.forProvider(
-          mcpAppModelContext,
-          input.run.threadId,
-        );
+        const appContext = [
+          ...(yield* BotTurnContext.forProvider(botTurnContext, input.run.threadId)),
+          ...(yield* McpAppModelContext.forProvider(mcpAppModelContext, input.run.threadId)),
+        ];
         const turnInput = {
           appThread: input.appThread,
           threadId: input.run.threadId,

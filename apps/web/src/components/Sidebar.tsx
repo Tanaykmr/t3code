@@ -158,6 +158,9 @@ import {
 import { environmentPresentations } from "../state/presentation";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { environmentProjects } from "../state/projects";
+import { useBotDmThreadKeys } from "../state/bots";
+import { SidebarBotsSection } from "./bots/SidebarBotsSection";
+import { BotEditorDialogHost } from "./bots/BotEditorDialog";
 import { threadEnvironment } from "../state/threads";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../state/olderSettledShelf";
 import { useThreadSearch } from "../state/queries";
@@ -1120,7 +1123,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             ),
           ),
         );
-  const threads = useQuietThreadShells();
+  const allThreads = useQuietThreadShells();
+  const botDmThreadKeys = useBotDmThreadKeys();
+  // Bot DMs live in the Bots section, not among a project's threads.
+  const threads =
+    botDmThreadKeys.size === 0
+      ? allThreads
+      : allThreads.filter((thread) => !botDmThreadKeys.has(threadShellKey(thread)));
   const promotingDraftThreadKeys = usePromotingDraftThreadKeys();
   const listedThreads =
     promotingDraftThreadKeys.length === 0
@@ -3320,6 +3329,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         }
       >
         <SidebarGroup className="flex-1" role="presentation">
+          <BotEditorDialogHost />
+          {isSearchingThreads ? null : <SidebarBotsSection routeThreadKey={routeThreadKey} />}
           {isSearchingThreads ? (
             threadSearchResults.length > 0 ? (
               <TooltipProvider

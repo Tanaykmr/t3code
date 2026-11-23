@@ -22,6 +22,7 @@ import ProjectScriptsControl, {
 import { T, useGT } from "gt-react";
 import { useState, type ComponentProps } from "react";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
+import { BotOverviewSection } from "../bots/BotOverviewSection";
 import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
@@ -203,6 +204,9 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
         return (
           <>
             <div className="group/details-items">
+              {props.draftId ? null : (
+                <BotOverviewSection environmentId={props.environmentId} threadId={props.threadId} />
+              )}
               {show.environment || show.openIn || show.scripts ? (
                 <ThreadDetailsSection
                   headingId="thread-details-workspace-heading"

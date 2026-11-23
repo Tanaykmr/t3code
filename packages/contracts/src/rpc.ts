@@ -453,6 +453,14 @@ import {
   ScheduledTaskUpsertInput,
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
+import {
+  BotCreateInput,
+  BotDirectory,
+  BotError,
+  BotMutationResult,
+  BotRefInput,
+  BotUpdateInput,
+} from "./bots.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import { AgentFeedbackAnswerInput, AgentFeedbackRequestError } from "./agentFeedback.ts";
 import {
@@ -642,6 +650,12 @@ export const WS_METHODS = {
   workflowsGetDefinition: "workflows.getDefinition",
   workflowsSaveDefinition: "workflows.saveDefinition",
   workflowsDeleteDefinition: "workflows.deleteDefinition",
+
+  botsSubscribe: "bots.subscribe",
+  botsCreate: "bots.create",
+  botsUpdate: "bots.update",
+  botsArchive: "bots.archive",
+  botsRestore: "bots.restore",
 
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksUpsert: "scheduledTasks.upsert",
@@ -2365,6 +2379,37 @@ const WsWorkflowsDeleteDefinitionRpc = Rpc.make(WS_METHODS.workflowsDeleteDefini
   error: EnvironmentAuthorizationError,
 });
 
+const WsBotsSubscribeRpc = Rpc.make(WS_METHODS.botsSubscribe, {
+  payload: Schema.Struct({}),
+  success: BotDirectory,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsBotsCreateRpc = Rpc.make(WS_METHODS.botsCreate, {
+  payload: BotCreateInput,
+  success: BotMutationResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsUpdateRpc = Rpc.make(WS_METHODS.botsUpdate, {
+  payload: BotUpdateInput,
+  success: BotMutationResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsArchiveRpc = Rpc.make(WS_METHODS.botsArchive, {
+  payload: BotRefInput,
+  success: BotMutationResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsRestoreRpc = Rpc.make(WS_METHODS.botsRestore, {
+  payload: BotRefInput,
+  success: BotMutationResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2549,6 +2594,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsWorkflowsGetDefinitionRpc,
   WsWorkflowsSaveDefinitionRpc,
   WsWorkflowsDeleteDefinitionRpc,
+  WsBotsSubscribeRpc,
+  WsBotsCreateRpc,
+  WsBotsUpdateRpc,
+  WsBotsArchiveRpc,
+  WsBotsRestoreRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,
