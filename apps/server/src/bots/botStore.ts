@@ -86,6 +86,29 @@ export const ensureBotSchema = Effect.gen(function* () {
   `;
   yield* sql`CREATE INDEX IF NOT EXISTS bot_deliveries_status ON bot_deliveries (status, created_at)`;
   yield* sql`CREATE INDEX IF NOT EXISTS bot_deliveries_thread ON bot_deliveries (thread_id, status)`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS bot_memories (
+      memory_id TEXT PRIMARY KEY,
+      bot_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      source TEXT NOT NULL,
+      source_thread_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `;
+  yield* sql`CREATE INDEX IF NOT EXISTS bot_memories_bot ON bot_memories (bot_id, updated_at)`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS bot_skills (
+      skill_id TEXT PRIMARY KEY,
+      bot_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      instructions TEXT NOT NULL,
+      enabled INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `;
 });
 
 export interface BotRoomRow {

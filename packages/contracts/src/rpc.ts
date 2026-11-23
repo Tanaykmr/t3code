@@ -460,6 +460,10 @@ import {
   BotDirectory,
   BotError,
   BotHandoffInput,
+  BotKnowledge,
+  BotKnowledgeDeleteInput,
+  BotMemorySaveInput,
+  BotSkillSaveInput,
   BotMutationResult,
   BotRefInput,
   BotRoomCreateInput,
@@ -669,6 +673,10 @@ export const WS_METHODS = {
   botsSubscribeChannel: "bots.subscribeChannel",
   botsSendRoomMessage: "bots.sendRoomMessage",
   botsHandoff: "bots.handoff",
+  botsSubscribeKnowledge: "bots.subscribeKnowledge",
+  botsSaveMemory: "bots.saveMemory",
+  botsSaveSkill: "bots.saveSkill",
+  botsDeleteKnowledge: "bots.deleteKnowledge",
 
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksUpsert: "scheduledTasks.upsert",
@@ -2454,6 +2462,31 @@ const WsBotsHandoffRpc = Rpc.make(WS_METHODS.botsHandoff, {
   error: Schema.Union([BotError, EnvironmentAuthorizationError]),
 });
 
+const WsBotsSubscribeKnowledgeRpc = Rpc.make(WS_METHODS.botsSubscribeKnowledge, {
+  payload: BotRefInput,
+  success: BotKnowledge,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsBotsSaveMemoryRpc = Rpc.make(WS_METHODS.botsSaveMemory, {
+  payload: BotMemorySaveInput,
+  success: BotKnowledge,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsSaveSkillRpc = Rpc.make(WS_METHODS.botsSaveSkill, {
+  payload: BotSkillSaveInput,
+  success: BotKnowledge,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsDeleteKnowledgeRpc = Rpc.make(WS_METHODS.botsDeleteKnowledge, {
+  payload: BotKnowledgeDeleteInput,
+  success: BotKnowledge,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2648,6 +2681,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsBotsSubscribeChannelRpc,
   WsBotsSendRoomMessageRpc,
   WsBotsHandoffRpc,
+  WsBotsSubscribeKnowledgeRpc,
+  WsBotsSaveMemoryRpc,
+  WsBotsSaveSkillRpc,
+  WsBotsDeleteKnowledgeRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,

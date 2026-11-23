@@ -21,6 +21,7 @@ import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { BotAvatarIcon } from "./BotAvatarIcon";
 import { openBotEditor } from "./BotEditorDialog";
+import { BotKnowledgeSections } from "./BotKnowledgeSections";
 
 /** The bot's profile at the top of its DM's details; ordinary threads render nothing. */
 export function BotOverviewSection(props: {
@@ -108,6 +109,7 @@ export function BotOverviewSection(props: {
           {archived ? <T>Restore bot</T> : <T>Archive bot</T>}
         </ThreadDetailsControl>
       </div>
+      <BotKnowledgeSections environmentId={props.environmentId} botId={bot.id} />
       <BotPeerActivity environmentId={props.environmentId} botId={bot.id} />
     </ThreadDetailsSection>
   );
