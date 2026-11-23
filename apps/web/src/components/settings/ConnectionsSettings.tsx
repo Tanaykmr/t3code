@@ -151,6 +151,7 @@ import {
   SavedBackendListRow,
 } from "./SavedEnvironmentRows";
 import { AddEnvironmentDialog } from "./AddEnvironmentDialog";
+import { BoatEnvironmentsSettings } from "./BoatEnvironmentsSettings";
 import {
   type ConnectDeviceRevokeRequest,
   RevokeConnectDeviceDialog,
@@ -1919,6 +1920,7 @@ function ConnectionsSettingsContent({
           </>
         )}
       </SettingsSection>
+      <BoatEnvironmentsSettings />
       {hasCloudPublicConfig() ? (
         <RemoveT3ConnectEnvironmentDialog
           environmentLabel={pendingT3ConnectRemoval?.label ?? null}
