@@ -1658,6 +1658,10 @@ export function createServerEnvironmentAtoms<R, E>(
         return Atom.make((get) => snapshot(get)?.definition?.revision);
       },
     }),
+    botsLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:bots:live",
+      tag: WS_METHODS.botsSubscribe,
+    }),
     scheduledTasksLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,
@@ -1923,6 +1927,22 @@ export function createServerEnvironmentAtoms<R, E>(
     signalProcess: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:signal-process",
       tag: WS_METHODS.serverSignalProcess,
+    }),
+    createBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:create",
+      tag: WS_METHODS.botsCreate,
+    }),
+    updateBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:update",
+      tag: WS_METHODS.botsUpdate,
+    }),
+    archiveBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:archive",
+      tag: WS_METHODS.botsArchive,
+    }),
+    restoreBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:restore",
+      tag: WS_METHODS.botsRestore,
     }),
     upsertScheduledTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:upsert",
