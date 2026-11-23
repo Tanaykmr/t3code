@@ -1,5 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
-import { type EnvironmentBot, botDmThreadKeys, sortBots } from "@t3tools/client-runtime/state/bots";
+import {
+  type EnvironmentBot,
+  type EnvironmentBotRoom,
+  botDmThreadKeys,
+  sortBots,
+} from "@t3tools/client-runtime/state/bots";
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -37,19 +42,24 @@ const environmentBotsAtom = Atom.make((get): ReadonlyArray<EnvironmentBot> => {
   return entries.length === 0 ? EMPTY_BOTS : sortBots(entries);
 }).pipe(Atom.withLabel("mobile-environment-bots"));
 
+const EMPTY_ROOMS: ReadonlyArray<EnvironmentBotRoom> = Object.freeze([]);
+
+/** Every room, archived ones included, across connected environments. */
+const environmentBotRoomsAtom = Atom.make((get): ReadonlyArray<EnvironmentBotRoom> => {
+  const entries = get(botEnvironmentIdsAtom).flatMap((environmentId) =>
+    (
+      AsyncResult.getOrElse(
+        get(serverEnvironment.botsLive({ environmentId, input: {} })),
+        () => null,
+      )?.rooms ?? []
+    ).map((room) => ({ environmentId, room })),
+  );
+  return entries.length === 0 ? EMPTY_ROOMS : entries;
+}).pipe(Atom.withLabel("mobile-environment-bot-rooms"));
+
 /** Bot DM and room seat thread keys, which the ordinary thread lists leave out. */
 export const botDmThreadKeysAtom = Atom.make((get) =>
-  botDmThreadKeys(
-    get(environmentBotsAtom),
-    get(botEnvironmentIdsAtom).flatMap((environmentId) =>
-      (
-        AsyncResult.getOrElse(
-          get(serverEnvironment.botsLive({ environmentId, input: {} })),
-          () => null,
-        )?.rooms ?? []
-      ).map((room) => ({ environmentId, room })),
-    ),
-  ),
+  botDmThreadKeys(get(environmentBotsAtom), get(environmentBotRoomsAtom)),
 ).pipe(Atom.withLabel("mobile-bot-dm-thread-keys"));
 
 const botByDmThreadKeyAtom = Atom.make(
@@ -64,6 +74,10 @@ const botByDmThreadKeyAtom = Atom.make(
 
 export function useEnvironmentBots(): ReadonlyArray<EnvironmentBot> {
   return useAtomValue(environmentBotsAtom);
+}
+
+export function useEnvironmentBotRooms(): ReadonlyArray<EnvironmentBotRoom> {
+  return useAtomValue(environmentBotRoomsAtom);
 }
 
 export function useBotEnvironmentIds(): ReadonlyArray<EnvironmentId> {

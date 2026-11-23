@@ -1,9 +1,10 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { EnvironmentId } from "@t3tools/contracts";
+import { type BotId, EnvironmentId } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { AsyncResult } from "effect/reactivity";
-import { useGT } from "gt-react-native";
+import { msg, useGT, useMessages } from "gt-react-native";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 
@@ -16,6 +17,7 @@ import { useProject } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { BotGlyph } from "./BotGlyph";
+import { deliveriesByMessage, newestMessages } from "./bot-room";
 
 export type BotOverviewParams = {
   readonly environmentId: string;
@@ -154,8 +156,63 @@ export function BotOverviewScreen({ route }: StaticScreenProps<BotOverviewParams
               {error}
             </Text>
           ) : null}
+          <BotMessages environmentId={environmentId} botId={bot.id} />
         </View>
       )}
     </FitSheet>
+  );
+}
+
+const BOT_MESSAGE_ROWS = 5;
+
+const DELIVERY_STATUS_LABEL = {
+  queued: msg("Queued", { $context: "bot delivery status" }),
+  accepted: msg("Working", { $context: "bot delivery status" }),
+  settled: msg("Delivered", { $context: "bot delivery status" }),
+  blocked: msg("Blocked", { $context: "bot delivery status" }),
+  cancelled: msg("Stopped", { $context: "bot delivery status" }),
+} as const;
+
+/** Messages this bot exchanged with other bots, and hand-offs out of its chat, newest first. */
+function BotMessages(props: { readonly environmentId: EnvironmentId; readonly botId: BotId }) {
+  const gt = useGT();
+  const m = useMessages();
+  const channel = AsyncResult.getOrElse(
+    useAtomValue(
+      serverEnvironment.botChannelLive({
+        environmentId: props.environmentId,
+        input: { kind: "bot", botId: props.botId },
+      }),
+    ),
+    () => null,
+  );
+  const names = new Map(useEnvironmentBots().map(({ bot }) => [bot.id as string, bot.name]));
+  const byMessage = deliveriesByMessage(channel?.deliveries ?? []);
+  const rows = newestMessages(channel?.messages ?? [], BOT_MESSAGE_ROWS);
+  if (rows.length === 0) return null;
+  return (
+    <View className="gap-3 border-t border-border-subtle pt-3">
+      <Text className="font-t3-medium text-xs text-foreground-muted">{gt("Bot messages")}</Text>
+      {rows.map((message) => {
+        const from =
+          message.sender.kind === "bot"
+            ? (names.get(message.sender.botId) ?? gt("Bot"))
+            : gt("You");
+        const deliveries = byMessage.get(message.id) ?? [];
+        const to = deliveries.map((d) => names.get(d.targetBotId) ?? gt("Bot")).join(", ");
+        const status = deliveries[0]?.status;
+        return (
+          <View key={message.id} className="gap-0.5">
+            <Text className="text-xs text-foreground-muted">
+              {(to === "" ? from : gt("{from} to {to}", { from, to })) +
+                (status === undefined ? "" : ` · ${m(DELIVERY_STATUS_LABEL[status])}`)}
+            </Text>
+            <Text className="text-sm text-foreground" numberOfLines={2}>
+              {message.text}
+            </Text>
+          </View>
+        );
+      })}
+    </View>
   );
 }
