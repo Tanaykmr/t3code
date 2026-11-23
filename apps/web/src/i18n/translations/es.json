@@ -71,6 +71,7 @@
   "cd03eb1b84271c02": "Agente",
   "bfe1a60f3f9c60fb": "Turno {turn} · {what}",
   "dfdaa6255a416140": "Resumen de {turns, plural, one {{turns} turno reciente} other {{turns} turnos recientes}}, {textTurns, plural, =0 {sin texto de mensajes} one {con el texto de los mensajes del último turno} other {con el texto de los mensajes de los últimos {textTurns} turnos}}{truncated, select, yes {, acortado para ajustarse} other {}}",
+  "260c6b45f52d2f27": "Añade el texto de tus mensajes y de las respuestas del agente en {textTurns, plural, one {el último turno} other {los últimos {textTurns} turnos}}.",
   "afac52a5cc2dc801": "No se pudo enviar tu respuesta. Inténtalo de nuevo.",
   "79d776428f4d0650": "No se pudo cargar el archivo. Vuelve a conectarte e inténtalo de nuevo.",
   "3ea34cbb1ca5ba9b": "Vista previa cancelada.",
@@ -1847,6 +1848,7 @@
   "2a5cc71a171eca12": "Buscar en la página del navegador",
   "f496ce44f0581269": "Copiar enlace del prompt",
   "8956e2bf9ebef228": "Copiar enlace del prompt con repositorio y modelo",
+  "2b5f5db5f01136b7": "Abrir Excalidraw",
   "9e9201570bcc2be8": "Copiar enlace de la PR",
   "a1fcc064a5cece14": "Copiar hilo",
   "2eb493c9e7a5fe9a": "Vincular una pull request al hilo",
@@ -2438,6 +2440,7 @@
   "ac0de2a59d9c8860": "Dispositivo",
   "1354df9fb7278843": "Mira un simulador de iOS o un emulador de Android.",
   "fdcd9643e2e63b15": "Haz una pregunta aparte mientras este hilo sigue trabajando.",
+  "97cc8f24c76c708e": "Excalidraw",
   "1944f04b75ddf26d": "Hilo en {label}",
   "314cfeebf191ba0d": "necesita aprobación",
   "4e5b7363441a3831": "necesita respuesta",
@@ -2733,9 +2736,9 @@
   "db7b3a938c45e56c": "Actualización {version} lista para descargar",
   "9a951140b69ba740": "Descargando actualización ({percent} %)",
   "7fdece033260e9fb": "Descargando actualización",
+  "52e1d4a487c0cf4b": "Falló la instalación de {version}. Haz clic para reintentarlo.",
   "09ef51903e99e876": "Actualización descargada. Haz clic para reiniciar e instalar.",
   "d62631cab06d2b80": "Actualización {version} descargada. Haz clic para reiniciar e instalar.",
-  "52e1d4a487c0cf4b": "Falló la instalación de {version}. Haz clic para reintentarlo.",
   "78a04e0e625c0990": "Falló la actualización",
   "c24de5eb69373a55": "Esta compilación {build} ignora las versiones {track}. Revisa el canal de actualizaciones en Ajustes para terminar el cambio.",
   "b02ae45a6109c93b": "Actualizado",
@@ -3208,7 +3211,10 @@
     {
       "t": "span",
       "i": 2,
-      "c": [" ", "en el ordenador que abrió esta página"]
+      "c": [
+        " ",
+        "en el ordenador que abrió esta página"
+      ]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3220,7 +3226,10 @@
     {
       "t": "span",
       "i": 2,
-      "c": [" ", "· quien lo ejecute obtiene este acceso"]
+      "c": [
+        " ",
+        "· quien lo ejecute obtiene este acceso"
+      ]
     }
   ],
   "c54cc9c75db9dc58": "Aprueba solo un inicio de sesión que acabes de iniciar.",
@@ -3638,7 +3647,6 @@
   "4e0710d19dfc2e7e": "¿Enviar este informe al equipo de T3?",
   "87d0ae0723ba75d1": "Esto es todo lo que sale de tu máquina. No se envía nada hasta que pulses Enviar.",
   "bf19826f81484328": "Incluir la conversación",
-  "260c6b45f52d2f27": "Añade el texto de tus mensajes y de las respuestas del agente en {textTurns, plural, one {el último turno} other {los últimos {textTurns} turnos}}.",
   "ddb7e6f8ce99e657": "Solo quien pueda ejecutar agentes en esta máquina puede enviarlo o rechazarlo.",
   "03c1eb603c112f47": "No enviar",
   "653405e4ed498d9f": "Enviar",
@@ -4069,6 +4077,7 @@
   "90062342f04966ff": "Actualiza el servidor de T3 Code de este entorno para explorar pull requests.",
   "5e7157db126f1641": "Issues no disponibles",
   "42ade0e14ff6af94": "Actualiza el servidor de T3 Code de este entorno para explorar issues.",
+  "edd7e57e005ae96c": "Cargando Excalidraw…",
   "6435447ce7656f13": "Mostrar {label}",
   "993dcd04611f9571": "Guardar de forma segura",
   "ccbe48efc8e30c52": "¿Eliminar el chat lateral \"{title}\"?",
@@ -8754,9 +8763,13 @@
   "ed83b25c71c98a20": "Elige uno o más {scope}s de {tracker} para cada proyecto. Sus issues aparecen junto a las del repositorio, y los agentes crean issues nuevas en el primero, salvo que se les pida otro.",
   "19c2d5e81ff8f89a": "{scope} de {tracker} para {project}",
   "68e061510b765772": "Sin vincular",
+  "99d51127f573296b": "Otra cuenta",
+  "8ec2c57414669b79": "Conecta un segundo espacio de trabajo o usuario de {tracker}.",
+  "99963c0142e17f00": "Para la nueva cuenta de {tracker}.",
   "a2d95d39d3398bda": "Credencial rechazada",
   "9eae463720500113": "Guardado en el servidor.",
   "b6e27ab2537ef874": "Crear uno",
+  "6d8e4ebc889bace9": "Añadir cuenta",
   "13ef526271b0f5d4": "Borrar todas las condiciones",
   "d1938a629f039515": "Quitar condición",
   "84a605b241ce65b7": "Quitar grupo y sus condiciones",
@@ -12080,6 +12093,7 @@
   "8e800a9dfe7f9487": "Resolver",
   "dd46b84dfd8849bd": "Quitar de resueltos",
   "5c3e33c17a1c7cf2": "Reactivar",
+  "979eebfb60fb2718": "Abrir Excalidraw",
   "f8fec76a8dea38d4": "Borrador sin enviar",
   "b0b811c800c8af57": "Desfijar hilo",
   "4fca00950ff1db87": "Regenerando título",
@@ -12598,6 +12612,16 @@
   "156ff7b625287a1e": "Ocultar omitidos",
   "69b985b97ab45e6b": "Mostrar {count} omitidos",
   "2400254d362de84d": "Cargando ejecuciones de flujos de trabajo…",
+  "cae5c3205c01d062": [
+    {
+      "t": "span",
+      "i": 1,
+      "c": "Un archivo de flujo de trabajo tiene un problema."
+    },
+    " ",
+    "Sigue en ejecución la última versión que sí cargó."
+  ],
+  "ed8ce6ebc73dc12d": "Abrir el archivo",
   "145e1f7503ba3b2c": [
     "Este entorno no tiene ninguna ejecución con ese enlace.",
     " ",
@@ -12623,16 +12647,6 @@
       "c": "Leer la guía"
     }
   ],
-  "cae5c3205c01d062": [
-    {
-      "t": "span",
-      "i": 1,
-      "c": "Un archivo de flujo de trabajo tiene un problema."
-    },
-    " ",
-    "Sigue en ejecución la última versión que sí cargó."
-  ],
-  "ed8ce6ebc73dc12d": "Abrir el archivo",
   "5d8d278ff828102d": "Todos los flujos de trabajo",
   "39459da07479f482": "Agente",
   "7741243632056b81": "{step} · transcripción",
@@ -12777,9 +12791,5 @@
   "27d76249d09eb69f": "Guía de revisión lista",
   "faa3bb26abb39c93": "Falló la guía de revisión",
   "b7df38b7d8792d78": "Abrir guía",
-  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión",
-  "99d51127f573296b": "Otra cuenta",
-  "8ec2c57414669b79": "Conecta un segundo espacio de trabajo o usuario de {tracker}.",
-  "99963c0142e17f00": "Para la nueva cuenta de {tracker}.",
-  "6d8e4ebc889bace9": "Añadir cuenta"
+  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión"
 }

@@ -22,6 +22,7 @@ import { loadRepoEnv } from "../../scripts/lib/public-config";
 import { resolveTaggedSourceVersion } from "../../scripts/lib/tagged-source-version";
 import { thirdPartyLicensesPlugin } from "../../scripts/lib/third-party-licenses";
 import { tailwindPlugins } from "./vite/tailwind";
+import { excalidrawAssetsPlugin } from "./vite/excalidrawAssets";
 import { warmBundledDevPlugin } from "./vite/warmBundledDev";
 import { formatAppDisplayName, resolveWebAppStageLabel } from "./src/branding.logic";
 
@@ -321,6 +322,7 @@ export default defineConfig(({ command }) => {
     plugins: [
       bootstrapTitlePlugin(),
       devCompressionPlugin(),
+      excalidrawAssetsPlugin(),
       chunkCycleGuardPlugin(),
       builtDev
         ? undefined

@@ -81,6 +81,7 @@ import {
   PinOffIcon,
   PlugIcon,
   SquarePenIcon,
+  PencilRuler,
   TextSearchIcon,
   UserPlusIcon,
   WorkflowIcon,
@@ -1486,6 +1487,20 @@ function OpenCommandPaletteDialog(props: {
         });
       }
     }
+  }
+
+  if (activeThread !== null) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push({
+      kind: "action",
+      value: "action:open-excalidraw",
+      searchTerms: ["board", "canvas", "diagram", "draw", "whiteboard"],
+      title: gt("Open Excalidraw"),
+      icon: <PencilRuler className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        useRightPanelStore.getState().open(threadRef, "excalidraw");
+      },
+    });
   }
 
   if (activeThreadReferenceCopyTarget !== null) {

@@ -26,6 +26,7 @@ const RIGHT_PANEL_KINDS = [
   "file",
   "preview",
   "device",
+  "excalidraw",
   "terminal",
   "pull-request",
   "pull-requests",
@@ -57,6 +58,7 @@ export type RightPanelSurface =
       splitDirection?: "horizontal" | "vertical";
     }
   | { id: "diff"; kind: "diff" }
+  | { id: "excalidraw"; kind: "excalidraw" }
   | {
       id: "files";
       kind: "files";
@@ -299,6 +301,8 @@ const singletonSurface = (
       return { id: "pull-requests", kind };
     case "device":
       return { id: "device", kind };
+    case "excalidraw":
+      return { id: "excalidraw", kind };
   }
 };
 

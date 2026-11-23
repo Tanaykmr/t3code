@@ -297,6 +297,8 @@ preconditions.
   production Vite build, Electron packaging, and CSP. Check for cold-load requests before
   the panel opens. [Release](https://www.npmjs.com/package/@excalidraw/excalidraw/v/0.18.1) ·
   [Client-only integration](https://github.com/excalidraw/excalidraw/blob/9c2e462ec23e54c4cf0493328840d6a27191c674/dev-docs/docs/@excalidraw/excalidraw/integration.mdx#L35)
+  The 0.18.1 package supports React 19, but its exact Radix Tabs dependency only declares
+  support through React 18. The workspace override selects Radix Tabs 1.1.3 for that package.
 - **Fonts and shell boundaries.** Package the exact release's fonts under the current web
   asset base and set `EXCALIDRAW_ASSET_PATH` before first editor load. Verify CSS-relative
   fonts, font fallback across scripts, dark mode, clipboard, image download, dialogs,
