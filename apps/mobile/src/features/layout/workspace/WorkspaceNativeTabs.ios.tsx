@@ -38,6 +38,7 @@ import { useSelectWorkspaceTab } from "./useSelectWorkspaceTab";
 
 const PULL_REQUEST_ICON = require("../../../../assets/icons/pull-request.png");
 const ISSUE_ICON = require("../../../../assets/icons/issue.png");
+const BOT_ICON = require("../../../../assets/icons/bot.png");
 
 /** Retain each native controller tree; removing its root can leave RNS's stack empty. */
 function RetainedWorkspaceTab(props: {
@@ -241,7 +242,9 @@ export function WorkspaceNativeTabs(props: {
                       ? { type: "templateSource", templateSource: PULL_REQUEST_ICON }
                       : tab === "issues"
                         ? { type: "templateSource", templateSource: ISSUE_ICON }
-                        : { type: "sfSymbol", name: NAVIGATION_TAB_ICONS[tab] },
+                        : tab === "bots"
+                          ? { type: "templateSource", templateSource: BOT_ICON }
+                          : { type: "sfSymbol", name: NAVIGATION_TAB_ICONS[tab] },
                   selectedIcon:
                     !settings && tab === "threads"
                       ? { type: "sfSymbol", name: "text.bubble.fill" }

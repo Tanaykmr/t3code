@@ -1,3 +1,4 @@
+import { useBotForThread } from "../../state/bots";
 import * as Dialog from "../../components/ui/Dialog";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { useRememberThreadProject } from "./useRememberThreadProject";
@@ -546,6 +547,9 @@ function ThreadRouteContent(
       : scopeThreadRef(delegatedFrom.environmentId, delegatedFrom.threadId);
   // The title it had at delegation, until this client sees the parent itself.
   const delegatedFromThread = useThreadShell(delegatedFromRef);
+  const activeBot = useBotForThread(
+    selectedThread ? scopeThreadRef(selectedThread.environmentId, selectedThread.id) : null,
+  )?.bot;
   const headerSubtitle = [
     selectedThreadProject?.title ?? null,
     selectedEnvironmentConnection?.environmentLabel ?? null,
@@ -1013,7 +1017,7 @@ function ThreadRouteContent(
   );
   const inspectorHeader = props.inspectorPresentation ? (
     <ThreadInspectorHeader
-      title={selectedThread?.title ?? gt("Thread")}
+      title={activeBot?.name ?? selectedThread?.title ?? gt("Thread")}
       subtitle={threadStatusLabel ?? undefined}
       {...props.inspectorPresentation}
     />
@@ -1041,8 +1045,17 @@ function ThreadRouteContent(
           header={
             props.inspectorPresentation ? null : (
               <ThreadHeader
-                title={selectedThread.title}
-                subtitle={threadStatusLabel ?? headerSubtitle}
+                title={activeBot?.name ?? selectedThread.title}
+                subtitle={threadStatusLabel ?? (activeBot?.title || headerSubtitle)}
+                {...(activeBot
+                  ? {
+                      onOpenBotOverview: () =>
+                        navigation.navigate("BotOverview", {
+                          environmentId: String(selectedThread.environmentId),
+                          botId: activeBot.id,
+                        }),
+                    }
+                  : {})}
                 gitControls={threadGitControlProps}
                 hasThreadCwd={selectedThreadCwd !== null}
                 inspectorMode={inspectorMode}

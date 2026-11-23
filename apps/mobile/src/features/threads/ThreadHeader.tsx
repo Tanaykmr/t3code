@@ -23,6 +23,8 @@ export function ThreadHeader(props: {
   readonly hasThreadCwd: boolean;
   readonly inspectorMode: ThreadInspectorMode | null;
   readonly onOpenFilesInspector: () => void;
+  /** Set for a bot's DM: opens the bot's overview from the header. */
+  readonly onOpenBotOverview?: () => void;
 }) {
   const gt = useGT();
   const m = useMessages();
@@ -32,8 +34,19 @@ export function ThreadHeader(props: {
   const gitMenu = useThreadGitMenuDefinition(props.gitControls);
   const terminalMenu = threadTerminalMenu(props.gitControls, m);
   const filesVisible = props.inspectorMode === "files" && panes.auxiliaryPaneVisible;
+  const overviewAction: AppBarAction[] = props.onOpenBotOverview
+    ? [
+        {
+          accessibilityLabel: gt("Overview"),
+          icon: "sidebar.right",
+          separateBackground: false,
+          onPress: props.onOpenBotOverview,
+        },
+      ]
+    : [];
   const actions: AppBarAction[] = props.hasThreadCwd
     ? [
+        ...overviewAction,
         {
           accessibilityLabel: filesVisible ? gt("Close files") : gt("Open files"),
           icon: "folder",
@@ -43,7 +56,7 @@ export function ThreadHeader(props: {
           onPress: filesVisible ? toggleAuxiliaryPane : props.onOpenFilesInspector,
         },
       ]
-    : [];
+    : overviewAction;
   const menus = [gitMenu, terminalMenu].filter((menu): menu is AppBarMenu => menu !== null);
 
   return (

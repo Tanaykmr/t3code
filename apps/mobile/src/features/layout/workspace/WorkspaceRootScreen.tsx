@@ -31,6 +31,7 @@ import { WorkspaceConnectionTitle } from "../../home/WorkspaceConnectionTitle";
 import { useAdaptiveWorkspaceLayout } from "../AdaptiveWorkspaceLayout";
 import { PullRequestsScreen } from "../../pull-requests/PullRequestsScreen";
 import { IssuesScreen } from "../../issues/IssuesScreen";
+import { BotsScreen } from "../../bots/BotsScreen";
 import {
   WorkspaceTabsContext,
   WorkspaceTabsProvider,
@@ -182,6 +183,8 @@ function WorkspaceRootContent() {
             <WorkspaceNoTabs />
           ) : state.selectedTab === "threads" ? (
             <HomeRouteScreen />
+          ) : state.selectedTab === "bots" ? (
+            <BotsScreen />
           ) : state.selectedTab === "pullRequests" ? (
             <PullRequestsScreen />
           ) : state.selectedTab === "issues" ? (

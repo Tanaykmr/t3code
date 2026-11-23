@@ -27,6 +27,7 @@ const SEARCH_LABELS = {
   threads: msg("Search threads"),
   pullRequests: msg("Search pull requests"),
   issues: msg("Search issues"),
+  bots: msg("Search bots"),
   settings: msg("Search settings"),
 } as const;
 
