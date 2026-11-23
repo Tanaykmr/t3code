@@ -228,3 +228,59 @@ export type BotHandoffInput = typeof BotHandoffInput.Type;
 
 export const BotSendResult = Schema.Struct({ message: BotChannelMessage });
 export type BotSendResult = typeof BotSendResult.Type;
+
+export const BOT_MEMORY_MAX_LENGTH = 1_000;
+export const BOT_SKILL_MAX_LENGTH = 4_000;
+
+/** Something a bot keeps across sessions, with where it came from. */
+export const BotMemoryEntry = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  botId: BotId,
+  text: Schema.String,
+  source: Schema.Literals(["user", "bot"]),
+  sourceThreadId: Schema.NullOr(ThreadId),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type BotMemoryEntry = typeof BotMemoryEntry.Type;
+
+export const BotSkill = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  botId: BotId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_NAME_MAX_LENGTH * 2)),
+  instructions: Schema.String,
+  enabled: Schema.Boolean,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type BotSkill = typeof BotSkill.Type;
+
+export const BotKnowledge = Schema.Struct({
+  memories: Schema.Array(BotMemoryEntry),
+  skills: Schema.Array(BotSkill),
+});
+export type BotKnowledge = typeof BotKnowledge.Type;
+
+export const BotMemorySaveInput = Schema.Struct({
+  botId: BotId,
+  /** Chosen by the client for a new entry; an existing id edits it. */
+  memoryId: TrimmedNonEmptyString,
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_MEMORY_MAX_LENGTH)),
+});
+export type BotMemorySaveInput = typeof BotMemorySaveInput.Type;
+
+export const BotSkillSaveInput = Schema.Struct({
+  botId: BotId,
+  skillId: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_NAME_MAX_LENGTH * 2)),
+  instructions: TrimmedNonEmptyString.check(Schema.isMaxLength(BOT_SKILL_MAX_LENGTH)),
+  enabled: Schema.Boolean,
+});
+export type BotSkillSaveInput = typeof BotSkillSaveInput.Type;
+
+export const BotKnowledgeDeleteInput = Schema.Struct({
+  botId: BotId,
+  kind: Schema.Literals(["memory", "skill"]),
+  id: TrimmedNonEmptyString,
+});
+export type BotKnowledgeDeleteInput = typeof BotKnowledgeDeleteInput.Type;

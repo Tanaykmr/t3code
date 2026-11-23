@@ -1662,6 +1662,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:bots:live",
       tag: WS_METHODS.botsSubscribe,
     }),
+    botKnowledgeLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:bots:knowledge",
+      tag: WS_METHODS.botsSubscribeKnowledge,
+    }),
     botChannelLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:bots:channel",
       tag: WS_METHODS.botsSubscribeChannel,
@@ -1959,6 +1963,18 @@ export function createServerEnvironmentAtoms<R, E>(
     sendBotRoomMessage: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bot-room:send",
       tag: WS_METHODS.botsSendRoomMessage,
+    }),
+    saveBotMemory: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:memory-save",
+      tag: WS_METHODS.botsSaveMemory,
+    }),
+    saveBotSkill: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:skill-save",
+      tag: WS_METHODS.botsSaveSkill,
+    }),
+    deleteBotKnowledge: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:knowledge-delete",
+      tag: WS_METHODS.botsDeleteKnowledge,
     }),
     handoffToBots: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:bot:handoff",
