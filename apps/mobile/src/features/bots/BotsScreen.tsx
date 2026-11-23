@@ -1,6 +1,6 @@
 import { botActivity, type EnvironmentBot } from "@t3tools/client-runtime/state/bots";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { useNavigation } from "@react-navigation/native";
+import { StackActions, useNavigation } from "@react-navigation/native";
 import { useGT } from "gt-react-native";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
@@ -11,12 +11,13 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { cn } from "../../lib/cn";
-import { useBotEnvironmentIds, useEnvironmentBots } from "../../state/bots";
+import { useBotEnvironmentIds, useEnvironmentBotRooms, useEnvironmentBots } from "../../state/bots";
 import { useQuietThreadShell } from "../../state/entities";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { BotGlyph } from "./BotGlyph";
 import { partitionBots } from "./bot-list";
+import { partitionRooms } from "./bot-room";
 
 function BotRow(props: { readonly entry: EnvironmentBot; readonly onOpen: () => void }) {
   const gt = useGT();
@@ -77,6 +78,7 @@ export function BotsScreen() {
   const query = workspace?.state.tabs.bots.query ?? "";
   const { active, archived } = partitionBots(useEnvironmentBots(), query);
   const [archivedOpen, setArchivedOpen] = useState(false);
+  const rooms = partitionRooms(useEnvironmentBotRooms(), query);
   const environmentId = environmentIds[0];
   const open = (entry: EnvironmentBot) =>
     selectDetail({
@@ -151,6 +153,59 @@ export function BotsScreen() {
             />
           ))
         : null}
+      <View className="flex-row items-center px-5 pb-1 pt-6">
+        <Text className="min-w-0 flex-1 font-t3-medium text-xs text-foreground-muted">
+          {gt("Rooms")}
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={gt("New room")}
+          hitSlop={8}
+          onPress={() => navigation.navigate("BotRoomEditor", { environmentId })}
+        >
+          <SymbolView name="plus" size={18} tintColorClassName="accent-primary-text" />
+        </Pressable>
+      </View>
+      {rooms.length === 0 ? (
+        <Text className="px-5 py-3 text-sm text-foreground-muted">{gt("No rooms yet.")}</Text>
+      ) : (
+        rooms.map(({ environmentId: roomEnvironmentId, room }) => (
+          <Pressable
+            key={`${roomEnvironmentId}:${room.id}`}
+            accessibilityRole="button"
+            className="flex-row items-center gap-3 border-b border-border-subtle px-5 py-3 active:bg-subtle"
+            onPress={() =>
+              navigation.dispatch(
+                StackActions.push("BotRoom", {
+                  environmentId: String(roomEnvironmentId),
+                  roomId: room.id,
+                }),
+              )
+            }
+          >
+            <SymbolView
+              name="bubble.left.and.bubble.right"
+              size={20}
+              tintColorClassName="accent-icon-muted"
+            />
+            <Text
+              className={cn(
+                "min-w-0 flex-1 text-base",
+                room.archivedAt === null ? "text-foreground" : "text-foreground-muted",
+              )}
+              numberOfLines={1}
+            >
+              {room.name}
+            </Text>
+            <Text className="text-sm text-foreground-muted">
+              {room.archivedAt === null
+                ? gt("{count} bots", { count: String(room.memberBotIds.length) })
+                : gt("Archived")}
+            </Text>
+            <SymbolView name="chevron.right" size={14} tintColorClassName="accent-icon-muted" />
+          </Pressable>
+        ))
+      )}
     </ScreenScrollView>
   );
 }

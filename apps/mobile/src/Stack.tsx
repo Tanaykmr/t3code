@@ -37,6 +37,8 @@ import { PullRequestReviewSheet } from "./features/pull-requests/PullRequestRevi
 import { PullRequestReviewersScreen } from "./features/pull-requests/PullRequestReviewersScreen";
 import { BotEditorScreen } from "./features/bots/BotEditorScreen";
 import { BotOverviewScreen } from "./features/bots/BotOverviewScreen";
+import { BotRoomEditorScreen } from "./features/bots/BotRoomEditorScreen";
+import { BotRoomScreen } from "./features/bots/BotRoomScreen";
 import { PullRequestLabelsScreen } from "./features/pull-requests/PullRequestLabelsScreen";
 import { PullRequestEditScreen } from "./features/pull-requests/PullRequestEditScreen";
 import { PullRequestFilterSearchScreen } from "./features/pull-requests/PullRequestFilterSearchScreen";
@@ -663,6 +665,14 @@ const RootStackConfig = createWorkspaceStackNavigator({
     BotOverview: createNativeStackScreen({
       screen: BotOverviewScreen,
       options: sheetRoute({ detent: 0.55, androidFit: true }),
+    }),
+    BotRoom: createNativeStackScreen({
+      screen: BotRoomScreen,
+      options: pageRoute(),
+    }),
+    BotRoomEditor: createNativeStackScreen({
+      screen: BotRoomEditorScreen,
+      options: sheetRoute({ detent: 0.9, androidFit: true }),
     }),
     Thread: createNativeStackScreen({
       screen: ThreadRouteScreen,
