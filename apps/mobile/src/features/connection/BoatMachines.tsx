@@ -20,7 +20,7 @@ import {
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useGT } from "gt-react-native";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text, AppTextInput } from "../../components/ui/AppText";
@@ -36,6 +36,7 @@ import { serverEnvironment } from "../../state/server";
 import { useEnvironmentsWithScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "../settings/components/SettingsSection";
+import { resendPendingBoatRequests, sendBoatRequest } from "./boatPendingRequests";
 
 // Keyed by a JSON array of the environments that advertise Boat, read as one list.
 const boatSnapshotsAcross = Atom.family((environmentIdsKey: string) => {
@@ -106,9 +107,6 @@ function BoatMachineRow({ row, nowMs }: { readonly row: BoatRow; readonly nowMs:
   const gt = useGT();
   const labels = useBoatLabels();
   const [busy, setBusy] = useState(false);
-  const stop = useAtomCommand(serverEnvironment.stopBoat, { label: "boat stop" });
-  const resume = useAtomCommand(serverEnvironment.resumeBoat, { label: "boat resume" });
-  const remove = useAtomCommand(serverEnvironment.deleteBoat, { label: "boat delete" });
   const { server } = row;
   const minutesLeft =
     server.autoStopAt === null || server.lifecycle !== "running"
@@ -125,17 +123,14 @@ function BoatMachineRow({ row, nowMs }: { readonly row: BoatRow; readonly nowMs:
 
   const run = async (action: BoatAction) => {
     setBusy(true);
-    const command = action === "stop" ? stop : action === "resume" ? resume : remove;
-    const result = await command({
+    const outcome = await sendBoatRequest({
+      kind: action,
       environmentId: row.controllerEnvironmentId,
       input: { requestId: newRequestId(), managedId: server.managedId },
     });
     setBusy(false);
-    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-      Dialog.alert(
-        gt("Could not update {name}", { name: server.displayName }),
-        String(squashAtomCommandFailure(result)),
-      );
+    if (!outcome.ok && outcome.error !== null) {
+      Dialog.alert(gt("Could not update {name}", { name: server.displayName }), outcome.error);
     }
   };
   const confirmThen = (action: BoatAction) => {
@@ -269,6 +264,15 @@ export function BoatMachinesSection() {
   const gt = useGT();
   const { controllers, manageable, environments } = useBoatControllers();
   const nowMs = useNowMinuteMs();
+  const connectedKey = controllers
+    .filter((entry) => entry.connected)
+    .map((entry) => entry.environment.environmentId)
+    .join("\n");
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Resends requests saved before iOS suspended the app, each time a controller connects.
+  useEffect(() => {
+    if (connectedKey === "") return;
+    void resendPendingBoatRequests(new Set(connectedKey.split("\n") as EnvironmentId[]));
+  }, [connectedKey]);
   if (controllers.length === 0) return null;
   const rows = boatRows({
     controllers: controllers.map((entry) => ({
@@ -316,26 +320,20 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
   // Kept across a failed attempt so a retry resolves to the same operation.
   const [requestId, setRequestId] = useState(newRequestId);
   const [creating, setCreating] = useState(false);
-  const create = useAtomCommand(serverEnvironment.createBoat, {
-    label: "boat create",
-    reportFailure: false,
-  });
   const controller = eligible[0];
   if (controller === undefined) return null;
   const rate = controller.snapshot.rates.find((entry) => entry.size === size);
   const submit = async () => {
     setCreating(true);
-    const result = await create({
+    const outcome = await sendBoatRequest({
+      kind: "create",
       environmentId: controller.environment.environmentId,
       input: { requestId, displayName: name.trim(), size, ttlSeconds },
     });
     setCreating(false);
-    if (result._tag === "Failure") {
-      if (!isAtomCommandInterrupted(result)) {
-        Dialog.alert(
-          gt("Could not create the Boat machine"),
-          String(squashAtomCommandFailure(result)),
-        );
+    if (!outcome.ok) {
+      if (outcome.error !== null) {
+        Dialog.alert(gt("Could not create the Boat machine"), outcome.error);
       }
       return;
     }
