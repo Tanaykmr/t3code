@@ -37,9 +37,19 @@ const environmentBotsAtom = Atom.make((get): ReadonlyArray<EnvironmentBot> => {
   return entries.length === 0 ? EMPTY_BOTS : sortBots(entries);
 }).pipe(Atom.withLabel("mobile-environment-bots"));
 
-/** Bot DM thread keys, which the ordinary thread lists leave out. */
+/** Bot DM and room seat thread keys, which the ordinary thread lists leave out. */
 export const botDmThreadKeysAtom = Atom.make((get) =>
-  botDmThreadKeys(get(environmentBotsAtom)),
+  botDmThreadKeys(
+    get(environmentBotsAtom),
+    get(botEnvironmentIdsAtom).flatMap((environmentId) =>
+      (
+        AsyncResult.getOrElse(
+          get(serverEnvironment.botsLive({ environmentId, input: {} })),
+          () => null,
+        )?.rooms ?? []
+      ).map((room) => ({ environmentId, room })),
+    ),
+  ),
 ).pipe(Atom.withLabel("mobile-bot-dm-thread-keys"));
 
 const botByDmThreadKeyAtom = Atom.make(
