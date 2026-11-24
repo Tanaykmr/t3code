@@ -117,6 +117,13 @@ export class BoardController {
 
   readonly getSaveState = () => this.saveState;
 
+  /** Closed, fully saved, and with no rejected edit waiting for the user. */
+  isIdle() {
+    return (
+      this.api === null && !this.sending && this.rejection === null && !hasUnsavedWork(this.session)
+    );
+  }
+
   /** A rejected draft waiting for Keep as copy or Discard; later saves do not clear it. */
   private rejection: "conflict" | "rejected" | null = null;
   readonly getRejection = () => this.rejection;
@@ -403,6 +410,8 @@ const controllers = new Map<string, BoardController>();
 export function boardController(key: string, target: BoardTarget): BoardController {
   let controller = controllers.get(key);
   if (controller === undefined) {
+    // Boards closed with nothing left to save are dropped so their scenes and images are freed.
+    for (const [other, existing] of controllers) if (existing.isIdle()) controllers.delete(other);
     controller = new BoardController(target);
     controllers.set(key, controller);
   }
