@@ -404,7 +404,14 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     // The transport allows no browser Origin; refuse it before credentials, as the MCP spec requires.
     if (request.headers.origin !== undefined) return HttpServerResponse.empty({ status: 403 });
-    const admitted = yield* authenticateRequest(request);
+    const admitted = yield* authenticateRequest(request).pipe(
+      Effect.catchTags({
+        BotError: (cause) =>
+          Effect.logError("Could not verify MCP bot ownership.", { cause }).pipe(
+            Effect.as(HttpServerResponse.empty({ status: 503 })),
+          ),
+      }),
+    );
     if (HttpServerResponse.isHttpServerResponse(admitted)) return admitted;
     if (yield* isUndefinedNotification(request)) return HttpServerResponse.empty({ status: 202 });
     const linkExpiresAt = admitted.client?.linkExpiresAt;

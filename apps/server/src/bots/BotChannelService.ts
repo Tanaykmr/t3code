@@ -45,6 +45,7 @@ import {
   ensureBotSchema,
   executingTurnOrigin,
   isBotOwnedThread,
+  readBotOwnership,
   readRooms,
   RoomSeatMessageThread,
 } from "./botStore.ts";
@@ -80,7 +81,7 @@ export class BotChannelService extends Context.Service<
       readonly text: string;
     }) => Effect.Effect<BotSendResult, BotError>;
     /** Whether a thread belongs to a bot, which shows it the bot tools. */
-    readonly isBotThread: (threadId: ThreadId) => Effect.Effect<boolean>;
+    readonly isBotThread: (threadId: ThreadId) => Effect.Effect<boolean, BotError>;
   }
 >()("t3/bots/BotChannelService") {}
 
@@ -1052,10 +1053,7 @@ const make = Effect.gen(function* () {
     handoff,
     sendFromThread,
     isBotThread: Effect.fn("BotChannelService.isBotThread")((threadId) =>
-      isBotOwnedThread(sql, threadId).pipe(
-        NodeSqliteClient.readOnly,
-        Effect.orElseSucceed(() => false),
-      ),
+      isBotOwnedThread(sql, threadId).pipe(NodeSqliteClient.readOnly, readBotOwnership),
     ),
   });
 });

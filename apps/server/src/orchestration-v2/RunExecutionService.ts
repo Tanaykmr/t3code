@@ -1157,7 +1157,7 @@ export const layer: Layer.Layer<
           failure,
           threadDisposition: "reusable",
         });
-        const responseStreamingMode = yield* Effect.gen(function* () {
+        const preparation = yield* Effect.gen(function* () {
           const responseStreamingMode = yield* serverSettings.getSettings.pipe(
             Effect.map(
               (settings) =>
@@ -1172,7 +1172,8 @@ export const layer: Layer.Layer<
           ) {
             return null;
           }
-          return responseStreamingMode;
+          const botContext = yield* BotTurnContext.forProvider(botTurnContext, input.run.threadId);
+          return { responseStreamingMode, botContext };
         }).pipe(
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
@@ -1216,9 +1217,10 @@ export const layer: Layer.Layer<
               }),
           ),
         );
-        if (responseStreamingMode === null) {
+        if (preparation === null) {
           return;
         }
+        const { responseStreamingMode, botContext } = preparation;
         const terminalEvent = yield* Ref.make<ProviderTerminalEvent | null>(null);
         const latestTurnItemOrdinal = yield* Ref.make(input.providerTurnOrdinal * 100);
         const latestProviderThread = yield* Ref.make(input.providerThread);
@@ -2274,7 +2276,7 @@ export const layer: Layer.Layer<
         );
         yield* touchMcpCredential;
         const appContext = [
-          ...(yield* BotTurnContext.forProvider(botTurnContext, input.run.threadId)),
+          ...botContext,
           ...(yield* McpAppModelContext.forProvider(mcpAppModelContext, input.run.threadId)),
         ];
         const turnInput = {

@@ -1,7 +1,8 @@
-import type { ThreadId } from "@t3tools/contracts";
+import { BotError, type ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
 
 /**
  * Bots own their tables and create them on first use, like the workflow engine's
@@ -31,6 +32,13 @@ export const RoomSeatMessageThread = Context.Reference<ThreadId | undefined>(
   "t3/bots/RoomSeatMessageThread",
   { defaultValue: () => undefined },
 );
+
+export const readBotOwnership = <A, R>(lookup: Effect.Effect<A, SqlError, R>) =>
+  lookup.pipe(
+    Effect.mapError(
+      (cause) => new BotError({ message: "Could not read bot thread ownership.", cause }),
+    ),
+  );
 
 export const botThreadOwnership = Effect.fn("botStore.botThreadOwnership")(function* (
   sql: SqlClient.SqlClient,

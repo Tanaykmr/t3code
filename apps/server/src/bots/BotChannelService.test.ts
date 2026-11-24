@@ -13,6 +13,7 @@ import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -121,6 +122,25 @@ const settle = Effect.gen(function* () {
 });
 
 layer("BotChannelService", (it) => {
+  it.effect("fails when bot thread ownership cannot be read", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const channels = yield* BotChannelService.BotChannelService;
+      const threadId = ThreadId.make("thread-without-a-bot");
+      assert.strictEqual(yield* channels.isBotThread(threadId), false);
+
+      const result = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`ALTER TABLE bot_room_threads RENAME TO unavailable_bot_room_threads`;
+          const result = yield* Effect.exit(channels.isBotThread(threadId));
+          yield* sql`ALTER TABLE unavailable_bot_room_threads RENAME TO bot_room_threads`;
+          return result;
+        }),
+      );
+      assert.isTrue(Exit.isFailure(result));
+    }),
+  );
+
   it.effect("routes room posts by chip or to the default responder, once per recipient", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

@@ -1,4 +1,4 @@
-import { ThreadId } from "@t3tools/contracts";
+import { type BotError, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -7,7 +7,12 @@ import * as Schema from "effect/Schema";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { ensureBotSchema, executingTurnOrigin, isOperatorOrigin } from "./botStore.ts";
+import {
+  ensureBotSchema,
+  executingTurnOrigin,
+  isOperatorOrigin,
+  readBotOwnership,
+} from "./botStore.ts";
 
 export interface BotTurnContextEntry {
   readonly key: string;
@@ -18,7 +23,9 @@ export interface BotTurnContextEntry {
 export class BotTurnContext extends Context.Service<
   BotTurnContext,
   {
-    readonly forThread: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<BotTurnContextEntry>>;
+    readonly forThread: (
+      threadId: ThreadId,
+    ) => Effect.Effect<ReadonlyArray<BotTurnContextEntry>, BotError>;
     /** Projects a bot-owned thread may start coding work in; null for an ordinary thread. */
     readonly workTargets: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<string> | null>;
     /** DM, peer, and room seat threads. Null means ownership could not be checked. */
@@ -135,7 +142,7 @@ export const layer = Layer.effect(
           bots.allowed_project_ids_json, 'room' AS conversation FROM bot_room_threads
         JOIN bots ON bots.bot_id = bot_room_threads.bot_id
         WHERE bot_room_threads.thread_id = ${threadId}
-      `;
+      `.pipe(readBotOwnership);
         const bot = rows[0];
         if (bot === undefined) return [];
         const skills = yield* sql<{ name: string; instructions: string }>`
@@ -199,11 +206,12 @@ export const layer = Layer.effect(
       (effect) =>
         effect.pipe(
           NodeSqliteClient.readOnly,
-          Effect.catch((cause) =>
-            Effect.logWarning("Failed to read bot persona.", { cause }).pipe(
-              Effect.as([] as ReadonlyArray<BotTurnContextEntry>),
-            ),
-          ),
+          Effect.catchTags({
+            SqlError: (cause) =>
+              Effect.logWarning("Failed to read bot persona.", { cause }).pipe(
+                Effect.as([] as ReadonlyArray<BotTurnContextEntry>),
+              ),
+          }),
         ),
     );
     const workTargets = Effect.fn("BotTurnContext.workTargets")(
@@ -253,5 +261,5 @@ export const optional = Effect.serviceOption(BotTurnContext);
 export const forProvider = (
   service: Option.Option<BotTurnContext["Service"]>,
   threadId: ThreadId,
-): Effect.Effect<ReadonlyArray<BotTurnContextEntry>> =>
+): Effect.Effect<ReadonlyArray<BotTurnContextEntry>, BotError> =>
   Option.isSome(service) ? service.value.forThread(threadId) : Effect.succeed([]);
