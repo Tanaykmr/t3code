@@ -564,6 +564,32 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect(
+    "recognises its own stop after a lost reply and leaves a dashboard start running",
+    () => {
+      const { layer, fake } = setup();
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+        fake.loseNextResponse("stop");
+        // The worker sends at once; Boat archives it but the reply is lost.
+        yield* boat.stop({ requestId: requestId(), managedId });
+        // Before the next pass, someone starts it again from Boat's dashboard.
+        fake.resumeExternally(sandboxId);
+        yield* settle;
+        expect(fake.calls.filter((name) => name === "stop")).toHaveLength(1);
+        expect(fake.sandboxes.get(sandboxId)?.sandbox.state).toBe("running");
+        expect(yield* server(managedId)).toMatchObject({
+          lifecycle: "running",
+          operation: { kind: "stop", failure: "provider-rejected" },
+        });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("keeps the key while it still manages machines", () => {
     const { layer } = setup();
     return Effect.gen(function* () {

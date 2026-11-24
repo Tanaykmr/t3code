@@ -110,8 +110,10 @@ interface AccountRow {
 const decodeServer = Schema.decodeUnknownOption(BoatServer);
 /** Marks a stop or resume Boat acknowledged, so later passes only confirm it. */
 const ACKNOWLEDGED = "acknowledged";
-/** Set just before a stop is first sent, so an unanswered send is never repeated blind. */
-const DISPATCHING = "dispatching";
+// A stop's provider_operation_id holds "sending:<Boat's stop ID seen before sending>" until Boat
+// answers, then "stop:<Boat's ID for our stop>". A new ID after an unanswered send is ours.
+const SENDING = "sending:";
+const SENT = "stop:";
 const isBoatError = Schema.is(BoatError);
 const UsageJson = Schema.fromJsonString(BoatUsageSample);
 const decodeUsage = Schema.decodeUnknownOption(UsageJson);
@@ -147,12 +149,12 @@ function failureCode(error: BoatApiError | BoatBootstrapError): BoatFailureCode 
   }
 }
 
-/** Live again although Boat's stop for it is no longer under way: started outside T3. */
-const startedAfterStop = (sandbox: BoatSandbox) =>
+/** Live again although our own stop (by Boat's ID) is no longer under way: started outside T3. */
+const startedAfterStop = (sandbox: BoatSandbox, ourStopId: string | null) =>
+  ourStopId !== null &&
+  sandbox.stopId === ourStopId &&
   isLiveState(sandbox.state) &&
-  sandbox.stopStatus !== null &&
-  sandbox.stopStatus !== "pending" &&
-  sandbox.stopStatus !== "failing";
+  (sandbox.stopStatus === "completed" || sandbox.stopStatus === "superseded");
 
 const isTransient = (error: BoatApiError) =>
   error.category === "rate-limited" ||
@@ -538,39 +540,46 @@ export const make = Effect.gen(function* () {
       yield* setServer(server.managed_id, { lifecycle: "failed" });
       return true;
     }
-    const acknowledged = op.provider_operation_id === ACKNOWLEDGED;
+    const marker = op.provider_operation_id ?? "";
+    let ourStopId = marker.startsWith(SENT) ? marker.slice(SENT.length) || null : null;
+    const sentEarlier = ourStopId !== null;
     yield* setStage(op.request_id, "stopping");
     yield* setServer(server.managed_id, { lifecycle: "stopping" });
-    if (!acknowledged) {
-      const current = yield* retryTransient(api.get(key, sandboxId)).pipe(
-        Effect.asSome,
-        Effect.catchIf(isTransient, () => Effect.succeedNone),
-      );
-      // Unseen, only a stop never sent before goes out; an earlier unanswered send waits.
-      if (Option.isNone(current) && op.provider_operation_id === DISPATCHING) return false;
-      if (Option.isNone(current) || current.value.state !== "archived") {
-        yield* setStage(op.request_id, "stopping", { provider_operation_id: DISPATCHING });
-        // Sent once per pass: a lost reply leaves the operation pending, and the next pass looks
-        // at the machine before sending again.
-        yield* api.stop(key, sandboxId);
-        yield* setStage(op.request_id, "stopping", { provider_operation_id: ACKNOWLEDGED });
+    const current = yield* retryTransient(api.get(key, sandboxId)).pipe(
+      Effect.asSome,
+      Effect.catchIf(isTransient, () => Effect.succeedNone),
+    );
+    if (Option.isSome(current)) yield* observe(server.managed_id, current.value);
+    if (!sentEarlier) {
+      if (marker.startsWith(SENDING)) {
+        // An earlier send got no answer: never resend without a fresh look.
+        if (Option.isNone(current)) return false;
+        const before = marker.slice(SENDING.length) || null;
+        if (current.value.stopId !== null && current.value.stopId !== before) {
+          // Boat has a stop newer than the one seen before sending: that send took effect.
+          ourStopId = current.value.stopId;
+          yield* setStage(op.request_id, "stopping", { provider_operation_id: SENT + ourStopId });
+        }
       }
-    } else {
-      // Boat took this stop earlier. A live machine whose stop is no longer under way was
-      // started again outside T3; a stop still pending or retrying a snapshot keeps Stopping.
-      const current = yield* retryTransient(api.get(key, sandboxId));
-      yield* observe(server.managed_id, current);
-      if (startedAfterStop(current)) {
-        return yield* new OperationRefused({ code: "provider-rejected" });
+      if (ourStopId === null && (Option.isNone(current) || current.value.state !== "archived")) {
+        const before = Option.isSome(current) ? (current.value.stopId ?? "") : "";
+        yield* setStage(op.request_id, "stopping", { provider_operation_id: SENDING + before });
+        // Sent once per pass: a lost reply leaves the operation pending for the next look.
+        ourStopId = yield* api.stop(key, sandboxId);
+        yield* setStage(op.request_id, "stopping", {
+          provider_operation_id: SENT + (ourStopId ?? ""),
+        });
       }
+    }
+    // Only our own stop's status can say an outside start overtook it.
+    if (Option.isSome(current) && sentEarlier && startedAfterStop(current.value, ourStopId)) {
+      return yield* new OperationRefused({ code: "provider-rejected" });
     }
     const archived = yield* pollUntil(
       key,
       server.managed_id,
       sandboxId,
-      // A stop sent in this pass may not show in Boat's reads yet, so only one taken in an
-      // earlier pass can be judged superseded by an outside start.
-      (s) => s.state === "archived" || (acknowledged && startedAfterStop(s)),
+      (s) => s.state === "archived" || startedAfterStop(s, ourStopId),
     );
     if (Option.isNone(archived)) return false;
     if (archived.value.state !== "archived") {

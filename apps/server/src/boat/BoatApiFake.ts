@@ -45,6 +45,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
   const failures = new Map<string, BoatApiError>();
   const lostResponses = new Set<string>();
   let nextId = 0;
+  let nextStopId = 0;
 
   /** Records the call, applies a queued failure, and checks the key. Returns now in millis. */
   const enter = Effect.fn("FakeBoat.enter")(function* (name: string, key: BoatKey) {
@@ -79,6 +80,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
       archiveAfter: null,
       snapshotAvailable: true,
       dataExpiredAt: iso(now + RETENTION_MS),
+      stopId: `stop_${++nextStopId}`,
       stopStatus: "completed",
     });
 
@@ -110,6 +112,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
         stoppedAt: null,
         dataExpiredAt: null,
         snapshotAvailable: false,
+        stopId: null,
         stopStatus: null,
       },
     };
@@ -122,6 +125,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
     const now = yield* enter("stop", key);
     const entry = yield* find(sandboxId);
     if (entry.sandbox.state !== "archived") archive(entry, now);
+    return entry.sandbox.stopId;
   });
 
   /** After a call took effect at Boat, loses its reply as a dropped connection would. */
@@ -152,8 +156,9 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
         );
     }),
     stop: Effect.fn("FakeBoat.stopWithReply")(function* (key, sandboxId) {
-      yield* stopSandbox(key, sandboxId);
+      const stopId = yield* stopSandbox(key, sandboxId);
       yield* maybeLoseReply("stop");
+      return stopId;
     }),
     resume: Effect.fn("FakeBoat.resume")(function* (key, sandboxId, ttlSeconds) {
       const now = yield* enter("resume", key);

@@ -32,6 +32,7 @@ const SandboxBody = Schema.Struct({
   stop: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
+        id: Schema.optional(Schema.String),
         status: Schema.Literals(["pending", "failing", "completed", "superseded"]),
       }),
     ),
@@ -53,6 +54,9 @@ const UserEnvelope = Schema.Struct({
 const DeletionEnvelope = Schema.Struct({
   operation: Schema.Struct({ id: Schema.String, status: Schema.String }),
 });
+const StopEnvelope = Schema.Struct({
+  operation: Schema.optional(Schema.NullOr(Schema.Struct({ id: Schema.String }))),
+});
 const UsageEnvelope = Schema.Struct({
   seconds: Schema.Number,
   dollars: Schema.Number,
@@ -69,6 +73,7 @@ const toSandbox = (body: typeof SandboxBody.Type): BoatSandbox => ({
   stoppedAt: body.stoppedAt ?? null,
   dataExpiredAt: body.dataExpiredAt ?? null,
   snapshotAvailable: body.snapshotAvailable ?? null,
+  stopId: body.stop?.id ?? null,
   stopStatus: body.stop?.status ?? null,
 });
 
@@ -192,12 +197,13 @@ const make = Effect.gen(function* () {
     }),
     stop: Effect.fn("BoatHttpApi.stop")(function* (key, sandboxId) {
       const id = yield* checked(SANDBOX_ID, sandboxId);
-      yield* send(
+      const { operation } = yield* send(
         key,
         HttpClientRequest.post(`/sandboxes/${id}/stop`).pipe(
           HttpClientRequest.bodyJsonUnsafe({ force: false }),
         ),
-      );
+      ).pipe(Effect.flatMap(decode(StopEnvelope)));
+      return operation?.id ?? null;
     }),
     resume: Effect.fn("BoatHttpApi.resume")(function* (key, sandboxId, ttlSeconds) {
       const id = yield* checked(SANDBOX_ID, sandboxId);

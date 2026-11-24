@@ -50,6 +50,7 @@ export interface BoatSandbox {
   /** Null when Boat's reply left it out, which says nothing about the disk. */
   readonly snapshotAvailable: boolean | null;
   /** Boat's latest stop for this sandbox; "failing" retries archival, "superseded" lost to a start. */
+  readonly stopId: string | null;
   readonly stopStatus: "pending" | "failing" | "completed" | "superseded" | null;
 }
 
@@ -92,7 +93,8 @@ export class BoatApi extends Context.Service<
       labels: Readonly<Record<string, string>>,
     ) => Effect.Effect<ReadonlyArray<BoatSandbox>, BoatApiError>;
     /** Graceful stop; Boat coalesces repeats. */
-    readonly stop: (key: BoatKey, sandboxId: string) => Effect.Effect<void, BoatApiError>;
+    /** Graceful stop; Boat coalesces repeats. Returns Boat's stop operation ID when it gives one. */
+    readonly stop: (key: BoatKey, sandboxId: string) => Effect.Effect<string | null, BoatApiError>;
     readonly resume: (
       key: BoatKey,
       sandboxId: string,

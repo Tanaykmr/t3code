@@ -70,6 +70,16 @@ describe("BoatHttpApi", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("returns Boat's stop operation ID", () => {
+    const { layer } = fakeBoat(() =>
+      json({ ok: true, id: SANDBOX_ID, operation: { id: "stop_abc", status: "pending" } }, 202),
+    );
+    return Effect.gen(function* () {
+      const api = yield* BoatApi;
+      expect(yield* api.stop(KEY, SANDBOX_ID)).toBe("stop_abc");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("reads Boat's one-time cancelled reply and leaves an omitted snapshot unknown", () => {
     const { layer } = fakeBoat(() =>
       json({ ok: true, sandbox: { id: SANDBOX_ID, state: "cancelled", error: "cancelled" } }),
