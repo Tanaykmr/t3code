@@ -39,7 +39,13 @@ import { runtimeModeRank } from "../mcp/delegatedTaskModes.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as BotService from "./BotService.ts";
-import { type BotRow, ensureBotSchema, executingTurnOrigin, readRooms } from "./botStore.ts";
+import {
+  type BotRow,
+  ensureBotSchema,
+  executingTurnOrigin,
+  isBotOwnedThread,
+  readRooms,
+} from "./botStore.ts";
 
 /** Hand-offs one human request may set off, so two bots cannot wake each other forever. */
 const MAX_HOPS = 3;
@@ -1037,17 +1043,12 @@ const make = Effect.gen(function* () {
     sendRoomMessage,
     handoff,
     sendFromThread,
-    isBotThread: Effect.fn("BotChannelService.isBotThread")(function* (threadId) {
-      const rows = yield* sql`
-        SELECT 1 FROM bots WHERE dm_thread_id = ${threadId} OR peer_thread_id = ${threadId}
-        UNION ALL SELECT 1 FROM bot_room_threads WHERE thread_id = ${threadId}
-        LIMIT 1
-      `.pipe(
+    isBotThread: Effect.fn("BotChannelService.isBotThread")((threadId) =>
+      isBotOwnedThread(sql, threadId).pipe(
         NodeSqliteClient.readOnly,
-        Effect.orElseSucceed(() => []),
-      );
-      return rows.length > 0;
-    }),
+        Effect.orElseSucceed(() => false),
+      ),
+    ),
   });
 });
 

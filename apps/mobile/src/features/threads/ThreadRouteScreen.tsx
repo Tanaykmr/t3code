@@ -175,6 +175,7 @@ function OpeningThreadLoadingScreen() {
 type ThreadRouteScreenRouteProps = StaticScreenProps<{
   readonly environmentId?: string;
   readonly threadId?: string;
+  readonly botDm?: true;
   readonly draft?: NewTaskDraftRouteParams;
   readonly inspector?: ThreadInspectorTarget;
   readonly prompt?: string | string[];

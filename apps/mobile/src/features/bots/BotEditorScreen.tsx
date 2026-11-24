@@ -153,6 +153,7 @@ export function BotEditorScreen({ route }: StaticScreenProps<BotEditorParams>) {
         params: {
           environmentId: String(environmentId),
           threadId: String(result.value.bot.dmThreadId),
+          botDm: true,
         },
       });
     }

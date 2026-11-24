@@ -57,6 +57,7 @@ vi.mock("../../../state/presentation", () => ({ environmentPresentations: {} }))
 vi.mock("../../../state/atom-registry", () => ({
   appAtomRegistry: { get: (atom: unknown) => atom },
 }));
+vi.mock("../../../state/bots", () => ({ botByDmThreadKeyAtom: new Map() }));
 vi.mock("../../../state/threads", () => ({
   environmentThreadShells: {},
   startOpeningEnvironmentThread: vi.fn(),

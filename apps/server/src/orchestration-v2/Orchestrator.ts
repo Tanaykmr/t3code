@@ -223,6 +223,9 @@ import {
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import { botProviderRejection } from "../bots/BotProviderPolicy.ts";
+import { ensureBotSchema, isBotOwnedThread } from "../bots/botStore.ts";
 
 const isMessageQuestionAnswer = Schema.is(
   Schema.Union([TrimmedNonEmptyString, Schema.NonEmptyArray(TrimmedNonEmptyString)]),
@@ -1670,6 +1673,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const providerSessions = yield* ProviderSessionManagerV2;
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const sql = yield* SqlClient.SqlClient;
+  yield* ensureBotSchema.pipe(Effect.orDie);
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
@@ -16389,6 +16394,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return yield* replayCommandReceipt(command, existingReceipt.value);
     }
 
+    if (
+      (command.type === "thread.model-selection.set" ||
+        command.type === "provider.switch" ||
+        command.type === "message.dispatch") &&
+      command.modelSelection !== undefined
+    ) {
+      const settings = yield* serverSettings.getSettings.pipe(mapDispatchError(command));
+      const rejection = botProviderRejection(command.modelSelection.instanceId, settings);
+      if (
+        rejection !== undefined &&
+        (yield* isBotOwnedThread(sql, command.threadId).pipe(mapDispatchError(command)))
+      ) {
+        return yield* new OrchestratorCommandRejectedError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: rejection,
+        });
+      }
+    }
+
     // Recheck under the lock; the user may have raised modes since sender preflight.
     const limit = yield* DispatchModeLimit;
     if (limit !== undefined) {
@@ -17497,6 +17522,7 @@ export const layer: Layer.Layer<
   | ProjectionStoreV2
   | RuntimePolicyV2
   | ServerSettings.ServerSettingsService
+  | SqlClient.SqlClient
   | TaskFolderStore.TaskFolderStore
   | ThreadForkServiceV2
 > = Layer.effect(OrchestratorV2, makeOrchestrator()).pipe(

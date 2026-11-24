@@ -35,11 +35,10 @@ export function AndroidWorkspaceTabsProvider(props: {
   const settingsPage =
     settingsIndex < 0 ? null : (props.state.routes[settingsIndex + 1]?.name ?? null);
   const root = { key, settingsOpen, settingsRoute, settingsPage };
+  const detail = props.state.routes.find((route) => route.name !== "Home");
   return Platform.OS === "android" ? (
     // A cold-start link lands on a page with no list selection; start on that page's list.
-    <WorkspaceTabsProvider
-      initialTab={workspaceTabOf(props.state.routes.find((route) => route.name !== "Home")?.name)}
-    >
+    <WorkspaceTabsProvider initialTab={workspaceTabOf(detail)} route={detail}>
       <AndroidWorkspaceRootContext value={root}>{props.children}</AndroidWorkspaceRootContext>
     </WorkspaceTabsProvider>
   ) : (

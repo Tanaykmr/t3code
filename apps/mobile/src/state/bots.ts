@@ -88,7 +88,7 @@ export const botDmThreadKeysAtom = Atom.make((get) =>
   botDmThreadKeys(get(environmentBotsAtom), get(environmentBotRoomsAtom)),
 ).pipe(Atom.withLabel("mobile-bot-dm-thread-keys"));
 
-const botByDmThreadKeyAtom = Atom.make(
+export const botByDmThreadKeyAtom = Atom.make(
   (get) =>
     new Map(
       get(environmentBotsAtom).map((entry) => [

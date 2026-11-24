@@ -24,6 +24,18 @@ const addColumn = Effect.fnUntraced(function* (
   if (added._tag === "Failure" && !(yield* hasColumn)) return yield* Effect.failCause(added.cause);
 });
 
+export const isBotOwnedThread = Effect.fn("botStore.isBotOwnedThread")(function* (
+  sql: SqlClient.SqlClient,
+  threadId: string,
+) {
+  const [owned] = yield* sql`
+    SELECT 1 FROM bots WHERE dm_thread_id = ${threadId} OR peer_thread_id = ${threadId}
+    UNION ALL SELECT 1 FROM bot_room_threads WHERE thread_id = ${threadId}
+    LIMIT 1
+  `;
+  return owned !== undefined;
+});
+
 export const ensureBotDirectorySchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`

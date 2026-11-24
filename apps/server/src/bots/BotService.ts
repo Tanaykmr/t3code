@@ -11,9 +11,7 @@ import {
   CommandId,
   ModelSelection,
   ProjectId,
-  type ProviderInstanceId,
   ThreadId,
-  isBotProvider,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
 } from "@t3tools/contracts";
@@ -31,6 +29,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { botProviderRejection } from "./BotProviderPolicy.ts";
 import { type BotRow, ensureBotSchema, readRooms } from "./botStore.ts";
 
 export class BotService extends Context.Service<
@@ -41,11 +40,6 @@ export class BotService extends Context.Service<
     readonly update: (input: BotUpdateInput) => Effect.Effect<BotMutationResult, BotError>;
     readonly archive: (input: BotRefInput) => Effect.Effect<BotMutationResult, BotError>;
     readonly restore: (input: BotRefInput) => Effect.Effect<BotMutationResult, BotError>;
-    /** A bot's chat or room seat may only switch to a provider that carries bots. */
-    readonly assertThreadProvider: (
-      threadId: ThreadId,
-      instanceId: string,
-    ) => Effect.Effect<void, BotError>;
     /** Rooms live in the same directory; their writer signals here. */
     readonly notifyDirectoryChanged: Effect.Effect<void>;
   }
@@ -76,19 +70,6 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const settings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
   yield* ensureBotSchema;
-
-  // Built-in instances are named after their driver; configured ones say which driver they use.
-  const assertBotProvider = Effect.fn("BotService.assertBotProvider")(function* (
-    instanceId: string,
-  ) {
-    const configured = Option.isSome(settings)
-      ? (yield* settings.value.getSettings.pipe(Effect.orElseSucceed(() => null)))
-          ?.providerInstances?.[instanceId as ProviderInstanceId]
-      : undefined;
-    if (!isBotProvider({ driverKind: configured?.driver ?? instanceId, instanceId })) {
-      return yield* botError("Bots run on Codex or Claude for now. Pick one of those agents.");
-    }
-  });
 
   // Directory reads are small; subscribers re-read on the newest change signal.
   const changes = yield* PubSub.sliding<void>(1);
@@ -222,7 +203,15 @@ const make = Effect.gen(function* () {
     if (input.botId.includes(":")) return yield* botError("That bot id is not valid.", input.botId);
     const existing = yield* readRow(input.botId);
     if (existing === undefined) {
-      yield* assertBotProvider(input.modelSelection.instanceId);
+      const currentSettings = Option.isSome(settings)
+        ? yield* settings.value.getSettings.pipe(
+            Effect.mapError((cause) =>
+              botError("Could not read provider settings.", input.botId, cause),
+            ),
+          )
+        : null;
+      const rejection = botProviderRejection(input.modelSelection.instanceId, currentSettings);
+      if (rejection !== undefined) return yield* botError(rejection);
       const now = DateTime.formatIso(yield* DateTime.now);
       const modelSelectionJson = yield* encodeModelSelection(input.modelSelection).pipe(
         Effect.mapError((cause) => botError("That model is not valid.", input.botId, cause)),
@@ -379,16 +368,6 @@ const make = Effect.gen(function* () {
     archive,
     restore,
     notifyDirectoryChanged: notifyChanged,
-    assertThreadProvider: Effect.fn("BotService.assertThreadProvider")(
-      function* (threadId, instanceId) {
-        const owned = yield* sql`
-        SELECT 1 FROM bots WHERE dm_thread_id = ${threadId} OR peer_thread_id = ${threadId}
-        UNION ALL SELECT 1 FROM bot_room_threads WHERE thread_id = ${threadId}
-        LIMIT 1
-      `.pipe(Effect.mapError((cause) => botError("Could not read the bot.", undefined, cause)));
-        if (owned.length > 0) yield* assertBotProvider(instanceId);
-      },
-    ),
   });
 });
 

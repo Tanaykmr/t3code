@@ -3,8 +3,8 @@ import { describe, expect, it } from "vite-plus/test";
 import { parseActiveThreadPath } from "./hardwareKeyboardCommands";
 
 describe("parseActiveThreadPath", () => {
-  it("decodes route components", () => {
-    expect(parseActiveThreadPath("/threads/local%20machine/thread%2Fone/review")).toEqual({
+  it.each(["/review", "?botDm=true"])("decodes route components before %s", (suffix) => {
+    expect(parseActiveThreadPath(`/threads/local%20machine/thread%2Fone${suffix}`)).toEqual({
       environmentId: "local machine",
       threadId: "thread/one",
     });
