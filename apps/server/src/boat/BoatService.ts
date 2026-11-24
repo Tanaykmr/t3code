@@ -841,7 +841,6 @@ export const make = Effect.gen(function* () {
     );
     const server = yield* readServer(op.managed_id);
     if (server !== null) {
-      // Stop and Delete stay available from Failed while the machine is known.
       yield* setServer(
         op.managed_id,
         op.kind === "resume" && failure === "snapshot-expired"

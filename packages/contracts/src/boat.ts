@@ -221,10 +221,8 @@ export function boatAllowedActions(
       actions.add("delete");
       break;
     case "failed":
-      if (server.sandboxId !== null) {
-        actions.add("stop");
-        actions.add("delete");
-      }
+      if (server.sandboxId !== null) actions.add("stop");
+      actions.add("delete");
       break;
     case "stopping":
     case "deleting":

@@ -634,6 +634,29 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("deletes a rejected create without a sandbox and allows key removal", () => {
+    const { layer, fake, secrets } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      fake.failNext("create", new BoatApiError({ category: "rejected" }));
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "failed",
+        sandboxId: null,
+        operation: { kind: "create", stage: "failed", failure: "provider-rejected" },
+      });
+
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toBeUndefined();
+      expect(fake.calls).not.toContain("delete");
+      expect(yield* boat.setApiKey({ apiKey: null })).toEqual({ status: "missing" });
+      expect(secrets.has("boat-api-key")).toBe(false);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("refuses a same-user key for another wallet while it manages machines", () => {
     const { layer, secrets } = setup();
     return Effect.gen(function* () {
