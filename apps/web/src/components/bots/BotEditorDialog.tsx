@@ -52,6 +52,9 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Textarea } from "../ui/textarea";
 import { BOT_AVATAR_ICONS } from "./BotAvatarIcon";
 
+const sameMembers = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) =>
+  a.length === b.length && a.every((value) => b.includes(value));
+
 type EditorRequest =
   | { readonly mode: "create"; readonly environmentId: EnvironmentId }
   | { readonly mode: "edit"; readonly environmentId: EnvironmentId; readonly bot: Bot };
@@ -147,7 +150,14 @@ function BotEditorDialog({ request }: { readonly request: EditorRequest }) {
       editing !== null
         ? await updateBot({
             environmentId,
-            input: { botId: editing.id, ...fields, allowedProjectIds },
+            input: {
+              botId: editing.id,
+              ...fields,
+              // Sent only when edited here, so a stale editor cannot restore a revoked target.
+              ...(sameMembers(allowedProjectIds, editing.allowedProjectIds)
+                ? {}
+                : { allowedProjectIds }),
+            },
           })
         : await createBot({
             environmentId,

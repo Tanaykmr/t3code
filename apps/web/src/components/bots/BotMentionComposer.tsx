@@ -49,6 +49,7 @@ export function BotMentionComposer(props: {
     const next = `${before}${inserted}${after}`;
     setText(next);
     setChips([...chips, { botId: bot.id, label: bot.name }]);
+    setSubmissionId(null);
     const nextCaret = before.length + inserted.length;
     setCaret(nextCaret);
     setHighlight(0);

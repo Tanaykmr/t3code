@@ -45,6 +45,15 @@ export function BotKnowledgeSections(props: {
     label: "bot knowledge delete",
   });
   const [memoryDraft, setMemoryDraft] = useState("");
+  const canSaveMemory = useAtomValue(
+    serverEnvironment.saveBotMemory.permissionAtom(props.environmentId),
+  );
+  const canSaveSkill = useAtomValue(
+    serverEnvironment.saveBotSkill.permissionAtom(props.environmentId),
+  );
+  const canDelete = useAtomValue(
+    serverEnvironment.deleteBotKnowledge.permissionAtom(props.environmentId),
+  );
   const [skillDraft, setSkillDraft] = useState<{ name: string; instructions: string } | null>(null);
 
   const report = (result: Awaited<ReturnType<typeof remove>>) => {
@@ -89,6 +98,7 @@ export function BotKnowledgeSections(props: {
               <Button
                 size="icon-xs"
                 variant="ghost-muted"
+                disabled={!canDelete}
                 aria-label={gt("Forget")}
                 onClick={async () =>
                   report(
@@ -125,6 +135,7 @@ export function BotKnowledgeSections(props: {
             maxLength={BOT_MEMORY_MAX_LENGTH}
             placeholder={gt("Add something to remember")}
             aria-label={gt("Add something to remember")}
+            disabled={!canSaveMemory}
             value={memoryDraft}
             onChange={(event) => setMemoryDraft(event.target.value)}
           />
@@ -139,6 +150,7 @@ export function BotKnowledgeSections(props: {
             size="icon-xs"
             variant="ghost-muted"
             aria-label={gt("Add skill")}
+            disabled={!canSaveSkill}
             onClick={() => setSkillDraft({ name: "", instructions: "" })}
           >
             <PlusIcon aria-hidden />
@@ -149,6 +161,7 @@ export function BotKnowledgeSections(props: {
             <li key={skill.id} className="flex items-center gap-2 text-xs">
               <Switch
                 size="sm"
+                disabled={!canSaveSkill}
                 checked={skill.enabled}
                 aria-label={gt("Use {skill}", { skill: skill.name })}
                 onCheckedChange={(checked) => void toggleSkill(skill, checked)}
@@ -157,6 +170,7 @@ export function BotKnowledgeSections(props: {
               <Button
                 size="icon-xs"
                 variant="ghost-muted"
+                disabled={!canDelete}
                 aria-label={gt("Delete {skill}", { skill: skill.name })}
                 onClick={async () =>
                   report(

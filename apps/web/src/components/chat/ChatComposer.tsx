@@ -634,10 +634,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const environmentBots = useEnvironmentBots();
   const botMentionCandidates = environmentBots
     .filter(
-      (entry) =>
-        entry.environmentId === dmBot?.environmentId &&
-        entry.bot.archivedAt === null &&
-        entry.bot.id !== dmBot.bot.id,
+      (entry) => entry.environmentId === dmBot?.environmentId && entry.bot.archivedAt === null,
     )
     .map((entry) => entry.bot);
   const {

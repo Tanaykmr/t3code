@@ -3196,7 +3196,9 @@ export default function ChatView(props: ChatViewProps) {
   const onSendOrHandoff: typeof onSend = async (...args) => {
     // A bot DM's picked @-chips go to those bots; the DM's own bot runs only when picked too.
     const plainSend = args[3] === undefined && args[4] === undefined;
-    if (plainSend && (await sendBotHandoff(promptRef.current))) {
+    const outcome = plainSend ? await sendBotHandoff(promptRef.current) : "none";
+    if (outcome === "failed") return;
+    if (outcome === "handed-off-only") {
       if (composerDraftTarget !== null) setComposerDraftPrompt(composerDraftTarget, "");
       promptRef.current = "";
       composerRef.current?.resetCursorState();
