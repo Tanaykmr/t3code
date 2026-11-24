@@ -5,6 +5,7 @@ import {
   addBotMentionChip,
   botMentionsIn,
   clearBotMentionChips,
+  handoffIdFor,
   resolveBotHandoff,
 } from "./bot-mention-chips";
 
@@ -25,5 +26,17 @@ describe("bot mention chips", () => {
     expect(resolveBotHandoff([bolt], "ada")).toEqual({ handoff: [bolt], skipThread: true });
     expect(resolveBotHandoff([ada, bolt], "ada")).toEqual({ handoff: [bolt], skipThread: false });
     expect(resolveBotHandoff([], "ada")).toEqual({ handoff: [], skipThread: false });
+  });
+
+  it("keeps one handoff id per submission until an edit or a success", () => {
+    let next = 0;
+    const newId = () => `id-${++next}`;
+    expect(handoffIdFor("dm", "@Bolt look", [bolt], newId)).toBe("id-1");
+    // A retry of the same text and picks reuses it.
+    expect(handoffIdFor("dm", "@Bolt look", [bolt], newId)).toBe("id-1");
+    // An edit is a new submission.
+    expect(handoffIdFor("dm", "@Bolt look again", [bolt], newId)).toBe("id-2");
+    clearBotMentionChips("dm");
+    expect(handoffIdFor("dm", "@Bolt look again", [bolt], newId)).toBe("id-3");
   });
 });

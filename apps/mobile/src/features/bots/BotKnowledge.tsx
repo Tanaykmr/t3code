@@ -39,6 +39,15 @@ export function BotKnowledge(props: {
   const saveMemory = useAtomCommand(serverEnvironment.saveBotMemory, { reportFailure: false });
   const saveSkill = useAtomCommand(serverEnvironment.saveBotSkill, { reportFailure: false });
   const remove = useAtomCommand(serverEnvironment.deleteBotKnowledge, { reportFailure: false });
+  const canSaveMemory = useAtomValue(
+    serverEnvironment.saveBotMemory.permissionAtom(props.environmentId),
+  );
+  const canSaveSkill = useAtomValue(
+    serverEnvironment.saveBotSkill.permissionAtom(props.environmentId),
+  );
+  const canDelete = useAtomValue(
+    serverEnvironment.deleteBotKnowledge.permissionAtom(props.environmentId),
+  );
   const [memoryDraft, setMemoryDraft] = useState("");
   const [skillDraft, setSkillDraft] = useState<{ name: string; instructions: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -98,75 +107,84 @@ export function BotKnowledge(props: {
             <Text className="text-xs text-foreground-muted">
               {memory.source === "bot" ? gt("from chat") : gt("added")}
             </Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={gt("Forget")}
-              hitSlop={8}
-              onPress={async () =>
-                settle(
-                  await remove({
-                    ...target,
-                    input: { botId: props.botId, kind: "memory", id: memory.id },
-                  }),
-                )
-              }
-            >
-              <SymbolView name="xmark" size={14} tintColorClassName="accent-icon-muted" />
-            </Pressable>
+            {canDelete ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={gt("Forget")}
+                hitSlop={8}
+                onPress={async () =>
+                  settle(
+                    await remove({
+                      ...target,
+                      input: { botId: props.botId, kind: "memory", id: memory.id },
+                    }),
+                  )
+                }
+              >
+                <SymbolView name="xmark" size={14} tintColorClassName="accent-icon-muted" />
+              </Pressable>
+            ) : null}
           </View>
         ))}
-        <TextInput
-          accessibilityLabel={gt("Add something to remember")}
-          placeholder={gt("Add something to remember")}
-          placeholderTextColorClassName="accent-foreground-muted"
-          maxLength={BOT_MEMORY_MAX_LENGTH}
-          returnKeyType="done"
-          value={memoryDraft}
-          onChangeText={setMemoryDraft}
-          onSubmitEditing={() => void addMemory()}
-          className={FIELD_CLASS}
-        />
+        {canSaveMemory ? (
+          <TextInput
+            accessibilityLabel={gt("Add something to remember")}
+            placeholder={gt("Add something to remember")}
+            placeholderTextColorClassName="accent-foreground-muted"
+            maxLength={BOT_MEMORY_MAX_LENGTH}
+            returnKeyType="done"
+            value={memoryDraft}
+            onChangeText={setMemoryDraft}
+            onSubmitEditing={() => void addMemory()}
+            className={FIELD_CLASS}
+          />
+        ) : null}
       </View>
       <View className="gap-3 border-t border-border-subtle pt-3">
         <View className="flex-row items-center justify-between">
           <Text className="font-t3-medium text-xs text-foreground-muted">{gt("Skills")}</Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={gt("Add skill")}
-            hitSlop={8}
-            onPress={() => setSkillDraft({ name: "", instructions: "" })}
-          >
-            <SymbolView name="plus" size={16} tintColorClassName="accent-icon" />
-          </Pressable>
+          {canSaveSkill ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={gt("Add skill")}
+              hitSlop={8}
+              onPress={() => setSkillDraft({ name: "", instructions: "" })}
+            >
+              <SymbolView name="plus" size={16} tintColorClassName="accent-icon" />
+            </Pressable>
+          ) : null}
         </View>
         {(knowledge?.skills ?? []).map((skill) => (
           <View key={skill.id} className="flex-row items-center gap-3">
             <ThemedSwitch
               accessibilityLabel={gt("Use {skill}", { skill: skill.name })}
               value={skill.enabled}
+              disabled={!canSaveSkill}
               onValueChange={(enabled) => void toggleSkill(skill, enabled)}
             />
             <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={1}>
               {skill.name}
             </Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={gt("Delete {skill}", { skill: skill.name })}
-              hitSlop={8}
-              onPress={async () =>
-                settle(
-                  await remove({
-                    ...target,
-                    input: { botId: props.botId, kind: "skill", id: skill.id },
-                  }),
-                )
-              }
-            >
-              <SymbolView name="trash" size={14} tintColorClassName="accent-icon-muted" />
-            </Pressable>
+            {canDelete ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={gt("Delete {skill}", { skill: skill.name })}
+                hitSlop={8}
+                onPress={async () =>
+                  settle(
+                    await remove({
+                      ...target,
+                      input: { botId: props.botId, kind: "skill", id: skill.id },
+                    }),
+                  )
+                }
+              >
+                <SymbolView name="trash" size={14} tintColorClassName="accent-icon-muted" />
+              </Pressable>
+            ) : null}
           </View>
         ))}
-        {skillDraft === null ? null : (
+        {skillDraft === null || !canSaveSkill ? null : (
           <View className="gap-2">
             <TextInput
               accessibilityLabel={gt("Skill name")}

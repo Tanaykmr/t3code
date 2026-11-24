@@ -8,6 +8,7 @@ import {
   type BotAvatar,
   BotId,
   EnvironmentId,
+  isBotProvider,
   type ProjectId,
 } from "@t3tools/contracts";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -60,10 +61,17 @@ export function BotEditorScreen({ route }: StaticScreenProps<BotEditorParams>) {
   const [allowedProjectIds, setAllowedProjectIds] = useState<ReadonlyArray<ProjectId>>(
     editing?.allowedProjectIds ?? [],
   );
+  // Sent only when edited here, so a stale editor cannot restore a target revoked elsewhere.
+  const [targetsEdited, setTargetsEdited] = useState(false);
   const chosenProjectId = projectId ?? projects[0]?.id ?? null;
   const providers = groupByProvider(
     buildModelOptions(config, null, undefined, chosenProjectId).filter(
-      (option) => option.isUnavailable !== true,
+      (option) =>
+        option.isUnavailable !== true &&
+        isBotProvider({
+          driverKind: option.providerDriver,
+          instanceId: option.selection.instanceId,
+        }),
     ),
   );
   const [providerKey, setProviderKey] = useState<string | null>(null);
@@ -110,7 +118,11 @@ export function BotEditorScreen({ route }: StaticScreenProps<BotEditorParams>) {
       editing !== null
         ? await updateBot({
             environmentId,
-            input: { botId: editing.id, ...fields, allowedProjectIds },
+            input: {
+              botId: editing.id,
+              ...fields,
+              ...(targetsEdited ? { allowedProjectIds } : {}),
+            },
           })
         : await createBot({
             environmentId,
@@ -233,13 +245,14 @@ export function BotEditorScreen({ route }: StaticScreenProps<BotEditorParams>) {
                   icon="folder"
                   label={project.title}
                   value={allowedProjectIds.includes(project.id)}
-                  onValueChange={(on) =>
+                  onValueChange={(on) => {
+                    setTargetsEdited(true);
                     setAllowedProjectIds(
                       on
                         ? [...allowedProjectIds, project.id]
                         : allowedProjectIds.filter((id) => id !== project.id),
-                    )
-                  }
+                    );
+                  }}
                 />
               ))}
           </ListSection>
