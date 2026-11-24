@@ -57,6 +57,22 @@ describe("BoatHttpApi", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("lets an organization's key act in its own wallet", () => {
+    const { requests, layer } = fakeBoat((_url, init) =>
+      new Headers(init.headers).get("x-boat-org") === "personal"
+        ? json({ ok: false, code: "api_key_org_mismatch", message: "org key" }, 403)
+        : json({ ok: true, sandboxes: [], pageInfo: { nextCursor: null, hasMore: false } }),
+    );
+    return Effect.gen(function* () {
+      const api = yield* BoatApi;
+      expect(yield* api.list(KEY, { "t3.managed": "boat_1" })).toEqual([]);
+      expect(requests.map((request) => request.headers.get("x-boat-org"))).toEqual([
+        "personal",
+        null,
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("confirms a delete with the sandbox ID and returns the deletion operation", () => {
     const operationId = `bdop_${"a".repeat(32)}`;
     const { requests, layer } = fakeBoat(() =>

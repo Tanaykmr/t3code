@@ -109,9 +109,10 @@ const make = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
 
   /** The JSON body of a 2xx reply; anything else becomes a categorized error. */
-  const send = Effect.fn("BoatHttpApi.send")(function* (
+  const sendOnce = Effect.fn("BoatHttpApi.sendOnce")(function* (
     key: BoatKey,
     request: HttpClientRequest.HttpClientRequest,
+    pinPersonal: boolean,
   ) {
     const response = yield* client
       .execute(
@@ -119,7 +120,7 @@ const make = Effect.gen(function* () {
           HttpClientRequest.prependUrl(BASE_URL),
           HttpClientRequest.setHeader("Authorization", `Bearer ${Redacted.value(key)}`),
           // Pin the personal wallet so a changed default org cannot bill or hide a machine.
-          HttpClientRequest.setHeader("X-Boat-Org", "personal"),
+          pinPersonal ? HttpClientRequest.setHeader("X-Boat-Org", "personal") : (r) => r,
           HttpClientRequest.acceptJson,
         ),
       )
@@ -138,6 +139,17 @@ const make = Effect.gen(function* () {
     );
     return yield* new BoatApiError({ category: categoryFor(response.status, code), code });
   }, Effect.scoped);
+
+  /** The JSON body of a 2xx reply; anything else becomes a categorized error. */
+  const send = (key: BoatKey, request: HttpClientRequest.HttpClientRequest) =>
+    sendOnce(key, request, true).pipe(
+      // A key created for an organization can only act in that organization, which already
+      // pins its wallet; Boat refused the pinned request before doing anything, so resend.
+      Effect.catchIf(
+        (error) => error.code === "api_key_org_mismatch",
+        () => sendOnce(key, request, false),
+      ),
+    );
 
   return BoatApi.of({
     account: Effect.fn("BoatHttpApi.account")(function* (key) {
