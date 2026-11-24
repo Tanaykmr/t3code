@@ -423,6 +423,15 @@ describe("board sync", () => {
     expect(arrow?.["endBinding"]).toBeNull();
   });
 
+  it("keeps a copied frame's children in the copied frame", () => {
+    let counter = 0;
+    const copies = copyWithFreshIds(
+      [element("frame", { type: "frame" }), element("child", { frameId: "frame" })],
+      () => `fresh${++counter}`,
+    );
+    expect(copies[1]?.["frameId"]).toBe("fresh1");
+  });
+
   it("holds remote records under local drafts and gestures, and applies the rest", () => {
     const session = synced([element("a"), element("b"), element("c")]);
     observeEditor(

@@ -117,6 +117,16 @@ export class BoardController {
 
   readonly getSaveState = () => this.saveState;
 
+  /** A rejected draft waiting for Keep as copy or Discard; later saves do not clear it. */
+  private rejection: "conflict" | "rejected" | null = null;
+  readonly getRejection = () => this.rejection;
+
+  private setRejection(next: "conflict" | "rejected" | null) {
+    if (next === this.rejection) return;
+    this.rejection = next;
+    for (const listener of this.listeners) listener();
+  }
+
   private setSaveState(next: SaveState) {
     if (next === this.saveState) return;
     this.saveState = next;
@@ -212,6 +222,7 @@ export class BoardController {
     if (api === null || session.rejected === null) return;
     const copies = asEditorElements(copyWithFreshIds(session.rejected, randomUUID));
     session.rejected = null;
+    this.setRejection(null);
     api.updateScene({
       elements: [...api.getSceneElementsIncludingDeleted(), ...copies],
       captureUpdate: CaptureUpdateAction.IMMEDIATELY,
@@ -221,6 +232,7 @@ export class BoardController {
 
   discardRejected() {
     this.session.rejected = null;
+    this.setRejection(null);
     this.setSaveState(hasUnsavedWork(this.session) ? "saving" : "saved");
   }
 
@@ -375,7 +387,9 @@ export class BoardController {
       if (permanent) {
         rejectPending(session);
         this.showCanonical();
-        this.setSaveState(tag === "BoardConflictError" ? "conflict" : "rejected");
+        const kind = tag === "BoardConflictError" ? "conflict" : "rejected";
+        this.setRejection(session.rejected === null ? null : kind);
+        this.setSaveState(kind);
         return;
       }
       // The receipt may have been lost after commit, so the same mutation id is retried.

@@ -816,6 +816,9 @@ export const compileBoardEdits = (input: {
     }
 
     const element = write(edit.id);
+    // Earlier edits in this batch may have moved it already; the label follows from there.
+    const fromX = element.x as number;
+    const fromY = element.y as number;
     if (edit.x !== undefined) element.x = edit.x;
     if (edit.y !== undefined) element.y = edit.y;
     if (edit.width !== undefined) element.width = edit.width;
@@ -839,8 +842,8 @@ export const compileBoardEdits = (input: {
       const labelId = labelOf(element);
       if (labelId !== undefined && live(labelId) !== undefined) {
         const label = write(labelId);
-        label.x = (label.x as number) + (element.x as number) - (target.x as number);
-        label.y = (label.y as number) + (element.y as number) - (target.y as number);
+        label.x = (label.x as number) + (element.x as number) - fromX;
+        label.y = (label.y as number) + (element.y as number) - fromY;
         label.updated = now;
       }
       for (const ref of boundRefs(element)) {

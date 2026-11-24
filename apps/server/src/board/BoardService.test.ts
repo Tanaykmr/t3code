@@ -519,4 +519,56 @@ describe("BoardService subscriptions", () => {
       ),
     ),
   );
+  it.effect("keeps frame membership pointing at live frames across concurrent edits", () =>
+    Effect.gen(function* () {
+      const boards = yield* BoardService.BoardService;
+      const board = yield* boards.create(threadId);
+      const made = yield* boards.apply({
+        actor: "session-a",
+        batch: batch(board, "f1", [
+          { type: "create", element: element("frame", { type: "frame", index: "a1" }) },
+          { type: "create", element: element("loose", { index: "a2" }) },
+        ]),
+      });
+      const frame = made.elements.find((entry) => entry.id === "frame")!;
+      const loose = made.elements.find((entry) => entry.id === "loose")!;
+      // Editor B drops the shape into the frame; editor A, not having seen that, deletes it.
+      yield* boards.apply({
+        actor: "session-b",
+        batch: batch(board, "f2", [
+          {
+            type: "replace",
+            element: element("loose", { index: "a2", frameId: "frame", version: loose.version }),
+            expected: token(loose),
+          },
+        ]),
+      });
+      yield* boards.apply({
+        actor: "session-a",
+        batch: batch(board, "f3", [{ type: "delete", id: "frame", expected: token(frame) }]),
+      });
+      const snapshot = yield* boards.get(threadId);
+      const child = snapshot?.elements.find((entry) => entry.id === "loose");
+      expect(child?.["frameId"]).toBeNull();
+
+      // Joining a frame that is already deleted is undone in the same commit.
+      const joined = yield* boards.apply({
+        actor: "session-b",
+        batch: batch(board, "f4", [
+          { type: "create", element: element("late", { index: "a3", frameId: "frame" }) },
+        ]),
+      });
+      expect(joined.elements[0]).toBeDefined();
+      const after = yield* boards.get(threadId);
+      expect(after?.elements.find((entry) => entry.id === "late")?.["frameId"]).toBeNull();
+    }).pipe(
+      Effect.provide(
+        BoardService.layer.pipe(
+          Layer.provide(SqlitePersistence.layerMemory),
+          Layer.provide(layerThreads),
+          Layer.provide(SecureRandom.layerWebCrypto),
+        ),
+      ),
+    ),
+  );
 });

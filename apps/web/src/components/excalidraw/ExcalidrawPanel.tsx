@@ -123,6 +123,7 @@ function BoardEditor(props: {
     boardId: view.board.boardId,
   });
   const saveState = useSyncExternalStore(controller.subscribe, controller.getSaveState);
+  const rejection = useSyncExternalStore(controller.subscribe, controller.getRejection);
   const composing = useRef(false);
   const [initialData] = useState(() => {
     const scene = controller.initialScene(view);
@@ -198,13 +199,13 @@ function BoardEditor(props: {
           <T>Offline · read-only</T>
         </div>
       ) : null}
-      {saveState === "conflict" || saveState === "rejected" ? (
+      {rejection !== null ? (
         <div
           role="alert"
           className="absolute inset-x-4 top-16 z-10 mx-auto flex max-w-md flex-wrap items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm shadow-sm"
         >
           <span className="min-w-0 flex-1">
-            {saveState === "conflict" ? (
+            {rejection === "conflict" ? (
               <T>Someone changed this first. Your edit was not saved.</T>
             ) : (
               <T>This edit could not be saved.</T>

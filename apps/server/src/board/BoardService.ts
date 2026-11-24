@@ -648,6 +648,60 @@ const make = Effect.gen(function* () {
       });
     }
 
+    // Frame membership must point at a live frame. Deleting a frame releases children another
+    // editor added meanwhile, and joining a frame deleted meanwhile is undone, in this commit.
+    const isFrame = (element: BoardElement) =>
+      element.type === "frame" || element.type === "magicframe";
+    const deletedFrames = stamped.filter((element) => isFrame(element) && element.isDeleted);
+    const joinedFrames = [
+      ...new Set(
+        stamped.flatMap((element) =>
+          !element.isDeleted && typeof element["frameId"] === "string" ? [element["frameId"]] : [],
+        ),
+      ),
+    ];
+    const stampedById = new Map(stamped.map((element) => [element.id, element]));
+    const liveFrameIds = new Set(
+      joinedFrames.length === 0
+        ? []
+        : (yield* sql<{ readonly element_id: string }>`
+            SELECT element_id FROM board_element
+            WHERE board_id = ${board.board_id} AND element_id IN ${sql.in(joinedFrames)}
+              AND is_deleted = 0
+          `.pipe(storage("read"))).map((row) => row.element_id),
+    );
+    const frameIsLive = (id: string) => {
+      const inBatch = stampedById.get(id);
+      return inBatch !== undefined ? !inBatch.isDeleted : liveFrameIds.has(id);
+    };
+    for (const [position, element] of stamped.entries()) {
+      const frameId = element["frameId"];
+      if (!element.isDeleted && typeof frameId === "string" && !frameIsLive(frameId)) {
+        stamped[position] = { ...element, frameId: null };
+      }
+    }
+    if (deletedFrames.length > 0) {
+      const orphans = yield* sql<ElementRow>`
+        SELECT element_id, version, version_nonce, idx, is_deleted, payload_json FROM board_element
+        WHERE board_id = ${board.board_id} AND is_deleted = 0
+          AND json_extract(payload_json, '$.frameId') IN ${sql.in(
+            deletedFrames.map((frame) => frame.id),
+          )}
+      `.pipe(storage("read"));
+      for (const row of orphans) {
+        if (stampedById.has(row.element_id)) continue;
+        // Known to the rest of the commit as an existing record, so its index is not "new".
+        current.set(row.element_id, row);
+        const versionNonce = yield* random.intBetween(0, MAX_VERSION_NONCE, { halfOpen: true });
+        stamped.push({
+          ...decodeElementJson(row.payload_json),
+          frameId: null,
+          version: row.version + 1,
+          versionNonce,
+        });
+      }
+    }
+
     const indexChanged = stamped.some(
       (element) => current.get(element.id)?.idx !== element.index || !current.has(element.id),
     );

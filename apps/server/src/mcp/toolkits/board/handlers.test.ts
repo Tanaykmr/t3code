@@ -478,6 +478,18 @@ layer("board toolkit", (it) => {
       const moved = (yield* storedElements(threadId)).get(label)!;
       expect(moved["y"]).toBe(2 + 50 - (a.y as number));
       expect(moved["verticalAlign"]).toBe("top");
+      // Two patches to one box in a batch move its label once, from where the first left it.
+      read = yield* callAs(as, "board_get", {});
+      const again = read.elements.find((element) => element.id === ids.a)!;
+      const labelX = moved["x"] as number;
+      yield* callAs(as, "board_apply", {
+        revision: read.revision,
+        edits: [
+          { op: "patch", id: again.id, expected: token(again), x: (again.x as number) + 30 },
+          { op: "patch", id: again.id, expected: token(again), y: (again.y as number) + 10 },
+        ],
+      });
+      expect((yield* storedElements(threadId)).get(label)!["x"]).toBe(labelX + 30);
 
       yield* userEdit(threadId, ids.a!, { type: "frame" });
       yield* userEdit(threadId, ids.b!, { frameId: ids.a! });
