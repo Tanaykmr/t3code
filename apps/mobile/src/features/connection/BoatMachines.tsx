@@ -89,12 +89,24 @@ function useBoatLabels() {
     failed: gt("Needs attention"),
     deleting: gt("Deleting"),
   };
+  const failure: Record<NonNullable<NonNullable<BoatServer["operation"]>["failure"]>, string> = {
+    unauthorized: gt("Boat rejected the API key."),
+    "quota-exceeded": gt("Boat refused: plan limit or billing."),
+    "provider-unavailable": gt("Boat did not answer. Try again."),
+    "provider-rejected": gt("Boat rejected the request."),
+    "bootstrap-failed": gt("T3 Code could not start on the machine."),
+    "snapshot-expired": gt("The saved disk has expired."),
+    "not-found": gt("Boat no longer has this machine."),
+    "unresolved-create": gt("Could not tell which machine Boat made. Check the Boat dashboard."),
+    "machine-running": gt("Boat reports it running again. Stop it before deleting."),
+    "bootstrap-unavailable": gt("This server cannot set up T3 Code on a Boat machine yet."),
+  };
   const action: Record<BoatAction, string> = {
     stop: gt("Stop"),
     resume: gt("Resume"),
     delete: gt("Delete"),
   };
-  return { lifecycle, action };
+  return { lifecycle, failure, action };
 }
 
 const TONE_CLASS = {
@@ -124,7 +136,10 @@ function BoatMachineRow({ row, nowMs }: { readonly row: BoatRow; readonly nowMs:
       : null,
     row.stale ? gt("Controller offline") : null,
   ].filter((part): part is string => part !== null);
-  const failed = server.operation?.stage === "failed" && server.operation.failure != null;
+  const failure =
+    server.operation?.stage === "failed" && server.operation.failure != null
+      ? labels.failure[server.operation.failure]
+      : null;
 
   const run = async (action: BoatAction) => {
     setBusy(true);
@@ -196,11 +211,7 @@ function BoatMachineRow({ row, nowMs }: { readonly row: BoatRow; readonly nowMs:
           {labels.lifecycle[server.lifecycle]}
           {details.length > 0 ? ` · ${details.join(" · ")}` : ""}
         </Text>
-        {failed ? (
-          <Text className="text-sm text-danger-foreground">
-            {gt("The last action did not complete.")}
-          </Text>
-        ) : null}
+        {failure ? <Text className="text-sm text-danger-foreground">{failure}</Text> : null}
       </View>
     </Pressable>
   );

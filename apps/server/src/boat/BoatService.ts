@@ -592,8 +592,9 @@ export const make = Effect.gen(function* () {
     }
     const live = yield* pollUntil(key, server.managed_id, sandboxId, (s) => isLiveState(s.state));
     if (Option.isNone(live)) return false;
-    // Woken by an earlier build but this one cannot verify the guest: fail, which stops it.
-    if (!bootstrap.available) return yield* new OperationFailed({ code: "bootstrap-failed" });
+    // This build cannot verify a guest. Nothing proves this controller woke it (it may have been
+    // started from Boat's dashboard), so refuse without a cleanup stop; the row shows it live.
+    if (!bootstrap.available) return yield* new OperationRefused({ code: "bootstrap-unavailable" });
     yield* bootstrapGuest(key, op, server, sandboxId);
     return true;
   });
@@ -698,8 +699,19 @@ export const make = Effect.gen(function* () {
     op: OperationRow,
     failure: OperationRefused["code"],
   ) {
-    // Nothing woke at Boat: a refused resume leaves the machine stopped, with no cleanup stop.
-    yield* setServer(op.managed_id, { lifecycle: op.kind === "resume" ? "stopped" : "failed" });
+    // No cleanup stop. A refused resume shows what Boat last reported, or Stopping while an
+    // accepted stop waits, so no other action is accepted against a stale Stopped.
+    const server = yield* readServer(op.managed_id);
+    const stopWaiting = yield* hasPendingStop(op.managed_id);
+    const lifecycle: BoatLifecycle =
+      op.kind !== "resume"
+        ? "failed"
+        : stopWaiting
+          ? "stopping"
+          : server?.observed_power === "running"
+            ? "running"
+            : "stopped";
+    yield* setServer(op.managed_id, { lifecycle });
     yield* setStage(op.request_id, "failed", { failure });
     return true;
   });
@@ -926,6 +938,21 @@ export const make = Effect.gen(function* () {
     return { status: "configured" as const };
   });
 
+  /** The last stop completed right after a resume whose send was never confirmed. */
+  const lateWakeAfterStop = (managedId: string) =>
+    sql<{ readonly kind: string; readonly stage: string; readonly failure: string | null }>`
+      SELECT kind, stage, failure FROM boat_operations
+      WHERE managed_id = ${managedId} ORDER BY created_at DESC, rowid DESC LIMIT 2
+    `.pipe(
+      Effect.map(
+        ([last, previous]) =>
+          last?.kind === "stop" &&
+          last.stage === "completed" &&
+          previous?.kind === "resume" &&
+          previous.failure === "provider-unavailable",
+      ),
+    );
+
   /** Refreshes one settled machine: an external archive, restart, or deletion shows up here. */
   const refresh = Effect.fn("BoatService.refresh")(
     function* (key: BoatKey, managedId: string) {
@@ -963,8 +990,13 @@ export const make = Effect.gen(function* () {
         // A failed create or resume left it billing and the first cleanup did not land.
         yield* api.stop(key, server.sandbox_id).pipe(Effect.ignore);
       } else if (server.lifecycle === "stopped" && isLiveState(sandbox.value.state)) {
-        // Restarted outside T3; show it with its new deadline rather than hiding it.
-        yield* setServer(server.managed_id, { lifecycle: "running" });
+        if (yield* lateWakeAfterStop(managedId)) {
+          // A resume whose reply was lost woke it after the user's stop finished: stop it again.
+          yield* api.stop(key, server.sandbox_id).pipe(Effect.ignore);
+        } else {
+          // Restarted outside T3; show it with its new deadline rather than hiding it.
+          yield* setServer(server.managed_id, { lifecycle: "running" });
+        }
       }
       if (server.lifecycle === "running" || isLiveState(sandbox.value.state)) {
         yield* updateUsage(key, server.managed_id, server.sandbox_id);

@@ -495,6 +495,33 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("stops a machine a lost-reply resume woke after the user's stop finished", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+      // Resume's send was never confirmed and a stop went first; then the wake lands.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, failure, created_at, updated_at)
+        VALUES (${requestId()}, ${managedId}, 'resume', ${managedId}, 'failed', 'provider-unavailable', '1970-01-01T00:00:01.000Z', '1970-01-01T00:00:01.000Z')
+      `;
+      yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+        VALUES (${requestId()}, ${managedId}, 'stop', ${managedId}, 'completed', '1970-01-01T00:00:02.000Z', '1970-01-01T00:00:02.000Z')
+      `;
+      fake.resumeExternally(sandboxId);
+      yield* settle;
+      expect(fake.sandboxes.get(sandboxId)?.sandbox.state).toBe("archived");
+      expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("keeps the key while it still manages machines", () => {
     const { layer } = setup();
     return Effect.gen(function* () {
