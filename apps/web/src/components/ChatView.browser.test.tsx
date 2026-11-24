@@ -696,10 +696,9 @@ it("shows singular and plural room counts and opens archived bots for restore", 
   await userEvent.click(bots.getByRole("link", { name: bot.name }));
   await expect.element(page.getByText("ArchiveBot: question 0"), { timeout: 5_000 }).toBeVisible();
   expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${thread.id}`);
-  const restore = page.getByRole("button", { name: "Restore bot" });
-  if (!restore.query()) {
-    await userEvent.click(page.getByRole("button", { name: "Toggle thread details panel" }));
-  }
+  const composer = page.elementLocator(document.querySelector("[data-chat-composer-overlay]")!);
+  await expect.element(composer.getByTestId("composer-editor")).not.toBeInTheDocument();
+  const restore = composer.getByRole("button", { name: "Restore bot" });
   await expect.element(restore).toBeVisible();
   await expect.element(restore).toBeEnabled();
 });

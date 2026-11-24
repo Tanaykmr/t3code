@@ -315,6 +315,7 @@ import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
 import { useBotForThread } from "../state/bots";
+import { ArchivedBotComposerBar } from "./bots/ArchivedBotComposerBar";
 import { useBotHandoffSend } from "./bots/useBotHandoffSend";
 import { useSideChat } from "./chat/useSideChat";
 import { sideThreadComposer, sideThreadKindOf } from "@t3tools/client-runtime/side-thread";
@@ -1086,6 +1087,10 @@ export default function ChatView(props: ChatViewProps) {
   })();
   const activeThreadRef = useActiveThreadRef(activeThread);
   const activeBot = useBotForThread(activeThreadRef);
+  const archivedBot =
+    activeBot !== null && (activeBot.bot.archivedAt !== null || serverThread?.archivedAt != null)
+      ? activeBot
+      : null;
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   const activeEnvironmentServerBrowser = useEnvironmentSupportsServerBrowser(
     activeThreadRef?.environmentId ?? null,
@@ -1863,7 +1868,7 @@ export default function ChatView(props: ChatViewProps) {
     turnDiffSummaries.some((summary) => summary.repositories !== undefined);
   // Provider-native subagents cannot take messages; approvals and questions go to the top-level parent.
   const showProviderSubagentBar = isProviderSubagent;
-  const composerMounted = !showProviderSubagentBar;
+  const composerMounted = !showProviderSubagentBar && archivedBot === null;
   const providerSubagentModels = selectedProviderEntry?.models ?? EMPTY_PROVIDER_MODELS;
   // Providers can report dated model ids or aliases.
   const providerSubagentModelSlug = selectedProviderEntry
@@ -1892,7 +1897,7 @@ export default function ChatView(props: ChatViewProps) {
     shouldShowComposerContextStrip({
       isDraftHeroState,
       persistInActiveThreads: settings.persistComposerContextStrip,
-      hasActiveProject: activeProject !== null && !showProviderSubagentBar,
+      hasActiveProject: activeProject !== null && composerMounted,
       isGitRepo,
       showEnvironmentIndicator: showComposerEnvironmentIndicator,
     });
@@ -3740,7 +3745,9 @@ export default function ChatView(props: ChatViewProps) {
                   onIsAtEndChange={onIsAtEndChangeStable}
                   onViewportAttach={attachTimelineViewport}
                   onFooterGrow={onTimelineFooterGrowStable}
-                  hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
+                  hideEmptyPlaceholder={
+                    isDraftHeroState || threadDetailLoading || archivedBot !== null
+                  }
                   emptyPlaceholderInset={composerReservedHeight}
                   topFadeEnabled={!hasTimelineTopBanner}
                   {...(threadHistoryControls === undefined
@@ -3816,7 +3823,14 @@ export default function ChatView(props: ChatViewProps) {
                           aria-busy={queuedRunEdit.isSaving}
                         >
                           <div className="relative z-10">
-                            {showProviderSubagentBar ? (
+                            {archivedBot !== null ? (
+                              <ArchivedBotComposerBar
+                                key={activeThreadKey}
+                                environmentId={archivedBot.environmentId}
+                                botId={archivedBot.bot.id}
+                                disabled={!canOperateThread || activeEnvironmentUnavailable}
+                              />
+                            ) : showProviderSubagentBar ? (
                               <ProviderSubagentBar
                                 provider={selectedProviderEntry ?? null}
                                 showInstanceBadge={
