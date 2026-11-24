@@ -29,8 +29,10 @@ export interface PendingBatch {
 }
 
 /** A committed edit of ours whose canonical record the stream has not delivered yet. */
-interface Receipt extends ShownRecord {
+export interface Receipt extends ShownRecord {
   readonly revision: number;
+  /** The record as sent, shown until the stream delivers the canonical one. */
+  readonly record: BoardElement;
 }
 
 /**
@@ -98,11 +100,22 @@ export function observeEditor(
   }
   // Opening a file replaces the editor's scene; records it dropped are deletions.
   for (const [id, draft] of session.drafts) {
-    // A create that never reached the server just disappears with the editor's copy.
     if (present.has(id) || basis(session, id) !== undefined || draft.type === TOMBSTONE) continue;
-    if (session.pending?.sent.has(id)) continue;
-    session.drafts.delete(id);
-    session.draftOrderRevision.delete(id);
+    if (session.pending?.sent.has(id)) {
+      // A create in flight becomes a deletion once its receipt gives it a token.
+      session.drafts.set(id, {
+        id,
+        type: TOMBSTONE,
+        version: draft.version + 1,
+        versionNonce: draft.versionNonce,
+        index: draft.index,
+        isDeleted: true,
+      });
+    } else {
+      // A create that never reached the server just disappears with the editor's copy.
+      session.drafts.delete(id);
+      session.draftOrderRevision.delete(id);
+    }
     changed = true;
   }
   for (const id of new Set([...session.shown.keys(), ...session.receipts.keys()])) {
@@ -113,10 +126,10 @@ export function observeEditor(
     session.draftOrderRevision.set(id, session.shownOrderRevision);
     changed = true;
   }
+  // A color in flight is the basis, so reverting to the old one while it saves is an edit.
+  const basisBackground = session.pending?.settings?.viewBackgroundColor ?? session.shownBackground;
   const background =
-    viewBackgroundColor === (session.shownBackground ?? viewBackgroundColor)
-      ? null
-      : viewBackgroundColor;
+    viewBackgroundColor === (basisBackground ?? viewBackgroundColor) ? null : viewBackgroundColor;
   if (background !== session.draftBackground) {
     session.draftBackground = background;
     changed = true;
@@ -175,9 +188,12 @@ export function takeBatch(
   for (const [id, element] of session.drafts) {
     // Larger edits go out over several batches; the rest stay drafts for the next one.
     if (operations.length >= BOARD_MAX_OPERATIONS) break;
+    const receipt = session.receipts.get(id);
     const size =
       element.isDeleted && basis(session, id) !== undefined
-        ? (input.committedBytes?.(id) ?? utf8Bytes(JSON.stringify(element)))
+        ? receipt !== undefined
+          ? utf8Bytes(JSON.stringify(receipt.record))
+          : (input.committedBytes?.(id) ?? utf8Bytes(JSON.stringify(element)))
         : utf8Bytes(JSON.stringify(element));
     if (
       operations.length > 0 &&
@@ -256,6 +272,7 @@ export function acknowledge(session: BoardSession, result: BoardApplyResult): vo
       index: accepted.index,
       isDeleted: sent.isDeleted,
       revision: result.revision,
+      record: { ...sent.draft, index: accepted.index },
     });
     session.baseline.set(accepted.id, editorStamp(sent.draft));
     // Only the exact draft that was sent is done; a newer one, even at the same version, waits.
@@ -264,9 +281,9 @@ export function acknowledge(session: BoardSession, result: BoardApplyResult): vo
       session.draftOrderRevision.delete(accepted.id);
     }
   }
-  // A fenced commit proves the order was ours and moved it by one, so drafts that started
-  // from the same order now continue from ours.
-  const based = pending.expectedOrderRevision;
+  // When our commit alone moved the order by one, drafts that started from the order just
+  // before it now continue from ours.
+  const based = result.previousOrderRevision ?? pending.expectedOrderRevision;
   if (based !== undefined && result.orderRevision === based + 1) {
     for (const [id, started] of session.draftOrderRevision) {
       if (started === based) session.draftOrderRevision.set(id, result.orderRevision);
@@ -369,6 +386,38 @@ export function reconcile<T extends { readonly id: string; readonly index: strin
   }
   if (applied.length === 0 && !discarded) return null;
   return { elements: [...next.values()].toSorted(order), applied };
+}
+
+/**
+ * The scene a remounted editor starts from: the snapshot, our acknowledged records the stream
+ * has not delivered yet, and unsent drafts, in drawing order. Records it marks as already
+ * synced are the canonical ones and our own receipts, so mounting writes nothing.
+ */
+export function seedScene(
+  session: BoardSession,
+  canonical: CanonicalScene,
+): {
+  readonly elements: ReadonlyArray<BoardElement>;
+  readonly canonical: ReadonlyArray<BoardElement>;
+  readonly acknowledged: ReadonlyArray<BoardElement>;
+} {
+  const byId = new Map(canonical.elements.map((element) => [element.id, element]));
+  const acknowledged: BoardElement[] = [];
+  for (const [id, receipt] of session.receipts) {
+    if (canonical.revision >= receipt.revision || session.drafts.has(id)) continue;
+    byId.set(id, receipt.record);
+    acknowledged.push(receipt.record);
+  }
+  for (const [id, draft] of session.drafts) {
+    if (draft.type === TOMBSTONE) byId.delete(id);
+    else byId.set(id, draft);
+  }
+  const fresh = new Set([...acknowledged.map((record) => record.id), ...session.drafts.keys()]);
+  return {
+    elements: [...byId.values()].toSorted(order),
+    canonical: canonical.elements.filter((element) => !fresh.has(element.id)),
+    acknowledged,
+  };
 }
 
 const toShown = (record: BoardElement): ShownRecord => ({

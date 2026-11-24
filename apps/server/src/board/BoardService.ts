@@ -206,12 +206,24 @@ const repairIndices = (
       needsRepair.add(entry.id);
     }
   }
-  // A bound label moves with a repaired container so the two stay adjacent.
+  // A bound label moves with a repaired container, and one below its container is lifted,
+  // so the two stay adjacent with the label on top.
   const containerOf = (entry: BoardElement) =>
     typeof entry["containerId"] === "string" ? entry["containerId"] : null;
+  const indexOf = new Map<string, string | null>([
+    ...committed.map((entry) => [entry.id, entry.index] as const),
+    ...proposed.map((entry) => [entry.id, entry.index] as const),
+  ]);
   for (const entry of ordered) {
     const container = containerOf(entry);
-    if (container !== null && needsRepair.has(container)) needsRepair.add(entry.id);
+    if (container === null) continue;
+    const containerIndex = indexOf.get(container) ?? null;
+    if (
+      needsRepair.has(container) ||
+      (containerIndex !== null && entry.index !== null && entry.index < containerIndex)
+    ) {
+      needsRepair.add(entry.id);
+    }
   }
   for (const entry of ordered) {
     if (!needsRepair.has(entry.id) && entry.index !== null) {
@@ -499,7 +511,9 @@ const make = Effect.gen(function* () {
     const current = new Map(currentRows.map((row) => [row.element_id, row]));
     // A proposal may sit just above the record it replaces; the stamp must stay a safe integer.
     const versionOutOfRange = batch.operations.some((operation) => {
-      if (operation.type === "delete") return false;
+      if (operation.type === "delete") {
+        return (current.get(operation.id)?.version ?? 0) + 1 >= Number.MAX_SAFE_INTEGER;
+      }
       const { version } = operation.element;
       const prior = current.get(operation.element.id)?.version ?? 0;
       const ceiling = Math.max(MAX_PROPOSAL_VERSION, prior + 1024);
@@ -668,6 +682,7 @@ const make = Effect.gen(function* () {
     const result: BoardApplyResult = {
       revision,
       orderRevision,
+      previousOrderRevision: board.order_revision,
       elements: changed.map((element) => ({
         id: element.id,
         version: element.version,

@@ -10,6 +10,7 @@ import {
   observeEditor,
   reconcile,
   rejectPending,
+  seedScene,
   takeBatch,
 } from "./boardSync";
 
@@ -290,6 +291,69 @@ describe("board sync", () => {
       committedBytes: () => 200 * 1024,
     });
     expect(batch!.operations.length).toBeLessThan(25);
+  });
+
+  it("deletes an in-flight create that an import dropped, once its receipt arrives", () => {
+    const session = synced([]);
+    observeEditor(session, [element("n")], "#ffffff");
+    take(session);
+    observeEditor(session, [], "#ffffff");
+    acknowledge(session, {
+      revision: 1,
+      orderRevision: 1,
+      previousOrderRevision: 0,
+      elements: [{ id: "n", version: 2, versionNonce: 20, index: "an" }],
+    });
+    expect(take(session, "m2")?.operations).toEqual([
+      { type: "delete", id: "n", expected: { version: 2, versionNonce: 20 } },
+    ]);
+  });
+
+  it("reseeds a remounted editor with acknowledged records in drawing order", () => {
+    const session = synced([element("b", { index: "a5" })]);
+    observeEditor(
+      session,
+      [element("b", { index: "a5" }), element("a", { index: "a1" })],
+      "#ffffff",
+    );
+    take(session);
+    acknowledge(session, {
+      revision: 2,
+      orderRevision: 2,
+      previousOrderRevision: 1,
+      elements: [{ id: "a", version: 2, versionNonce: 20, index: "a1" }],
+    });
+    // The stream is still at revision 1, without the new record.
+    const seed = seedScene(session, scene([element("b", { index: "a5" })], 1, 1));
+    expect(seed.elements.map((record) => record.id)).toEqual(["a", "b"]);
+    expect(seed.acknowledged.map((record) => record.id)).toEqual(["a"]);
+  });
+
+  it("saves a background revert made while the change is in flight", () => {
+    const session = synced([]);
+    observeEditor(session, [], "#ff0000");
+    take(session);
+    expect(observeEditor(session, [], "#ffffff")).toBe(true);
+    acknowledge(session, { revision: 2, orderRevision: 1, elements: [] });
+    expect(take(session, "m2")?.settings).toEqual({ viewBackgroundColor: "#ffffff" });
+  });
+
+  it("steps a reorder's fence over this editor's own create", () => {
+    const session = synced([element("a"), element("b")]);
+    observeEditor(session, [element("a"), element("b"), element("n", { index: "c0" })], "#ffffff");
+    take(session);
+    observeEditor(
+      session,
+      [element("a", { version: 2, index: "b5" }), element("b"), element("n", { index: "c0" })],
+      "#ffffff",
+    );
+    acknowledge(session, {
+      revision: 2,
+      orderRevision: 2,
+      previousOrderRevision: 1,
+      elements: [{ id: "n", version: 2, versionNonce: 20, index: "c0" }],
+    });
+    expect(take(session, "m2")?.expectedOrderRevision).toBe(2);
   });
 
   it("holds remote records under local drafts and gestures, and applies the rest", () => {

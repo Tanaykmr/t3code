@@ -30,6 +30,7 @@ import {
   observeEditor,
   reconcile,
   rejectPending,
+  seedScene,
   takeBatch,
 } from "./boardSync";
 
@@ -108,14 +109,18 @@ export class BoardController {
   initialScene(view: ReadyBoardView) {
     const { session } = this;
     this.view = view;
-    const canonical = view.elements.filter((element) => !session.drafts.has(element.id));
-    const elements = asEditorElements(canonical.concat([...session.drafts.values()]));
-    markApplied(
-      session,
-      canonical,
-      new Map(elements.map((element) => [element.id, editorStamp(element)])),
-      view.board,
-    );
+    const seed = seedScene(session, {
+      revision: view.board.revision,
+      elements: view.elements,
+      orderRevision: view.board.orderRevision,
+      viewBackgroundColor: view.settings.viewBackgroundColor,
+    });
+    const elements = asEditorElements(seed.elements);
+    const stamps = new Map(elements.map((element) => [element.id, editorStamp(element)]));
+    markApplied(session, seed.canonical, stamps, view.board);
+    for (const record of seed.acknowledged) {
+      session.baseline.set(record.id, stamps.get(record.id) ?? editorStamp(record));
+    }
     // Until the stream reaches our own background commit, the acknowledged color is current.
     if (view.board.revision >= session.backgroundRevision || session.shownBackground === null) {
       session.shownBackground = view.settings.viewBackgroundColor;

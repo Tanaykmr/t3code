@@ -9,6 +9,8 @@ import { IsoDateTime, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./
 export const BOARD_SCENE_FORMAT_VERSION = 1;
 export const BOARD_MAX_OPERATIONS = 500;
 export const BOARD_MAX_ELEMENTS = 5_000;
+const utf8 = new TextEncoder();
+const utf8Bytes = (text: string) => utf8.encode(text).length;
 const BOARD_ELEMENT_MAX_BYTES = 256 * 1024;
 export const BOARD_FILE_MAX_BYTES = 4 * 1024 * 1024;
 export const BOARD_BATCH_MAX_FILES = 8;
@@ -46,7 +48,7 @@ export type BoardElement = typeof BoardElement.Type;
 
 /** Only proposals are size-checked; snapshots carry records the server already accepted. */
 const BoardElementProposal = BoardElement.check(
-  Schema.makeFilter((element) => JSON.stringify(element).length <= BOARD_ELEMENT_MAX_BYTES, {
+  Schema.makeFilter((element) => utf8Bytes(JSON.stringify(element)) <= BOARD_ELEMENT_MAX_BYTES, {
     description: `an element of at most ${BOARD_ELEMENT_MAX_BYTES} bytes`,
   }),
 );
@@ -175,6 +177,8 @@ export type BoardAcceptedElement = typeof BoardAcceptedElement.Type;
 export const BoardApplyResult = Schema.Struct({
   revision: NonNegativeInt,
   orderRevision: NonNegativeInt,
+  /** The order revision just before this commit, so an editor can step over its own change. */
+  previousOrderRevision: Schema.optional(NonNegativeInt),
   elements: Schema.Array(BoardAcceptedElement),
 });
 export type BoardApplyResult = typeof BoardApplyResult.Type;
