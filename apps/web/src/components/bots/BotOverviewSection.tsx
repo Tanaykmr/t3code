@@ -6,12 +6,18 @@ import {
 import type { BotId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
-import { ArchiveIcon, ArchiveRestoreIcon, FolderIcon, PencilIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  ArchiveRestoreIcon,
+  FolderGit2Icon,
+  FolderIcon,
+  PencilIcon,
+} from "lucide-react";
 import { T, msg, useGT, useMessages } from "gt-react";
 import { useState } from "react";
 
 import { useBotForThread, useEnvironmentBots } from "../../state/bots";
-import { useProject } from "../../state/entities";
+import { useProject, useProjects } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ThreadDetailsSection } from "../chat/ThreadDetailsSection";
@@ -33,6 +39,11 @@ export function BotOverviewSection(props: {
   const bot = entry?.bot ?? null;
   const project = useProject(
     bot === null ? null : scopeProjectRef(props.environmentId, bot.projectId),
+  );
+  const projectTitles = new Map(
+    useProjects()
+      .filter((candidate) => candidate.environmentId === props.environmentId)
+      .map((candidate) => [candidate.id, candidate.title]),
   );
   const [busy, setBusy] = useState(false);
   const archive = useAtomCommand(serverEnvironment.archiveBot, { label: "bot archive" });
@@ -100,6 +111,20 @@ export function BotOverviewSection(props: {
           </span>
           <span className="truncate text-xs text-muted-foreground">{project?.title ?? ""}</span>
         </div>
+        {bot.allowedProjectIds.length > 0 ? (
+          <div className="flex h-8 min-w-0 items-center gap-2.5 px-2.5 text-sm font-medium text-foreground/80">
+            <FolderGit2Icon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+            <span className="min-w-0 flex-1 truncate">
+              <T>Work targets</T>
+            </span>
+            <span className="truncate text-xs text-muted-foreground">
+              {bot.allowedProjectIds
+                .map((projectId) => projectTitles.get(projectId))
+                .filter((title) => title !== undefined)
+                .join(", ")}
+            </span>
+          </div>
+        ) : null}
         <ThreadDetailsControl disabled={busy} onClick={() => void toggleArchive()}>
           {archived ? (
             <ArchiveRestoreIcon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />

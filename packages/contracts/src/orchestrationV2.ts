@@ -3781,6 +3781,11 @@ export const OrchestrationV2Command = Schema.Union([
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
     workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+    /**
+     * Only the server sets this: a bot's task may run in another project the user allowed it.
+     * The child then always gets its own worktree from that project's base.
+     */
+    projectId: Schema.optional(ProjectId),
     // Defaults to settled_only; fire-and-forget wakes require always.
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
     createdAt: Schema.optional(Schema.DateTimeUtc),

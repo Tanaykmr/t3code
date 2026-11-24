@@ -3,6 +3,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -18,6 +19,8 @@ export class BotTurnContext extends Context.Service<
   BotTurnContext,
   {
     readonly forThread: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<BotTurnContextEntry>>;
+    /** Projects a bot-owned thread may start coding work in; null for an ordinary thread. */
+    readonly workTargets: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<string> | null>;
   }
 >()("t3/bots/BotTurnContext") {}
 
@@ -49,6 +52,19 @@ function memoryText(
   ].join("\n");
 }
 
+const decodeProjectIds = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
+
+function workTargetsText(
+  targets: ReadonlyArray<{ readonly projectId: string; readonly title: string }>,
+) {
+  return [
+    'Projects the user lets you start coding work in. To work in one other than your own, call delegate_task with target.projectId and isolation "worktree":',
+    ...targets.map((target) => `- ${target.title}: ${target.projectId}`),
+  ].join("\n");
+}
+
 function personaText(bot: {
   readonly name: string;
   readonly title: string;
@@ -67,6 +83,24 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* ensureBotSchema;
+    // The home project first, then the projects the user allowed that still exist.
+    const targetsOf = Effect.fn("BotTurnContext.targetsOf")(function* (bot: {
+      readonly project_id: string;
+      readonly allowed_project_ids_json: string;
+    }) {
+      const allowed = yield* decodeProjectIds(bot.allowed_project_ids_json).pipe(
+        Effect.orElseSucceed(() => [] as ReadonlyArray<string>),
+      );
+      const ids = [bot.project_id, ...allowed.filter((id) => id !== bot.project_id)];
+      const rows = yield* sql<{ project_id: string; title: string }>`
+        SELECT project_id, title FROM projection_projects
+        WHERE ${sql.in("project_id", ids)} AND deleted_at IS NULL
+      `;
+      return ids.flatMap((projectId) => {
+        const row = rows.find((candidate) => candidate.project_id === projectId);
+        return row === undefined ? [] : [{ projectId, title: row.title }];
+      });
+    });
     const forThread = Effect.fn("BotTurnContext.forThread")(
       function* (threadId: ThreadId) {
         // A bot's DM or its seat in a room; only the DM sees the bot's private memory.
@@ -75,11 +109,15 @@ export const layer = Layer.effect(
           name: string;
           title: string;
           persona: string;
+          project_id: string;
+          allowed_project_ids_json: string;
           is_dm: number;
         }>`
-        SELECT bot_id, name, title, persona, 1 AS is_dm FROM bots WHERE dm_thread_id = ${threadId}
+        SELECT bot_id, name, title, persona, project_id, allowed_project_ids_json, 1 AS is_dm
+        FROM bots WHERE dm_thread_id = ${threadId}
         UNION ALL
-        SELECT bots.bot_id, bots.name, bots.title, bots.persona, 0 AS is_dm FROM bot_room_threads
+        SELECT bots.bot_id, bots.name, bots.title, bots.persona, bots.project_id,
+          bots.allowed_project_ids_json, 0 AS is_dm FROM bot_room_threads
         JOIN bots ON bots.bot_id = bot_room_threads.bot_id
         WHERE bot_room_threads.thread_id = ${threadId}
       `;
@@ -96,10 +134,16 @@ export const layer = Layer.effect(
               ORDER BY updated_at DESC LIMIT ${MEMORY_ENTRIES}
             `
             : [];
+        const targets = yield* targetsOf(bot).pipe(
+          Effect.orElseSucceed(() => [] as ReadonlyArray<{ projectId: string; title: string }>),
+        );
         // Both entries are always sent, so a forgotten memory or disabled skill replaces
         // what the provider saw earlier instead of silently lingering in its history.
         return [
           { key: "t3_bot_persona", text: personaText(bot) },
+          ...(targets.length <= 1
+            ? []
+            : [{ key: "t3_bot_work_targets", text: workTargetsText(targets) }]),
           { key: "t3_bot_skills", text: boundedText(skillsText(skills)) },
           ...(bot.is_dm === 1
             ? [{ key: "t3_bot_memory", text: boundedText(memoryText(memories)) }]
@@ -116,7 +160,21 @@ export const layer = Layer.effect(
           ),
         ),
     );
-    return BotTurnContext.of({ forThread });
+    const workTargets = Effect.fn("BotTurnContext.workTargets")(
+      function* (threadId: ThreadId) {
+        const [bot] = yield* sql<{ project_id: string; allowed_project_ids_json: string }>`
+          SELECT project_id, allowed_project_ids_json FROM bots WHERE dm_thread_id = ${threadId}
+          UNION ALL
+          SELECT bots.project_id, bots.allowed_project_ids_json FROM bot_room_threads
+          JOIN bots ON bots.bot_id = bot_room_threads.bot_id
+          WHERE bot_room_threads.thread_id = ${threadId}
+        `;
+        if (bot === undefined) return null;
+        return (yield* targetsOf(bot)).map((target) => target.projectId);
+      },
+      (effect) => effect.pipe(Effect.orElseSucceed(() => null)),
+    );
+    return BotTurnContext.of({ forThread, workTargets });
   }),
 );
 

@@ -50,6 +50,8 @@ export const Bot = Schema.Struct({
   personaRevision: PositiveInt,
   dmThreadId: ThreadId,
   projectId: ProjectId,
+  /** Other projects the user lets this bot start coding work in; its home project always counts. */
+  allowedProjectIds: Schema.Array(ProjectId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime),
@@ -74,6 +76,7 @@ export const BotUpdateInput = Schema.Struct({
   title: Schema.optional(BotTitle),
   avatar: Schema.optional(BotAvatar),
   persona: Schema.optional(BotPersona),
+  allowedProjectIds: Schema.optional(Schema.Array(ProjectId)),
 });
 export type BotUpdateInput = typeof BotUpdateInput.Type;
 

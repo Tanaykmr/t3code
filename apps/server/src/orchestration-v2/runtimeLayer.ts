@@ -459,6 +459,8 @@ export const layerProduction = Layer.mergeAll(
   layerBotServiceProvided,
   layerBotChannelServiceProvided,
   BotKnowledgeService.layer,
+  // The MCP server reads which projects a bot may start work in.
+  BotTurnContext.layer,
   layerWorkflowsProvided,
   layerScratchThreadPromotionProvided,
   layerSecretRequestsProvided,

@@ -44,6 +44,9 @@ export class BotService extends Context.Service<
 
 const decodeBot = Schema.decodeUnknownEffect(Bot);
 const decodeRooms = Schema.decodeUnknownEffect(Schema.Array(BotRoom));
+const ProjectIdsJson = Schema.fromJsonString(Schema.Array(ProjectId));
+const decodeProjectIds = Schema.decodeUnknownEffect(ProjectIdsJson);
+const encodeProjectIds = Schema.encodeEffect(ProjectIdsJson);
 const decodeModelSelection = Schema.decodeUnknownEffect(Schema.fromJsonString(ModelSelection));
 const encodeModelSelection = Schema.encodeEffect(Schema.fromJsonString(ModelSelection));
 
@@ -71,19 +74,24 @@ const make = Effect.gen(function* () {
   const writeLock = yield* Semaphore.make(1);
 
   const toBot = (row: BotRow) =>
-    decodeBot({
-      id: row.bot_id,
-      name: row.name,
-      title: row.title,
-      avatar: row.avatar,
-      persona: row.persona,
-      personaRevision: row.persona_revision,
-      dmThreadId: row.dm_thread_id,
-      projectId: row.project_id,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      archivedAt: row.archived_at,
-    });
+    decodeProjectIds(row.allowed_project_ids_json).pipe(
+      Effect.flatMap((allowedProjectIds) =>
+        decodeBot({
+          id: row.bot_id,
+          name: row.name,
+          title: row.title,
+          avatar: row.avatar,
+          persona: row.persona,
+          personaRevision: row.persona_revision,
+          dmThreadId: row.dm_thread_id,
+          projectId: row.project_id,
+          allowedProjectIds,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          archivedAt: row.archived_at,
+        }),
+      ),
+    );
 
   const readRow = (botId: BotId) =>
     sql<BotRow>`SELECT * FROM bots WHERE bot_id = ${botId}`.pipe(
@@ -224,6 +232,14 @@ const make = Effect.gen(function* () {
           yield* assertNameFree(input.name, input.botId);
         }
         const personaChanged = input.persona !== undefined && input.persona !== row.persona;
+        const allowedProjectIdsJson =
+          input.allowedProjectIds === undefined
+            ? row.allowed_project_ids_json
+            : yield* encodeProjectIds([...new Set(input.allowedProjectIds)]).pipe(
+                Effect.mapError((cause) =>
+                  botError("Those projects are not valid.", input.botId, cause),
+                ),
+              );
         const now = DateTime.formatIso(yield* DateTime.now);
         yield* sql`
             UPDATE bots SET
@@ -231,6 +247,7 @@ const make = Effect.gen(function* () {
               title = ${input.title ?? row.title},
               avatar = ${input.avatar ?? row.avatar},
               persona = ${input.persona ?? row.persona},
+              allowed_project_ids_json = ${allowedProjectIdsJson},
               persona_revision = ${row.persona_revision + (personaChanged ? 1 : 0)},
               updated_at = ${now}
             WHERE bot_id = ${input.botId}
