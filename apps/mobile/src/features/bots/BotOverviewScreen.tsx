@@ -13,11 +13,12 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { FitSheet } from "../../components/ui/FitSheet";
 import { SheetHeader } from "../../components/ui/SheetHeader";
 import { useEnvironmentBots } from "../../state/bots";
-import { useProject } from "../../state/entities";
+import { useProject, useProjects } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { BotGlyph } from "./BotGlyph";
 import { BotKnowledge } from "./BotKnowledge";
+import { BotRoutines } from "./BotRoutines";
 import { deliveriesByMessage, newestMessages } from "./bot-room";
 
 export type BotOverviewParams = {
@@ -71,6 +72,14 @@ export function BotOverviewScreen({ route }: StaticScreenProps<BotOverviewParams
       (entry) => entry.environmentId === environmentId && entry.bot.id === route.params.botId,
     )?.bot ?? null;
   const project = useProject(bot === null ? null : scopeProjectRef(environmentId, bot.projectId));
+  const projectTitles = new Map(
+    useProjects()
+      .filter((candidate) => candidate.environmentId === environmentId)
+      .map((candidate) => [candidate.id as string, candidate.title]),
+  );
+  const workTargets = (bot?.allowedProjectIds ?? [])
+    .flatMap((projectId) => projectTitles.get(projectId) ?? [])
+    .join(", ");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const archive = useAtomCommand(serverEnvironment.archiveBot, { reportFailure: false });
@@ -145,6 +154,13 @@ export function BotOverviewScreen({ route }: StaticScreenProps<BotOverviewParams
           ) : null}
           <View>
             <OverviewRow icon="folder" label={gt("Home project")} detail={project?.title ?? ""} />
+            {workTargets === "" ? null : (
+              <OverviewRow
+                icon="arrow.triangle.branch"
+                label={gt("Work targets")}
+                detail={workTargets}
+              />
+            )}
             <OverviewRow
               icon={archived ? "tray.and.arrow.up" : "tray.and.arrow.down"}
               label={archived ? gt("Restore bot") : gt("Archive bot")}
@@ -157,6 +173,7 @@ export function BotOverviewScreen({ route }: StaticScreenProps<BotOverviewParams
               {error}
             </Text>
           ) : null}
+          <BotRoutines environmentId={environmentId} dmThreadId={bot.dmThreadId} />
           <BotKnowledge environmentId={environmentId} botId={bot.id} />
           <BotMessages environmentId={environmentId} botId={bot.id} />
         </View>
