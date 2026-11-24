@@ -41,6 +41,11 @@ export class BotService extends Context.Service<
     readonly update: (input: BotUpdateInput) => Effect.Effect<BotMutationResult, BotError>;
     readonly archive: (input: BotRefInput) => Effect.Effect<BotMutationResult, BotError>;
     readonly restore: (input: BotRefInput) => Effect.Effect<BotMutationResult, BotError>;
+    /** A bot's chat or room seat may only switch to a provider that carries bots. */
+    readonly assertThreadProvider: (
+      threadId: ThreadId,
+      instanceId: string,
+    ) => Effect.Effect<void, BotError>;
     /** Rooms live in the same directory; their writer signals here. */
     readonly notifyDirectoryChanged: Effect.Effect<void>;
   }
@@ -365,6 +370,16 @@ const make = Effect.gen(function* () {
     archive,
     restore,
     notifyDirectoryChanged: notifyChanged,
+    assertThreadProvider: Effect.fn("BotService.assertThreadProvider")(
+      function* (threadId, instanceId) {
+        const owned = yield* sql`
+        SELECT 1 FROM bots WHERE dm_thread_id = ${threadId}
+        UNION ALL SELECT 1 FROM bot_room_threads WHERE thread_id = ${threadId}
+        LIMIT 1
+      `.pipe(Effect.mapError((cause) => botError("Could not read the bot.", undefined, cause)));
+        if (owned.length > 0) yield* assertBotProvider(instanceId);
+      },
+    ),
   });
 });
 

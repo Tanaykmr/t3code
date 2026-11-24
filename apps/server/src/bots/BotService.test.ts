@@ -85,6 +85,13 @@ layer("BotService", (it) => {
         })
         .pipe(Effect.flip);
       assert.match(unqualified.message, /Codex or Claude/);
+      // Switching a bot's chat to another provider is refused too; ordinary threads are not.
+      const switched = yield* bots
+        .assertThreadProvider(ada.bot.dmThreadId, "cursor")
+        .pipe(Effect.flip);
+      assert.match(switched.message, /Codex or Claude/);
+      yield* bots.assertThreadProvider(ada.bot.dmThreadId, "claudeAgent");
+      yield* bots.assertThreadProvider(ThreadId.make("ordinary-thread"), "cursor");
 
       const duplicate = yield* bots.create(createInput("bot-other", "ada", "")).pipe(Effect.flip);
       assert.match(duplicate.message, /already named ada/);

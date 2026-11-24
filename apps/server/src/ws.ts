@@ -2044,6 +2044,24 @@ export const layerWsRpc = (
               ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
               : {}),
           }).pipe(
+            // A bot's chat keeps to providers that carry its persona and tools.
+            Effect.andThen(
+              command.type === "thread.model-selection.set" ||
+                (command.type === "message.dispatch" && command.modelSelection !== undefined)
+                ? bots
+                    .assertThreadProvider(command.threadId, command.modelSelection!.instanceId)
+                    .pipe(
+                      Effect.mapError(
+                        (error) =>
+                          new OrchestrationV2DispatchCommandError({
+                            commandId: command.commandId,
+                            commandType: command.type,
+                            message: error.message,
+                          }),
+                      ),
+                    )
+                : Effect.void,
+            ),
             Effect.andThen(
               startup
                 .enqueueCommand(
