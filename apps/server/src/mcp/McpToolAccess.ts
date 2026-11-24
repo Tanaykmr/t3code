@@ -32,6 +32,7 @@ import {
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import {
+  assertBotThreadAccess,
   assertFullAccess,
   assertLiveCaller,
   assertTargetWithinLimits,
@@ -209,11 +210,17 @@ export const writesThreads = <P, A, E, R>(
     (params: P) =>
       Effect.gen(function* () {
         const caller = yield* writingCaller;
-        for (const threadId of threads(params)) {
-          if (threadId === undefined || threadId === caller.scope.thread?.threadId) continue;
+        for (const requested of threads(params)) {
+          const threadId = requested ?? caller.scope.thread?.threadId;
+          if (threadId === undefined) continue;
+          if (threadId === caller.scope.thread?.threadId) {
+            yield* assertBotThreadAccess(caller.threads, caller.scope, threadId, caller.caller);
+            continue;
+          }
           const target = yield* caller.threads
             .getThreadShell(threadId)
             .pipe(Effect.mapError(unavailable));
+          yield* assertBotThreadAccess(caller.threads, caller.scope, threadId, target);
           if (target !== null && target.deletedAt === null) {
             yield* assertTargetWithinLimits(caller.limits, target);
             yield* assertSameLink(caller, target);

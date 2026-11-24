@@ -16,8 +16,9 @@ import * as BotTurnContext from "../../../bots/BotTurnContext.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
+  assertBotThreadAccess,
   dispatchFailure,
-  isForeignBotThread,
+  foreignBotThreads,
   newCommandId,
   readCaller,
   readThread,
@@ -115,11 +116,17 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     Effect.gen(function* () {
       const scheduler = yield* ScheduledTasks.ScheduledTaskService;
       const { tasks } = yield* scheduler.list().pipe(Effect.mapError(unavailable));
-      if (!tasks.some((task) => task.id === input.taskId))
+      const scheduled = tasks.find((task) => task.id === input.taskId);
+      if (scheduled === undefined)
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
           message: "The scheduled task was not found.",
         });
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      if (scope.bot === true && scheduled.threadId !== null) {
+        const { threads } = yield* readCaller();
+        yield* assertBotThreadAccess(threads, scope, scheduled.threadId);
+      }
       const { task, threadId } = yield* scheduler
         .runNow({ id: input.taskId })
         .pipe(
@@ -128,7 +135,6 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
               new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
           ),
         );
-      const scope = yield* McpInvocationContext.McpInvocationContext;
       return {
         taskId: task.id,
         threadId,
@@ -146,23 +152,24 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   ),
   t3_thread_search: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
-      const { caller, threads } = yield* readCaller();
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const { caller, threads, scope } = yield* readCaller();
       const threadSearch = yield* ThreadSearch.ThreadSearch;
       const { matches: found } = yield* threadSearch
         .searchThreads({ ...input, projectId: input.projectId ?? caller?.projectId })
         .pipe(Effect.mapError(unavailable));
-      // A bot's chat and forks of it are private from other bots, snippets included.
+      const isForeign = yield* foreignBotThreads(threads, scope);
       const matches =
         scope.bot === true
           ? yield* Effect.filter(found, (match) =>
               Effect.gen(function* () {
-                // A hit whose thread is gone cannot be checked, so its snippet stays hidden.
                 const shell = yield* threads
                   .getThreadShell(match.threadId)
                   .pipe(Effect.orElseSucceed(() => null));
-                if (shell === null) return false;
-                return !(yield* isForeignBotThread(threads, scope, match.threadId));
+                return (
+                  shell !== null &&
+                  shell.deletedAt === null &&
+                  !(yield* isForeign(match.threadId, shell))
+                );
               }),
             )
           : found;
@@ -179,16 +186,29 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     (input) => input.action === "status",
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
-        const { projection } = yield* readThread(input.threadId, ["contextTransfers"]);
+        const { projection, scope, threads } = yield* readThread(input.threadId, [
+          "contextTransfers",
+        ]);
+        const isForeign = yield* foreignBotThreads(threads, scope);
+        const transfers =
+          scope.bot === true
+            ? yield* Effect.filter(
+                projection.contextTransfers,
+                ({ sourceThreadId, targetThreadId }) =>
+                  Effect.gen(function* () {
+                    return (
+                      !(yield* isForeign(sourceThreadId)) && !(yield* isForeign(targetThreadId))
+                    );
+                  }),
+              )
+            : projection.contextTransfers;
         return {
-          transfers: projection.contextTransfers.map(
-            ({ id, sourceThreadId, targetThreadId, status }) => ({
-              id,
-              sourceThreadId,
-              targetThreadId,
-              status,
-            }),
-          ),
+          transfers: transfers.map(({ id, sourceThreadId, targetThreadId, status }) => ({
+            id,
+            sourceThreadId,
+            targetThreadId,
+            status,
+          })),
         };
       }),
     ),

@@ -16,7 +16,7 @@ import * as Layer from "effect/Layer";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
-import { threadNotFound } from "./threadAccess.ts";
+import { assertBotThreadAccess, threadNotFound } from "./threadAccess.ts";
 
 export class ThreadMetadataMcpService extends Context.Service<
   ThreadMetadataMcpService,
@@ -141,6 +141,7 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
+    yield* assertBotThreadAccess(threadManagement, scope, threadId, shell);
     if (shell === null || shell.deletedAt !== null) {
       return yield* threadNotFound(
         threadManagement,

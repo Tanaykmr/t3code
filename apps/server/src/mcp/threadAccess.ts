@@ -69,9 +69,15 @@ export const threadNotFound = Effect.fn("OrchestratorMcpService.threadNotFound")
   message: string,
 ) {
   let suggested: ThreadId | null = null;
-  for (const candidate of candidateThreadIds(threadId, scope.environmentId)) {
+  const candidates = candidateThreadIds(threadId, scope.environmentId);
+  const isForeign = candidates.length === 0 ? undefined : yield* foreignBotThreads(threads, scope);
+  for (const candidate of candidates) {
     const shell = yield* threads.getThreadShell(candidate).pipe(Effect.orElseSucceed(() => null));
-    if (shell !== null && shell.deletedAt === null) {
+    if (
+      shell !== null &&
+      shell.deletedAt === null &&
+      !(isForeign !== undefined && (yield* isForeign(candidate, shell)))
+    ) {
       suggested = candidate;
       break;
     }
@@ -246,54 +252,71 @@ const resolveThreadId = (context: Caller, threadId: ThreadId | undefined) =>
           }),
         );
 
-/**
- * Whether the thread is another bot's chat or seat, or a fork of one: a fork carries its
- * source's transcript, so it stays as private as the source.
- */
-export const isForeignBotThread = Effect.fn("mcp.isForeignBotThread")(function* (
+type ThreadAncestry = Pick<OrchestrationV2ThreadShell, "lineage"> &
+  Partial<Pick<OrchestrationV2ThreadShell, "forkedFrom">>;
+
+// Snapshot ownership once for a list or search, before collecting any results.
+export const foreignBotThreads = Effect.fn("mcp.foreignBotThreads")(function* (
+  threads: Pick<ThreadManagement.ThreadManagementService["Service"], "getThreadShell">,
+  scope: McpInvocationContext.McpInvocationScope,
+) {
+  if (scope.bot !== true) {
+    return (_threadId: ThreadId, _known?: ThreadAncestry | null) => Effect.succeed(false);
+  }
+  const bots = yield* BotTurnContext.optional;
+  const privateIds = Option.isNone(bots) ? null : yield* bots.value.privateThreadIds;
+  return Effect.fnUntraced(function* (threadId: ThreadId, known?: ThreadAncestry | null) {
+    if (privateIds === null) return true;
+    const seen = new Set<ThreadId>();
+    let current = threadId;
+    while (seen.size < 32) {
+      if (current !== scope.thread?.threadId && privateIds.has(current)) return true;
+      seen.add(current);
+      const thread =
+        current === threadId && known !== undefined
+          ? known
+          : yield* threads
+              .getThreadShell(current)
+              .pipe(Effect.orElseSucceed(() => "unreadable" as const));
+      // An ancestor that cannot be checked keeps the fork closed.
+      if (thread === "unreadable") return true;
+      if (thread === null) return current !== threadId;
+      const source =
+        thread.forkedFrom?.type === "run"
+          ? thread.forkedFrom.threadId
+          : thread.lineage.relationshipToParent === "fork"
+            ? thread.lineage.parentThreadId
+            : null;
+      if (source === null) return false;
+      if (seen.has(source)) return true;
+      current = source;
+    }
+    return true;
+  });
+});
+
+export const assertBotThreadAccess = Effect.fn("mcp.assertBotThreadAccess")(function* (
   threads: Pick<ThreadManagement.ThreadManagementService["Service"], "getThreadShell">,
   scope: McpInvocationContext.McpInvocationScope,
   threadId: ThreadId,
+  known?: ThreadAncestry | null,
 ) {
-  const bots = yield* BotTurnContext.optional;
-  if (Option.isNone(bots)) return false;
-  const seen = new Set<ThreadId>();
-  let current: ThreadId = threadId;
-  while (seen.size < 32) {
-    if (current !== scope.thread?.threadId && (yield* bots.value.workTargets(current)) !== null) {
-      return true;
-    }
-    seen.add(current);
-    const shell = yield* threads
-      .getThreadShell(current)
-      .pipe(Effect.orElseSucceed(() => "unreadable" as const));
-    // An ancestor that cannot be checked keeps the fork closed.
-    if (shell === "unreadable") return true;
-    if (shell === null) return current !== threadId;
-    if (shell.forkedFrom?.type !== "run") return false;
-    current = shell.forkedFrom.threadId;
-    if (seen.has(current)) return true;
+  if (scope.bot !== true) return;
+  const isForeign = yield* foreignBotThreads(threads, scope);
+  if (yield* isForeign(threadId, known)) {
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message: "That thread belongs to a bot and is private.",
+    });
   }
-  return true;
 });
-
-export const privateBotThread = () =>
-  new OrchestratorMcpFailure({
-    code: "invalid_request",
-    message: "That thread belongs to a bot and is private.",
-  });
 
 export const readThread = Effect.fn("mcp.readThread")(function* <
   K extends ProjectionRecordField = never,
 >(threadId?: ThreadId, fields: ReadonlyArray<K> = [], filter?: ProjectionRecordFilter) {
   const context = yield* readCaller();
   const targetId = yield* resolveThreadId(context, threadId);
-  if (
-    context.scope.bot === true &&
-    (yield* isForeignBotThread(context.threads, context.scope, targetId))
-  ) {
-    return yield* privateBotThread();
-  }
+  yield* assertBotThreadAccess(context.threads, context.scope, targetId);
   const shell = yield* context.threads.getThreadShell(targetId).pipe(Effect.mapError(unavailable));
   if (shell === null || shell.deletedAt !== null) {
     return yield* threadNotFound(

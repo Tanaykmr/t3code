@@ -1,4 +1,4 @@
-import type { ThreadId } from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -21,6 +21,8 @@ export class BotTurnContext extends Context.Service<
     readonly forThread: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<BotTurnContextEntry>>;
     /** Projects a bot-owned thread may start coding work in; null for an ordinary thread. */
     readonly workTargets: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<string> | null>;
+    /** DM, peer, and room seat threads. Null means ownership could not be checked. */
+    readonly privateThreadIds: Effect.Effect<ReadonlySet<ThreadId> | null>;
     /** Whether the thread is a bot's private chat, not a room or peer seat. */
     readonly isDm: (threadId: ThreadId) => Effect.Effect<boolean>;
     /** Whether the executing turn answers the user directly, not a bot, routine or webhook. */
@@ -227,7 +229,16 @@ export const layer = Layer.effect(
       },
       (effect) => effect.pipe(Effect.orElseSucceed(() => false)),
     );
-    return BotTurnContext.of({ forThread, workTargets, isDm, isOperatorTurn });
+    const privateThreadIds = sql<{ thread_id: string }>`
+      SELECT dm_thread_id AS thread_id FROM bots WHERE dm_thread_id IS NOT NULL
+      UNION ALL SELECT peer_thread_id FROM bots WHERE peer_thread_id IS NOT NULL
+      UNION ALL SELECT thread_id FROM bot_room_threads
+    `.pipe(
+      NodeSqliteClient.readOnly,
+      Effect.map((rows) => new Set(rows.map(({ thread_id }) => ThreadId.make(thread_id)))),
+      Effect.orElseSucceed(() => null),
+    );
+    return BotTurnContext.of({ forThread, workTargets, privateThreadIds, isDm, isOperatorTurn });
   }),
 );
 

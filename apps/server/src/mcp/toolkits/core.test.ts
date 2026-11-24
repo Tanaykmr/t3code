@@ -43,6 +43,7 @@ import {
 } from "../../orchestration-v2/Orchestrator.ts";
 
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
+import * as BotTurnContext from "../../bots/BotTurnContext.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
@@ -1267,6 +1268,121 @@ function scheduledTask(id: string, runtimeMode: "auto" | "full-access"): never {
     updatedAt: "2026-10-01T00:00:00.000Z",
   } as never;
 }
+
+const foreignBotThread = ThreadId.make("foreign-bot-thread");
+const foreignBotFork = ThreadId.make("foreign-bot-fork");
+const codingThread = ThreadId.make("coding-thread");
+const botShells = [
+  McpToolAccessTestkit.liveThreadShell(foreignBotThread),
+  {
+    ...McpToolAccessTestkit.liveThreadShell(foreignBotFork),
+    lineage: {
+      parentThreadId: foreignBotThread,
+      rootThreadId: foreignBotThread,
+      relationshipToParent: "fork" as const,
+    },
+    forkedFrom: {
+      type: "run" as const,
+      threadId: foreignBotThread,
+      runId: RunId.make("source-run"),
+    },
+  },
+  McpToolAccessTestkit.liveThreadShell(threadId),
+  McpToolAccessTestkit.liveThreadShell(codingThread),
+];
+const botIsolationLayer = layerOrchestratorToolkit.pipe(
+  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provide(NodeCrypto.layer),
+  Layer.provide(
+    Layer.mock(ThreadManagement.ThreadManagementService)({
+      listProjectThreads: () => Effect.succeed(botShells),
+      getShellSnapshot: (input) =>
+        Effect.succeed({
+          threads: botShells.filter((shell) => input?.threadIds?.includes(shell.id)),
+          projects: [],
+          sequence: 0,
+        } as never),
+      getThreadShell: (id) => Effect.succeed(botShells.find((shell) => shell.id === id) ?? null),
+      getThreadRecords: (id) =>
+        Effect.succeed(
+          McpToolAccessTestkit.idleThreadProjection(McpToolAccessTestkit.liveThreadShell(id)),
+        ),
+      getProjectThreadRecords: ({ threadId }) =>
+        Effect.succeed(
+          McpToolAccessTestkit.idleThreadProjection(McpToolAccessTestkit.liveThreadShell(threadId)),
+        ),
+      dispatch: () => Effect.succeed({ sequence: 1, storedEvents: [] }),
+      interruptThread: () => Effect.succeed({ type: "no_active_run" }),
+      stopDelegatedTasks: () => Effect.void,
+    }),
+  ),
+  Layer.provide(ServerSettings.layerTest()),
+  Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
+  Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+  Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+  Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+  Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+  Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+  Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+  Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+  Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+);
+
+const asBot = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.provideService(McpInvocationContext.McpInvocationContext, { ...scope, bot: true }),
+    Effect.provideService(McpSchema.McpServerClient, client),
+    Effect.provideService(
+      BotTurnContext.BotTurnContext,
+      BotTurnContext.BotTurnContext.of({
+        workTargets: (id) =>
+          Effect.succeed(id === foreignBotThread || id === threadId ? ["test-project"] : null),
+        privateThreadIds: Effect.succeed(new Set([foreignBotThread, threadId])),
+        forThread: () => Effect.succeed([]),
+        isDm: () => Effect.succeed(true),
+        isOperatorTurn: () => Effect.succeed(true),
+      }),
+    ),
+    Effect.provide(botIsolationLayer),
+  );
+
+it.effect("paginates only the threads visible to the bot", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const list = (cursor: number) =>
+      server.callTool({
+        name: "t3_thread_list",
+        arguments: { allProjects: true, limit: 1, cursor },
+      });
+    expect((yield* list(0)).structuredContent).toMatchObject({
+      threads: [{ threadId }],
+      total: 2,
+      nextCursor: 1,
+    });
+    expect((yield* list(1)).structuredContent).toMatchObject({
+      threads: [{ threadId: codingThread }],
+      total: 2,
+      nextCursor: null,
+    });
+  }).pipe(asBot),
+);
+
+it.effect.each([
+  { name: "t3_thread_update", args: { action: "rename", title: "Renamed thread" } },
+  { name: "t3_thread_interrupt", args: {} },
+  { name: "t3_thread_interrupt", args: { stop: true } },
+])("denies $name on another bot's thread and its fork", ({ name, args }) =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    for (const target of [foreignBotThread, foreignBotFork]) {
+      const result = yield* server.callTool({ name, arguments: { ...args, threadId: target } });
+      expect(declaredFailure(result)).toMatchObject({
+        code: "invalid_request",
+        message: "That thread belongs to a bot and is private.",
+      });
+    }
+  }).pipe(asBot),
+);
 
 it.effect.each(["t3_thread_interrupt", "t3_workflow_stop"])(
   "a caller cannot use %s on a thread that runs above its own modes",

@@ -15,6 +15,7 @@ import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadIssueService from "../../../orchestration-v2/ThreadIssueService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import { assertBotThreadAccess } from "../../threadAccess.ts";
 import {
   IssueLinkFailedError,
   IssueProjectNotFoundError,
@@ -81,6 +82,7 @@ const make = Effect.gen(function* () {
       Effect.map(Option.fromNullishOr),
       Effect.mapError((cause) => new IssueLinkFailedError({ cause })),
     );
+    yield* assertBotThreadAccess(engine, scope, threadId, Option.getOrNull(thread));
     if (Option.isNone(thread) || thread.value.deletedAt !== null) {
       return yield* new IssueThreadNotFoundError({ threadId });
     }

@@ -121,6 +121,7 @@ it.effect("a bot deletes its routine only on the user's own request", () =>
       Effect.provideService(BotTurnContext.BotTurnContext, {
         forThread: () => Effect.succeed([]),
         workTargets: () => Effect.succeed(["project"]),
+        privateThreadIds: Effect.succeed(new Set([dm])),
         isDm: () => Effect.succeed(true),
         // A routine's own turn, not the user's.
         isOperatorTurn: () => Effect.succeed(false),

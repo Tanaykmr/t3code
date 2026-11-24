@@ -45,7 +45,7 @@ import {
 } from "../../../sourceControl/threadPullRequests.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import { threadNotFound } from "../../threadAccess.ts";
+import { assertBotThreadAccess, threadNotFound } from "../../threadAccess.ts";
 import {
   type ListThreadPullRequestsResult,
   PullRequestBranchHasNoneError,
@@ -295,6 +295,7 @@ const make = Effect.gen(function* () {
       Effect.map(Option.fromNullishOr),
       Effect.mapError((cause) => new Failure({ cause })),
     );
+    yield* assertBotThreadAccess(engine, scope, threadId, Option.getOrNull(thread));
     if (Option.isNone(thread) || thread.value.deletedAt !== null) {
       return yield* threadNotFound(engine, scope, threadId, `Thread ${threadId} was not found.`);
     }
