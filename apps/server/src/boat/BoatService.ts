@@ -574,11 +574,14 @@ export const make = Effect.gen(function* () {
         ),
       );
       if (sent === "unknown") {
-        // Nothing was confirmed sent; a stop waiting behind this resume goes first.
-        if (yield* hasPendingStop(server.managed_id)) {
+        if (!(yield* hasPendingStop(server.managed_id))) return false;
+        // A stop is waiting: look once. A wake under way continues (the stop then runs); still
+        // archived settles the resume so the stop is not held behind repeated sends.
+        const after = yield* retryTransient(api.get(key, sandboxId));
+        yield* observe(server.managed_id, after);
+        if (after.state === "archived") {
           return yield* new OperationRefused({ code: "provider-unavailable" });
         }
-        return false;
       }
       if (sent === "refused") {
         const after = yield* retryTransient(api.get(key, sandboxId));
@@ -702,16 +705,22 @@ export const make = Effect.gen(function* () {
     // No cleanup stop. A refused resume shows what Boat last reported, or Stopping while an
     // accepted stop waits, so no other action is accepted against a stale Stopped.
     const server = yield* readServer(op.managed_id);
-    const stopWaiting = yield* hasPendingStop(op.managed_id);
     const lifecycle: BoatLifecycle =
       op.kind !== "resume"
         ? "failed"
-        : stopWaiting
-          ? "stopping"
-          : server?.observed_power === "running"
-            ? "running"
-            : "stopped";
-    yield* setServer(op.managed_id, { lifecycle });
+        : server?.observed_power === "running"
+          ? "running"
+          : "stopped";
+    // One statement, so a stop accepted meanwhile keeps the row Stopping.
+    yield* sql`
+      UPDATE boat_servers SET lifecycle = CASE WHEN EXISTS (
+        SELECT 1 FROM boat_operations
+        WHERE managed_id = ${op.managed_id} AND kind = 'stop'
+          AND stage NOT IN ('completed', 'failed')
+      ) THEN 'stopping' ELSE ${lifecycle} END
+      WHERE managed_id = ${op.managed_id}
+    `;
+    yield* publish;
     yield* setStage(op.request_id, "failed", { failure });
     return true;
   });
@@ -938,21 +947,6 @@ export const make = Effect.gen(function* () {
     return { status: "configured" as const };
   });
 
-  /** The last stop completed right after a resume whose send was never confirmed. */
-  const lateWakeAfterStop = (managedId: string) =>
-    sql<{ readonly kind: string; readonly stage: string; readonly failure: string | null }>`
-      SELECT kind, stage, failure FROM boat_operations
-      WHERE managed_id = ${managedId} ORDER BY created_at DESC, rowid DESC LIMIT 2
-    `.pipe(
-      Effect.map(
-        ([last, previous]) =>
-          last?.kind === "stop" &&
-          last.stage === "completed" &&
-          previous?.kind === "resume" &&
-          previous.failure === "provider-unavailable",
-      ),
-    );
-
   /** Refreshes one settled machine: an external archive, restart, or deletion shows up here. */
   const refresh = Effect.fn("BoatService.refresh")(
     function* (key: BoatKey, managedId: string) {
@@ -990,13 +984,8 @@ export const make = Effect.gen(function* () {
         // A failed create or resume left it billing and the first cleanup did not land.
         yield* api.stop(key, server.sandbox_id).pipe(Effect.ignore);
       } else if (server.lifecycle === "stopped" && isLiveState(sandbox.value.state)) {
-        if (yield* lateWakeAfterStop(managedId)) {
-          // A resume whose reply was lost woke it after the user's stop finished: stop it again.
-          yield* api.stop(key, server.sandbox_id).pipe(Effect.ignore);
-        } else {
-          // Restarted outside T3; show it with its new deadline rather than hiding it.
-          yield* setServer(server.managed_id, { lifecycle: "running" });
-        }
+        // Restarted outside T3; show it with its new deadline rather than hiding it.
+        yield* setServer(server.managed_id, { lifecycle: "running" });
       }
       if (server.lifecycle === "running" || isLiveState(sandbox.value.state)) {
         yield* updateUsage(key, server.managed_id, server.sandbox_id);
