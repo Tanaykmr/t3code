@@ -916,10 +916,12 @@ function EmptyRemoteEnvironments({ cloudEnabled = true }: { readonly cloudEnable
 export function CloudRemoteEnvironmentRows({
   primaryEnvironmentId,
   savedEnvironments,
+  excludeSavedEnvironmentIds,
   only,
 }: {
   readonly primaryEnvironmentId: EnvironmentId | null;
   readonly savedEnvironments: ReadonlyArray<EnvironmentPresentation>;
+  readonly excludeSavedEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly only?: EnvironmentId;
 }) {
   if (only !== undefined) {
@@ -935,6 +937,7 @@ export function CloudRemoteEnvironmentRows({
     <CloudEnvironmentConnectRows
       primaryEnvironmentId={primaryEnvironmentId}
       savedEnvironments={savedEnvironments}
+      excludeSavedEnvironmentIds={excludeSavedEnvironmentIds}
       empty={<EmptyRemoteEnvironments />}
     />
   ) : savedEnvironments.length === 0 ? (

@@ -151,7 +151,7 @@ import {
   SavedBackendListRow,
 } from "./SavedEnvironmentRows";
 import { AddEnvironmentDialog } from "./AddEnvironmentDialog";
-import { BoatEnvironmentsSettings } from "./BoatEnvironmentsSettings";
+import { BoatEnvironmentsSettings, useBoatControllers } from "./BoatEnvironmentsSettings";
 import {
   type ConnectDeviceRevokeRequest,
   RevokeConnectDeviceDialog,
@@ -274,6 +274,7 @@ function ConnectionsSettingsContent({
   const m = useMessages();
   const desktopBridge = window.desktopBridge;
   const { environments } = useEnvironments();
+  const boat = useBoatControllers(view === "environments" ? environments : []);
   const primaryEnvironment = usePrimaryEnvironment();
   const peerLinkHosts = usePeerLinkHosts();
   const removeEnvironment = useAtomCommand(environmentCatalog.remove, { reportFailure: false });
@@ -293,8 +294,16 @@ function ConnectionsSettingsContent({
   const savedEnvironments = environments.filter(
     (environment) => environment.entry.target._tag !== "PrimaryConnectionTarget",
   );
-  const listedEnvironments = savedEnvironments.filter(
+  const savedRemoteEnvironments = savedEnvironments.filter(
     (environment) => !isDesktopLocalConnectionTarget(environment.entry.target),
+  );
+  const boatGuestIds = new Set(
+    boat.controllers.flatMap(({ snapshot }) =>
+      snapshot.servers.map((server) => server.guestEnvironmentId).filter((id) => id !== null),
+    ),
+  );
+  const listedEnvironments = savedRemoteEnvironments.filter(
+    (environment) => !boatGuestIds.has(environment.environmentId),
   );
   const savedUpdateStates = useAtomValue(
     environmentUpdateStatesAtom(
@@ -1879,7 +1888,7 @@ function ConnectionsSettingsContent({
             footerId={searchableSetting("linked-environments").id}
             onAddEnvironment={openAddEnvironment}
             renderSavedEnvironment={(environment) =>
-              listedEnvironments.some(
+              savedRemoteEnvironments.some(
                 (listed) => listed.environmentId === environment.environmentId,
               ) ? (
                 <SavedBackendListRow
@@ -1916,11 +1925,12 @@ function ConnectionsSettingsContent({
             <CloudRemoteEnvironmentRows
               primaryEnvironmentId={primaryEnvironmentId}
               savedEnvironments={savedEnvironments}
+              excludeSavedEnvironmentIds={boatGuestIds}
             />
           </>
         )}
       </SettingsSection>
-      <BoatEnvironmentsSettings />
+      <BoatEnvironmentsSettings boat={boat} />
       {hasCloudPublicConfig() ? (
         <RemoveT3ConnectEnvironmentDialog
           environmentLabel={pendingT3ConnectRemoval?.label ?? null}

@@ -56,8 +56,7 @@ const TONE_CLASS: Record<BoatTone, string> = {
 const newRequestId = () => BoatRequestId.make(randomUUID());
 
 /** Connected or cached environments whose server can manage Boat machines. */
-function useBoatControllers() {
-  const { environments } = useEnvironments();
+export function useBoatControllers(environments: ReadonlyArray<EnvironmentPresentation>) {
   const controllers = environments.filter(
     (environment) => environment.serverConfig?.boatEnvironments === true,
   );
@@ -397,11 +396,14 @@ function BoatKeyRow({
 }
 
 /** Boat machines this device can see, from every controller that manages them. */
-export function BoatEnvironmentsSettings() {
+export function BoatEnvironmentsSettings({
+  boat: { controllers, manageable, environments },
+}: {
+  readonly boat: ReturnType<typeof useBoatControllers>;
+}) {
   const gt = useGT();
   // The tick is a UTC minute without a zone suffix.
   const nowMs = Date.parse(`${useNowMinute()}:00.000Z`);
-  const { controllers, manageable, environments } = useBoatControllers();
   if (controllers.length === 0) return null;
   const paired = new Set<EnvironmentId>(environments.map((entry) => entry.environmentId));
   const rows = boatRows({
@@ -436,7 +438,8 @@ const BOAT_DEFAULT_TTL_SECONDS = BOAT_TTL_CHOICES_SECONDS[0];
 /** The Boat mode of Add environment: name, size and stop deadline, created on a controller. */
 export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }) {
   const gt = useGT();
-  const { controllers, manageable } = useBoatControllers();
+  const { environments } = useEnvironments();
+  const { controllers, manageable } = useBoatControllers(environments);
   const eligible = controllers.filter(
     (entry) =>
       entry.connected &&
