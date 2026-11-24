@@ -66,6 +66,11 @@ export type CompiledBoardEdits =
       readonly ids: Readonly<Record<string, string>>;
       /** Bound labels, which the caller edits through their container. */
       readonly labelIds: ReadonlySet<string>;
+      /**
+       * Existing records written without a token from the caller (labels, arrows, binding
+       * targets), as the elements the caller sees and their tokens in `snapshot`.
+       */
+      readonly dependents: ReadonlyArray<BoardConflict>;
     }
   | { readonly _tag: "Invalid"; readonly message: string }
   | { readonly _tag: "Stale"; readonly conflicts: ReadonlyArray<BoardConflict> };
@@ -412,7 +417,8 @@ export const compileBoardEdits = (input: {
   const setLabel = (containerId: string, text: string) => {
     const container = write(containerId);
     const existing = labelOf(container);
-    if (text === "") {
+    // The editor drops whitespace-only text on load, which would strand the container's binding.
+    if (text.trim() === "") {
       if (existing !== undefined) deleteElement(existing);
       return;
     }
@@ -454,8 +460,15 @@ export const compileBoardEdits = (input: {
     layoutLabel(write(labelId), containerId);
   };
 
+  /** Set when an edit would move an elbow arrow, which needs the editor's own router. */
+  let movesElbow = false;
+
   /** Re-aims an arrow's bound ends at its targets' outlines, keeping any bend points. */
   const routeArrow = (arrowId: string, seed?: ReadonlyArray<Point>) => {
+    if (read(arrowId)?.elbowed === true) {
+      movesElbow = true;
+      return;
+    }
     const arrow = write(arrowId);
     const points = [...(seed ?? linearPoints(arrow))];
     if (points.length < 2) return;
@@ -677,9 +690,7 @@ export const compileBoardEdits = (input: {
           writable.updated = now;
         }
         routeArrow(element.id, [from, to]);
-        if (edit.label !== undefined && edit.label !== "") {
-          setLabel(element.id, normalizeText(edit.label));
-        }
+        if (edit.label !== undefined) setLabel(element.id, normalizeText(edit.label));
         continue;
       }
       if (
@@ -710,9 +721,7 @@ export const compileBoardEdits = (input: {
       });
       next.set(element.id, element);
       if (edit.id !== undefined) tempIds.set(edit.id, element.id);
-      if (edit.label !== undefined && edit.label !== "") {
-        setLabel(element.id, normalizeText(edit.label));
-      }
+      if (edit.label !== undefined) setLabel(element.id, normalizeText(edit.label));
       continue;
     }
 
@@ -788,13 +797,28 @@ export const compileBoardEdits = (input: {
       Object.assign(element, textFields(normalizeText(edit.text)));
     }
     element.updated = now;
+    const height = element.height;
     if (edit.label !== undefined) setLabel(edit.id, normalizeText(edit.label));
-    if (moves || resizes || edit.text !== undefined) relayoutDependents(edit.id);
+    // A longer label can grow its container, which moves the edges its arrows attach to.
+    if (moves || resizes || edit.text !== undefined || element.height !== height) {
+      relayoutDependents(edit.id);
+    }
+    if (movesElbow) {
+      return {
+        _tag: "Invalid",
+        message: `${where}: "${edit.id}" has an elbow connector, and rerouting one is not supported yet. Leave its size and position, or delete the connector first.`,
+      };
+    }
   }
 
   if (stale.length > 0) return { _tag: "Stale", conflicts: stale };
 
   const operations: Array<BoardOperation> = [];
+  const dependents = new Map<string, BoardConflict>();
+  const tokenOf = (element: BoardElement) => ({
+    version: element.version,
+    versionNonce: element.versionNonce,
+  });
   for (const id of new Set([...next.keys(), ...deleted])) {
     const element = next.get(id);
     if (created.has(id)) {
@@ -802,10 +826,12 @@ export const compileBoardEdits = (input: {
       continue;
     }
     const prior = base.get(id)!;
-    const expected = expectedFor.get(id) ?? {
-      version: prior.version,
-      versionNonce: prior.versionNonce,
-    };
+    const expected = expectedFor.get(id) ?? tokenOf(prior);
+    if (!expectedFor.has(id)) {
+      const containerId = prior.type === "text" ? str(prior.containerId) : null;
+      const shown = (containerId === null ? undefined : base.get(containerId)) ?? prior;
+      dependents.set(shown.id, { id: shown.id, current: tokenOf(shown) });
+    }
     operations.push(
       deleted.has(id)
         ? { type: "delete", id, expected }
@@ -820,7 +846,13 @@ export const compileBoardEdits = (input: {
       .filter((element) => element.type === "text" && str(element.containerId) !== null)
       .map((element) => element.id),
   );
-  return { _tag: "Compiled", operations, ids: Object.fromEntries(tempIds), labelIds };
+  return {
+    _tag: "Compiled",
+    operations,
+    ids: Object.fromEntries(tempIds),
+    labelIds,
+    dependents: [...dependents.values()],
+  };
 };
 
 export interface BoardSummaryElement {
@@ -842,9 +874,16 @@ const SUMMARY_TEXT_MAX = 500;
 const clip = (text: string) =>
   text.length > SUMMARY_TEXT_MAX ? `${text.slice(0, SUMMARY_TEXT_MAX)}…` : text;
 
+/** Shortens long label and text, for a reply after any search has seen the full text. */
+export const clipBoardSummary = (element: BoardSummaryElement): BoardSummaryElement => ({
+  ...element,
+  ...(element.label === undefined ? {} : { label: clip(element.label) }),
+  ...(element.text === undefined ? {} : { text: clip(element.text) }),
+});
+
 /**
  * Live elements in canonical order, with each bound label folded into its container: the agent
- * edits labels through the container, so a label never appears on its own.
+ * edits labels through the container, so a label never appears on its own. Text is unclipped.
  */
 export const summarizeBoard = (snapshot: BoardSnapshot): ReadonlyArray<BoardSummaryElement> => {
   const live = new Map(
@@ -852,8 +891,7 @@ export const summarizeBoard = (snapshot: BoardSnapshot): ReadonlyArray<BoardSumm
       .filter((element) => !element.isDeleted)
       .map((element) => [element.id, element]),
   );
-  const labelText = (element: BoardElement) =>
-    clip(str(element.originalText) ?? str(element.text) ?? "");
+  const labelText = (element: BoardElement) => str(element.originalText) ?? str(element.text) ?? "";
   const summary: Array<BoardSummaryElement> = [];
   for (const element of live.values()) {
     const containerId = str(element.containerId);

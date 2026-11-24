@@ -6,26 +6,35 @@ import * as BoardService from "../../../board/BoardService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
-const dependencies = [
-  McpInvocationContext.McpInvocationContext,
-  ThreadManagementService.ThreadManagementService,
-  BoardService.BoardService,
-];
-
 const BOARD_APPLY_MAX_EDITS = 100;
 const BOARD_GET_MAX_LIMIT = 500;
 
+/** `message` is a field so it reaches the agent alongside the conflicts in "return" mode. */
 export class BoardEditConflictError extends Schema.TaggedError<BoardEditConflictError>()(
   "BoardEditConflictError",
-  { conflicts: Schema.Array(BoardConflict) },
-) {
-  override get message(): string {
-    return "The board changed since you read it, so nothing was saved. Read it again with board_get, then retry with the current version and versionNonce.";
-  }
-}
+  { message: Schema.String, conflicts: Schema.Array(BoardConflict) },
+) {}
+
+export const boardEditConflict = (conflicts: ReadonlyArray<BoardConflict>) =>
+  new BoardEditConflictError({
+    message:
+      "The board changed since you read it, so nothing was saved. Read it again with board_get, then retry with its revision and the current version and versionNonce.",
+    conflicts,
+  });
 
 export const BoardToolError = Schema.Union([OrchestratorMcpFailure, BoardEditConflictError]);
 export type BoardToolError = typeof BoardToolError.Type;
+
+const shared = {
+  failure: BoardToolError,
+  // In the default "error" mode only the message would reach the agent, not the conflicts.
+  failureMode: "return" as const,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    BoardService.BoardService,
+  ],
+};
 
 const ElementId = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256));
 const EditId = ElementId.annotate({
@@ -139,8 +148,7 @@ const BoardGetTool = Tool.make("board_get", {
     ),
   }),
   success: BoardGetResult,
-  failure: BoardToolError,
-  dependencies,
+  ...shared,
 })
   .annotate(Tool.Title, "Read board")
   .annotate(Tool.Readonly, true)
@@ -153,8 +161,7 @@ const BoardCreateTool = Tool.make("board_create", {
   description:
     "Get or create this thread's Excalidraw board, shown in the thread's board panel. Call before the first board_apply.",
   success: BoardCreateResult,
-  failure: BoardToolError,
-  dependencies,
+  ...shared,
 })
   .annotate(Tool.Title, "Create board")
   .annotate(Tool.Readonly, false)
@@ -165,16 +172,16 @@ const BoardCreateTool = Tool.make("board_create", {
 
 const BoardApplyTool = Tool.make("board_apply", {
   description:
-    "Edit this thread's Excalidraw board in one all-or-nothing batch. create: rectangle, diamond, ellipse (x, y, width, height, label?); text (x, y, text); arrow or line from x, y to x+width, y+height, or an arrow from start to end element, attached to both. patch: move, resize, recolor, relabel. delete: also removes its label. patch and delete need expected. Colors are hex. Returns real ids for your names and new tokens. On conflict nothing is saved: board_get, then retry.",
+    "Edit this thread's Excalidraw board in one all-or-nothing batch. create: rectangle, diamond, ellipse (x, y, width, height, label?); text (x, y, text); arrow or line from x, y to x+width, y+height, or an arrow from start to end element, attached to both. patch: move, resize, recolor, relabel. delete: also removes its label. patch and delete need expected and the revision it came from. Colors are hex. Returns real ids for your names and new tokens. On conflict nothing is saved: board_get, then retry.",
   parameters: Schema.Struct({
+    revision: Schema.optional(NonNegativeInt),
     edits: Schema.Array(BoardApplyEdit).check(
       Schema.isMinLength(1),
       Schema.isMaxLength(BOARD_APPLY_MAX_EDITS),
     ),
   }),
   success: BoardApplyResult,
-  failure: BoardToolError,
-  dependencies,
+  ...shared,
 })
   .annotate(Tool.Title, "Edit board")
   .annotate(Tool.Readonly, false)

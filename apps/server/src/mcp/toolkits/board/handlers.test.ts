@@ -80,7 +80,8 @@ const callAs = <Name extends keyof typeof BoardToolkit.tools>(
       Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
     );
     // The tools return failures, as the MCP server sends them; tests flip them back.
-    if (last.isFailure) return yield* Effect.fail(last.result as Tool.Failure<(typeof BoardToolkit.tools)[Name]>);
+    if (last.isFailure)
+      return yield* last.result as Tool.Failure<(typeof BoardToolkit.tools)[Name]>;
     return last.result as Tool.Success<(typeof BoardToolkit.tools)[Name]>;
   });
 
@@ -124,7 +125,9 @@ const userEdit = (threadId: ThreadId, id: string, changes: Record<string, unknow
         threadId,
         boardId: snapshot.board.boardId,
         mutationId: `user-${snapshot.board.revision}`,
-        operations: [{ type: "replace", element: { ...element, ...changes }, expected: token(element) }],
+        operations: [
+          { type: "replace", element: { ...element, ...changes }, expected: token(element) },
+        ],
       },
     });
   });
@@ -535,13 +538,15 @@ it.effect("sends a conflict's ids and current tokens to the agent over MCP", () 
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     const callTool = (name: string, args: object) =>
-      server.callTool({ name, arguments: args }).pipe(
-        Effect.provideService(
-          McpInvocationContext.McpInvocationContext,
-          threadCaller(ThreadId.make("thread-mcp")),
-        ),
-        Effect.provideService(McpSchema.McpServerClient, mcpClient),
-      );
+      server
+        .callTool({ name, arguments: args })
+        .pipe(
+          Effect.provideService(
+            McpInvocationContext.McpInvocationContext,
+            threadCaller(ThreadId.make("thread-mcp")),
+          ),
+          Effect.provideService(McpSchema.McpServerClient, mcpClient),
+        );
     yield* callTool("board_create", {});
     const created = yield* callTool("board_apply", { edits: [box("a", 0, "A")] });
     const id = (created.structuredContent as { ids: Record<string, string> }).ids.a!;

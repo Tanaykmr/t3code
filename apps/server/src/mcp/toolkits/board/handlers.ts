@@ -9,13 +9,20 @@ import * as Effect from "effect/Effect";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 
 import * as BoardService from "../../../board/BoardService.ts";
-import { compileBoardEdits, summarizeBoard } from "../../../board/BoardEdits.ts";
+import {
+  type BoardSummaryElement,
+  clipBoardSummary,
+  compileBoardEdits,
+  summarizeBoard,
+} from "../../../board/BoardEdits.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { loadCaller } from "../../threadAccess.ts";
-import { BoardEditConflictError, BoardToolkit, type BoardGetResult } from "./tools.ts";
+import { BoardToolkit, boardEditConflict, type BoardGetResult } from "./tools.ts";
 
 const DEFAULT_LIMIT = 200;
+/** Encoded element JSON per board_get page, so one read stays small in the transcript. */
+const PAGE_BYTES = 32_000;
 const ID_BYTES = 15;
 const SEED_BYTES = 4;
 const MAX_SEED = 2 ** 31;
@@ -23,7 +30,7 @@ const MAX_SEED = 2 ** 31;
 const toFailure = (error: BoardReadError | BoardApplyError) => {
   switch (error._tag) {
     case "BoardConflictError":
-      return new BoardEditConflictError({ conflicts: error.conflicts });
+      return boardEditConflict(error.conflicts);
     case "BoardNotFoundError":
       return error.boardId === undefined
         ? new OrchestratorMcpFailure({ code: "thread_not_found", message: error.message })
@@ -60,9 +67,33 @@ const refusePlanMode = Effect.fn("BoardToolkit.refusePlanMode")(function* () {
   }
 });
 
+/** FNV-1a, enough to tell one board_get filter from another in a cursor. */
+const filterKey = (ids: ReadonlyArray<string> | undefined, text: string | undefined) => {
+  let hash = 0x811c9dc5;
+  for (const char of JSON.stringify([ids ?? null, text ?? null])) {
+    hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+};
+
 const parseCursor = (cursor: string) => {
-  const match = /^(\d+):(\d+)$/.exec(cursor);
-  return match === null ? null : { revision: Number(match[1]), offset: Number(match[2]) };
+  const match = /^(\d+):(\d+):([0-9a-z]+)$/.exec(cursor);
+  return match === null
+    ? null
+    : { revision: Number(match[1]), offset: Number(match[2]), filter: match[3]! };
+};
+
+/** Clipped elements from the front of `candidates`, at least one, up to PAGE_BYTES encoded. */
+const page = (candidates: ReadonlyArray<BoardSummaryElement>) => {
+  const elements: Array<BoardSummaryElement> = [];
+  let bytes = 0;
+  for (const element of candidates) {
+    const clipped = clipBoardSummary(element);
+    bytes += JSON.stringify(clipped).length;
+    if (elements.length > 0 && bytes > PAGE_BYTES) break;
+    elements.push(clipped);
+  }
+  return elements;
 };
 
 const make = Effect.gen(function* () {
@@ -96,6 +127,7 @@ const make = Effect.gen(function* () {
           return { boardId: null, revision: 0, total: 0, elements: [] } satisfies BoardGetResult;
         }
         const revision = snapshot.board.revision;
+        const filter = filterKey(input.ids, input.text);
         let offset = 0;
         if (input.cursor !== undefined) {
           const cursor = parseCursor(input.cursor);
@@ -103,6 +135,11 @@ const make = Effect.gen(function* () {
           if (cursor.revision !== revision) {
             return yield* invalid(
               `The board changed (now revision ${revision}). Read it again without cursor.`,
+            );
+          }
+          if (cursor.filter !== filter) {
+            return yield* invalid(
+              "This cursor belongs to a read with other ids or text. Pass the same ids and text, or read again without cursor.",
             );
           }
           offset = cursor.offset;
@@ -115,14 +152,14 @@ const make = Effect.gen(function* () {
             (needle === undefined ||
               (element.label ?? element.text ?? "").toLowerCase().includes(needle)),
         );
-        const limit = input.limit ?? DEFAULT_LIMIT;
-        const end = offset + limit;
+        const elements = page(matching.slice(offset, offset + (input.limit ?? DEFAULT_LIMIT)));
+        const end = offset + elements.length;
         return {
           boardId: snapshot.board.boardId,
           revision,
           total: matching.length,
-          elements: matching.slice(offset, end),
-          ...(end < matching.length ? { nextCursor: `${revision}:${end}` } : {}),
+          elements,
+          ...(end < matching.length ? { nextCursor: `${revision}:${end}:${filter}` } : {}),
         } satisfies BoardGetResult;
       }),
     ),
@@ -138,6 +175,10 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const thread = yield* callerThread();
         yield* refusePlanMode();
+        const tokened = input.edits.some((edit) => edit.op !== "create");
+        if (tokened && input.revision === undefined) {
+          return yield* invalid("Patch and delete need revision: the one your tokens came from.");
+        }
         const snapshot = yield* boards.get(thread.threadId).pipe(Effect.mapError(toFailure));
         if (snapshot === null) {
           return yield* invalid("This thread has no board yet. Call board_create first.");
@@ -150,12 +191,21 @@ const make = Effect.gen(function* () {
           now: DateTime.toEpochMillis(yield* DateTime.now),
         });
         if (compiled._tag === "Invalid") return yield* invalid(compiled.message);
-        if (compiled._tag === "Stale") {
-          return yield* new BoardEditConflictError({ conflicts: compiled.conflicts });
-        }
+        if (compiled._tag === "Stale") return yield* boardEditConflict(compiled.conflicts);
         if (compiled.operations.length > BOARD_MAX_OPERATIONS) {
           return yield* invalid("This edit touches too many elements. Split it into smaller ones.");
         }
+        // Dependents carry tokens from this snapshot, not the agent's read, so a label the user
+        // renamed after that read would be overwritten. Any change since then refuses the batch.
+        if (
+          tokened &&
+          input.revision !== snapshot.board.revision &&
+          compiled.dependents.length > 0
+        ) {
+          return yield* boardEditConflict(compiled.dependents);
+        }
+        // The mode may have changed while this edit compiled.
+        yield* refusePlanMode();
         const result = yield* boards
           .apply({
             // Receipts belong to this provider session in this thread.
