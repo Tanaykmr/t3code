@@ -415,6 +415,14 @@ describe("board sync", () => {
     expect(next?.elements).toEqual([winner]);
   });
 
+  it("drops bindings to shapes outside a copied draft", () => {
+    const [arrow] = copyWithFreshIds(
+      [element("arrow", { type: "arrow", endBinding: { elementId: "outside", focus: 0, gap: 1 } })],
+      () => "fresh",
+    );
+    expect(arrow?.["endBinding"]).toBeNull();
+  });
+
   it("holds remote records under local drafts and gestures, and applies the rest", () => {
     const session = synced([element("a"), element("b"), element("c")]);
     observeEditor(

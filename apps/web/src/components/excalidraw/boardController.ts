@@ -75,8 +75,11 @@ function gestureIds(
       appState.editingTextElement?.id,
     ].filter((id) => id !== undefined),
   );
-  // Dragging a shape also moves its labels and attached arrows, and an arrow's ends move
-  // with it, so those records are part of the gesture too.
+  // Dragging a shape also moves its labels and attached arrows, a frame moves its children,
+  // and an arrow's ends move with it, so those records are part of the gesture too.
+  for (const element of elements) {
+    if (element.frameId !== null && ids.has(element.frameId)) ids.add(element.id);
+  }
   for (const element of elements) {
     if (!ids.has(element.id)) continue;
     for (const bound of element.boundElements ?? []) ids.add(bound.id);
@@ -331,6 +334,7 @@ export class BoardController {
       this.setSaveState(hasUnsavedWork(session) ? "retrying" : "saved");
       return;
     }
+    if (this.retryTimer !== null) window.clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.sending = true;
     this.setSaveState("saving");

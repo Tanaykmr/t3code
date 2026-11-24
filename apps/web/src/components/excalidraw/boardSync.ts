@@ -471,9 +471,12 @@ export function copyWithFreshIds(
 ): BoardElement[] {
   const ids = new Map(elements.map((element) => [element.id, freshId()]));
   const remap = (id: unknown) => (typeof id === "string" ? (ids.get(id) ?? id) : id);
+  // A binding to a shape outside the copy is dropped; that shape would not bind back to it.
   const remapBinding = (binding: unknown) =>
     binding !== null && typeof binding === "object" && "elementId" in binding
-      ? { ...binding, elementId: remap(binding.elementId) }
+      ? ids.has(String(binding.elementId))
+        ? { ...binding, elementId: remap(binding.elementId) }
+        : null
       : binding;
   return elements
     .filter((element) => !element.isDeleted)
@@ -483,7 +486,11 @@ export function copyWithFreshIds(
       return {
         ...copy,
         id: ids.get(element.id)!,
-        ...("containerId" in copy ? { containerId: remap(copy["containerId"]) } : {}),
+        ...("containerId" in copy
+          ? {
+              containerId: ids.has(String(copy["containerId"])) ? remap(copy["containerId"]) : null,
+            }
+          : {}),
         ...("startBinding" in copy ? { startBinding: remapBinding(copy["startBinding"]) } : {}),
         ...("endBinding" in copy ? { endBinding: remapBinding(copy["endBinding"]) } : {}),
         ...(Array.isArray(bound)

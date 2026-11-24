@@ -540,6 +540,16 @@ export const compileBoardEdits = (input: {
     ]) {
       if (endpoint !== null) removeRef(endpoint, id);
     }
+    // Like the editor, deleting a frame releases its children instead of deleting them.
+    if (element.type === "frame" || element.type === "magicframe") {
+      for (const child of new Set([...base.keys(), ...next.keys()])) {
+        if (live(child) !== undefined && read(child)?.frameId === id) {
+          const writable = write(child);
+          writable.frameId = null;
+          writable.updated = now;
+        }
+      }
+    }
     for (const ref of boundRefs(element)) {
       if (ref.type === "text") deleteElement(ref.id);
       else if (ref.type === "arrow" && live(ref.id) !== undefined) {
@@ -701,6 +711,12 @@ export const compileBoardEdits = (input: {
           writable.updated = now;
         }
         routeArrow(element.id, [from, to]);
+        if (movesElbow) {
+          return {
+            _tag: "Invalid",
+            message: `${where}: an arrow cannot attach to a rotated shape yet. Attach it to an unrotated shape, or give it x and y instead.`,
+          };
+        }
         if (edit.label !== undefined) setLabel(element.id, normalizeText(edit.label));
         continue;
       }
@@ -818,8 +834,22 @@ export const compileBoardEdits = (input: {
     element.updated = now;
     const height = element.height;
     if (edit.label !== undefined) setLabel(edit.id, normalizeText(edit.label));
-    // A longer label can grow its container, which moves the edges its arrows attach to.
-    if (moves || resizes || edit.text !== undefined || element.height !== height) {
+    if (moves && !resizes && edit.label === undefined && element.height === height) {
+      // A plain move carries the label along as laid out, keeping its alignment and font.
+      const labelId = labelOf(element);
+      if (labelId !== undefined && live(labelId) !== undefined) {
+        const label = write(labelId);
+        label.x = (label.x as number) + (element.x as number) - (target.x as number);
+        label.y = (label.y as number) + (element.y as number) - (target.y as number);
+        label.updated = now;
+      }
+      for (const ref of boundRefs(element)) {
+        if (ref.type === "arrow" && live(ref.id) !== undefined) {
+          routeArrow(ref.id, undefined, edit.id);
+        }
+      }
+    } else if (moves || resizes || edit.text !== undefined || element.height !== height) {
+      // A longer label can grow its container, which moves the edges its arrows attach to.
       relayoutDependents(edit.id);
     }
     if (movesElbow) {

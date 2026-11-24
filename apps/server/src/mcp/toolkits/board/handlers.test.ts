@@ -456,6 +456,50 @@ layer("board toolkit", (it) => {
     }),
   );
 
+  it.effect("keeps labels as laid out on a move and releases a deleted frame's children", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-frames");
+      const as = threadCaller(threadId);
+      yield* callAs(as, "board_create", {});
+      const { ids } = yield* callAs(as, "board_apply", {
+        edits: [box("a", 0, "A"), box("b", 300, "B")],
+      });
+      const labelId = (yield* storedElements(threadId)).get(ids.a!)!["boundElements"] as Array<{
+        id: string;
+      }>;
+      const label = labelId[0]!.id;
+      yield* userEdit(threadId, label, { verticalAlign: "top", y: 2 });
+      let read = yield* callAs(as, "board_get", {});
+      const a = read.elements.find((element) => element.id === ids.a)!;
+      yield* callAs(as, "board_apply", {
+        revision: read.revision,
+        edits: [{ op: "patch", id: a.id, expected: token(a), y: 50 }],
+      });
+      const moved = (yield* storedElements(threadId)).get(label)!;
+      expect(moved["y"]).toBe(2 + 50 - (a.y as number));
+      expect(moved["verticalAlign"]).toBe("top");
+
+      yield* userEdit(threadId, ids.a!, { type: "frame" });
+      yield* userEdit(threadId, ids.b!, { frameId: ids.a! });
+      read = yield* callAs(as, "board_get", {});
+      const frame = read.elements.find((element) => element.id === ids.a)!;
+      yield* callAs(as, "board_apply", {
+        revision: read.revision,
+        edits: [{ op: "delete", id: frame.id, expected: token(frame) }],
+      });
+      expect((yield* storedElements(threadId)).get(ids.b!)!["frameId"]).toBeNull();
+
+      yield* userEdit(threadId, ids.b!, { angle: 0.5 });
+      read = yield* callAs(as, "board_get", {});
+      expect(
+        yield* callAs(as, "board_apply", {
+          revision: read.revision,
+          edits: [box("c", 600, "C"), { op: "create", type: "arrow", start: "c", end: ids.b! }],
+        }).pipe(Effect.flip),
+      ).toMatchObject({ code: "invalid_request", message: expect.stringContaining("rotated") });
+    }),
+  );
+
   it.effect("pages board_get by size and searches text past the preview", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread-pages");
