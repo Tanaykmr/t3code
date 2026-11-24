@@ -16,6 +16,7 @@ import {
   type EnvironmentId,
   type ProjectId,
   type ProviderInstanceId,
+  isBotProvider,
 } from "@t3tools/contracts";
 import { T, useGT } from "gt-react";
 import { useId, useState } from "react";
@@ -104,7 +105,10 @@ function BotEditorDialog({ request }: { readonly request: EditorRequest }) {
     editing?.projectId ?? projects[0]?.id ?? null,
   );
   const providerEntries = providerInstanceEntriesFor(providers, settings, projectId).filter(
-    (entry) => entry.enabled && entry.isAvailable,
+    (entry) =>
+      entry.enabled &&
+      entry.isAvailable &&
+      isBotProvider({ driverKind: entry.driverKind, instanceId: entry.instanceId }),
   );
   const [instanceId, setInstanceId] = useState<ProviderInstanceId | null>(null);
   const selectedInstanceId = instanceId ?? providerEntries[0]?.instanceId ?? null;

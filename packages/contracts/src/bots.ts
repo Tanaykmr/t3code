@@ -26,6 +26,23 @@ export const BOT_AVATARS = [
 export const BotAvatar = Schema.Literals(BOT_AVATARS);
 export type BotAvatar = typeof BotAvatar.Type;
 
+/**
+ * Drivers proven to carry a bot's persona and its MCP tools. Others stay off for
+ * bots until they are qualified; the dev Replay instance is allowed for testing.
+ */
+const BOT_PROVIDER_DRIVERS: ReadonlyArray<string> = ["codex", "claudeAgent"];
+const BOT_DEV_PROVIDER_INSTANCE = "devReplay";
+
+export function isBotProvider(input: {
+  readonly driverKind: string;
+  readonly instanceId: string;
+}): boolean {
+  return (
+    BOT_PROVIDER_DRIVERS.includes(input.driverKind) ||
+    input.instanceId === BOT_DEV_PROVIDER_INSTANCE
+  );
+}
+
 export const BOT_NAME_MAX_LENGTH = 40;
 export const BOT_TITLE_MAX_LENGTH = 80;
 export const BOT_PERSONA_MAX_LENGTH = 8_000;
