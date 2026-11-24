@@ -1,12 +1,12 @@
+import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
-import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { useGT } from "gt-react-native";
 import { Keyboard } from "react-native";
 
 import { AppBar } from "../../../components/ui/AppBar";
 import { useHardwareBack } from "../../../lib/backHandler";
 import { useBotEnvironmentIds, useEnvironmentBots } from "../../../state/bots";
-import { useEnvironmentScope } from "../../../state/session";
+import { serverEnvironment } from "../../../state/server";
 import { BotsScreen } from "../../bots/BotsScreen";
 import { useHardwareKeyboardCommand } from "../../keyboard/hardwareKeyboardCommands";
 import { useWorkspaceTabs } from "./WorkspaceTabsContext";
@@ -16,7 +16,7 @@ export function AndroidBotsPane() {
   const navigation = useNavigation();
   const workspace = useWorkspaceTabs()!;
   const environmentId = useBotEnvironmentIds()[0];
-  const canCreate = useEnvironmentScope(environmentId ?? null, AuthOrchestrationOperateScope);
+  const canCreate = useAtomValue(serverEnvironment.createBot.permissionAtom(environmentId ?? null));
   const tab = workspace.state.tabs.bots;
   const searching = tab.searchMode !== "resting";
   const showActions = useEnvironmentBots().length > 0 || searching;

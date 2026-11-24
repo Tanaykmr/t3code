@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import { isValidBotName } from "@t3tools/client-runtime/state/bots";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
@@ -85,6 +86,11 @@ export function BotEditorScreen({ route }: StaticScreenProps<BotEditorParams>) {
   const inFlight = useRef(false);
   const createBot = useAtomCommand(serverEnvironment.createBot, { reportFailure: false });
   const updateBot = useAtomCommand(serverEnvironment.updateBot, { reportFailure: false });
+  const canWrite = useAtomValue(
+    (editing === null ? serverEnvironment.createBot : serverEnvironment.updateBot).permissionAtom(
+      environmentId,
+    ),
+  );
 
   const trimmedName = name.trim();
   const taken = entries.some(
@@ -102,6 +108,7 @@ export function BotEditorScreen({ route }: StaticScreenProps<BotEditorParams>) {
           ? gt("Another bot already has this name.")
           : null;
   const canSave =
+    canWrite &&
     !busy &&
     trimmedName !== "" &&
     nameError === null &&

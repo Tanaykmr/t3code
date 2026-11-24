@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { BOT_ROOM_MAX_MEMBERS, type BotId, BotRoomId, EnvironmentId } from "@t3tools/contracts";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -44,9 +45,15 @@ export function BotRoomEditorScreen({ route }: StaticScreenProps<BotRoomEditorPa
   const inFlight = useRef(false);
   const createRoom = useAtomCommand(serverEnvironment.createBotRoom, { reportFailure: false });
   const updateRoom = useAtomCommand(serverEnvironment.updateBotRoom, { reportFailure: false });
+  const canWrite = useAtomValue(
+    (editing === null
+      ? serverEnvironment.createBotRoom
+      : serverEnvironment.updateBotRoom
+    ).permissionAtom(environmentId),
+  );
   const responder =
     defaultBotId !== null && members.includes(defaultBotId) ? defaultBotId : members[0];
-  const canSave = !busy && name.trim() !== "" && responder !== undefined;
+  const canSave = canWrite && !busy && name.trim() !== "" && responder !== undefined;
 
   const toggle = (botId: BotId) =>
     setMembers(

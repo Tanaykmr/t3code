@@ -1,12 +1,12 @@
+import { useAtomValue } from "@effect/atom-react";
 import { msg, useGT, useMessages } from "gt-react-native";
 import { useActiveNewTask } from "../../../state/active-new-task";
 import { Toolbar } from "../../../components/ui/Toolbar";
 import { useFocusEffect, useIsFocused, useNavigationState } from "@react-navigation/native";
 import { useNavigation } from "@react-navigation/native";
 import { Text } from "react-native";
-import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { useBotEnvironmentIds, useEnvironmentBots } from "../../../state/bots";
-import { useEnvironmentScope } from "../../../state/session";
+import { serverEnvironment } from "../../../state/server";
 import { use, useCallback, useEffect, useRef } from "react";
 import { isDuoDevice } from "../../../lib/device-type";
 import { useDeviceType } from "../../../native/native-layout-metrics";
@@ -66,9 +66,8 @@ export function WorkspaceToolbar(props: {
   const bots = selectedTab === "bots";
   const showBotActions = useEnvironmentBots(bots).length > 0 || tab.searchMode !== "resting";
   const botEnvironment = useBotEnvironmentIds()[0];
-  const canCreateBot = useEnvironmentScope(
-    bots ? (botEnvironment ?? null) : null,
-    AuthOrchestrationOperateScope,
+  const canCreateBot = useAtomValue(
+    serverEnvironment.createBot.permissionAtom(bots ? (botEnvironment ?? null) : null),
   );
   const botsSearch = bots && deviceType === "phone";
   const searchLabel = m(

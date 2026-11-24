@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import { isValidBotName } from "@t3tools/client-runtime/state/bots";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -29,6 +30,8 @@ export function BotChatHeader(props: {
   const { pinThread, unpinThread } = useThreadListActions();
   const update = useAtomCommand(serverEnvironment.updateBot, { reportFailure: false });
   const archive = useAtomCommand(serverEnvironment.archiveBot, { reportFailure: false });
+  const canRename = useAtomValue(serverEnvironment.updateBot.permissionAtom(environmentId));
+  const canArchive = useAtomValue(serverEnvironment.archiveBot.permissionAtom(environmentId));
   const pinned = thread.pinnedAt !== null;
 
   const rename = () =>
@@ -75,7 +78,7 @@ export function BotChatHeader(props: {
                     id: "rename",
                     title: gt("Rename", { $context: "verb, confirms renaming a thread" }),
                     icon: "square.and.pencil",
-                    disabled: !props.canOperate,
+                    disabled: !canRename,
                     onPress: rename,
                   },
                   {
@@ -108,7 +111,7 @@ export function BotChatHeader(props: {
                     id: "archive",
                     title: gt("Archive", { $context: "verb, archives a thread" }),
                     icon: "archivebox",
-                    disabled: !props.canOperate,
+                    disabled: !canArchive,
                     onPress: async () => {
                       const result = await archive({ environmentId, input: { botId: bot.id } });
                       if (AsyncResult.isFailure(result)) {

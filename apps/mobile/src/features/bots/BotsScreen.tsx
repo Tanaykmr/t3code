@@ -1,7 +1,6 @@
 import type { EnvironmentBot } from "@t3tools/client-runtime/state/bots";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
-import { useEnvironmentScope } from "../../state/session";
+import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useGT } from "gt-react-native";
 import { Pressable, ScrollView, Text, View } from "react-native";
@@ -14,6 +13,7 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { cn } from "../../lib/cn";
 import { useBotEnvironmentIds, useEnvironmentBotRooms, useBotInbox } from "../../state/bots";
 import { useQuietThreadShell } from "../../state/entities";
+import { serverEnvironment } from "../../state/server";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { useMessageTimeFormatter } from "../threads/useMessageTimeFormatter";
@@ -146,7 +146,12 @@ export function BotsScreen() {
   const insets = useSafeAreaInsets();
   const selectDetail = useSelectWorkspaceDetail();
   const environmentId = useBotEnvironmentIds()[0];
-  const canCreate = useEnvironmentScope(environmentId ?? null, AuthOrchestrationOperateScope);
+  const canCreateBot = useAtomValue(
+    serverEnvironment.createBot.permissionAtom(environmentId ?? null),
+  );
+  const canCreateRoom = useAtomValue(
+    serverEnvironment.createBotRoom.permissionAtom(environmentId ?? null),
+  );
   const workspace = useWorkspaceTabs();
   const tab = workspace?.state.tabs.bots;
   const query = tab?.query ?? "";
@@ -200,7 +205,7 @@ export function BotsScreen() {
               {gt("Create a bot with its own persona and a private chat.")}
             </Text>
           </View>
-          {canCreate ? (
+          {canCreateBot ? (
             <Pressable
               accessibilityRole="button"
               onPress={createBot}
@@ -250,7 +255,7 @@ export function BotsScreen() {
           {!searching || rooms.length > 0 ? (
             <View className="mt-5 min-h-10 flex-row items-center justify-between">
               <Text className="text-xs font-semibold text-foreground-muted">{gt("Rooms")}</Text>
-              {canCreate && active.length > 0 ? (
+              {canCreateRoom && active.length > 0 ? (
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={gt("New room")}

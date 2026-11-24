@@ -1,5 +1,6 @@
+import { RegistryContext } from "@effect/atom-react";
 import { BotId, EnvironmentId } from "@t3tools/contracts";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { act, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
@@ -8,6 +9,7 @@ import { BotComposerSlot } from "./BotRestoreFooter";
 import { botChatIsArchived } from "./bot-list";
 
 const { restore } = vi.hoisted(() => ({ restore: vi.fn() }));
+const permissions = Atom.family((_id: EnvironmentId) => Atom.make(false));
 
 vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
@@ -30,16 +32,21 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("../../components/ui/AppSymbol", () => ({ SymbolView: () => null }));
 vi.mock("../../components/ui/Dialog", () => ({ alert: vi.fn() }));
-vi.mock("../../state/server", () => ({ serverEnvironment: { restoreBot: "restoreBot" } }));
+vi.mock("../../state/server", () => ({
+  serverEnvironment: {
+    restoreBot: { permissionAtom: (id: EnvironmentId) => permissions(id) },
+  },
+}));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => restore }));
 
-it("restores by bot id and puts the composer back in the same chat after both projections update", async () => {
+it("requires restore permission before restoring the composer in the same chat", async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const environmentId = EnvironmentId.make("remote");
   const botId = BotId.make("bolt");
   const archivedAt = "2026-11-23T10:00:00.000Z";
   const container = document.createElement("div");
   const root = createRoot(container);
+  const registry = AtomRegistry.make();
   const Chat = ({
     botArchivedAt,
     shellArchivedAt,
@@ -53,7 +60,7 @@ it("restores by bot id and puts the composer back in the same chat after both pr
       { archivedAt: shellArchivedAt },
     );
     return (
-      <>
+      <RegistryContext.Provider value={registry}>
         <p>{transcript.text}</p>
         <BotComposerSlot
           style={{}}
@@ -61,7 +68,7 @@ it("restores by bot id and puts the composer back in the same chat after both pr
         >
           <textarea aria-label="Ask Bolt" />
         </BotComposerSlot>
-      </>
+      </RegistryContext.Provider>
     );
   };
 
@@ -70,6 +77,11 @@ it("restores by bot id and puts the composer back in the same chat after both pr
     act(() => root.render(<Chat botArchivedAt={archivedAt} shellArchivedAt={archivedAt} />));
     const transcript = container.querySelector("p");
     expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector("button")?.disabled).toBe(true);
+    act(() => container.querySelector("button")?.click());
+    expect(restore).not.toHaveBeenCalled();
+
+    act(() => registry.set(permissions(environmentId), true));
     await act(async () => container.querySelector("button")!.click());
     expect(restore).toHaveBeenCalledExactlyOnceWith({
       environmentId: "remote",
@@ -84,5 +96,6 @@ it("restores by bot id and puts the composer back in the same chat after both pr
     expect(container.querySelector("button")).toBeNull();
   } finally {
     act(() => root.unmount());
+    registry.dispose();
   }
 });

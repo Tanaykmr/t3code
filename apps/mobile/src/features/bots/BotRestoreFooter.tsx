@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { BotId, EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
@@ -33,9 +34,11 @@ export function BotComposerSlot(props: {
 function BotRestoreFooter(props: RestoreBot) {
   const gt = useGT();
   const restore = useAtomCommand(serverEnvironment.restoreBot, { reportFailure: false });
+  const canRestore = useAtomValue(serverEnvironment.restoreBot.permissionAtom(props.environmentId));
   const [busy, setBusy] = useState(false);
+  const disabled = !props.enabled || !canRestore;
   const restoreBot = async () => {
-    if (!props.enabled || busy) return;
+    if (disabled || busy) return;
     setBusy(true);
     const result = await restore({
       environmentId: props.environmentId,
@@ -58,7 +61,7 @@ function BotRestoreFooter(props: RestoreBot) {
           tone="contrast"
           label={gt("Restore bot")}
           loading={busy}
-          disabled={!props.enabled}
+          disabled={disabled}
           onPress={() => void restoreBot()}
         />
       </View>

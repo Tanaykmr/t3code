@@ -85,9 +85,15 @@ export function BotOverviewScreen({ route }: StaticScreenProps<BotOverviewParams
   const archive = useAtomCommand(serverEnvironment.archiveBot, { reportFailure: false });
   const restore = useAtomCommand(serverEnvironment.restoreBot, { reportFailure: false });
   const archived = bot?.archivedAt != null;
+  const canEdit = useAtomValue(serverEnvironment.updateBot.permissionAtom(environmentId));
+  const canToggleArchive = useAtomValue(
+    (archived ? serverEnvironment.restoreBot : serverEnvironment.archiveBot).permissionAtom(
+      environmentId,
+    ),
+  );
 
   const toggleArchive = async () => {
-    if (bot === null || busy) return;
+    if (bot === null || busy || !canToggleArchive) return;
     setBusy(true);
     setError(null);
     const result = await (archived ? restore : archive)({
@@ -133,6 +139,7 @@ export function BotOverviewScreen({ route }: StaticScreenProps<BotOverviewParams
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={gt("Edit {name}", { name: bot.name })}
+              disabled={!canEdit}
               hitSlop={8}
               onPress={() =>
                 navigation.navigate("BotEditor", {
@@ -164,7 +171,7 @@ export function BotOverviewScreen({ route }: StaticScreenProps<BotOverviewParams
             <OverviewRow
               icon={archived ? "tray.and.arrow.up" : "tray.and.arrow.down"}
               label={archived ? gt("Restore bot") : gt("Archive bot")}
-              disabled={busy}
+              disabled={busy || !canToggleArchive}
               onPress={() => void toggleArchive()}
             />
           </View>
