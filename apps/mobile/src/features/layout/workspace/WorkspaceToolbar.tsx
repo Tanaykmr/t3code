@@ -1,12 +1,10 @@
-import { useAtomValue } from "@effect/atom-react";
 import { msg, useGT, useMessages } from "gt-react-native";
 import { useActiveNewTask } from "../../../state/active-new-task";
 import { Toolbar } from "../../../components/ui/Toolbar";
 import { useFocusEffect, useIsFocused, useNavigationState } from "@react-navigation/native";
-import { useNavigation } from "@react-navigation/native";
 import { Text } from "react-native";
-import { useBotEnvironmentIds, useEnvironmentBots } from "../../../state/bots";
-import { serverEnvironment } from "../../../state/server";
+import { useEnvironmentBots } from "../../../state/bots";
+import { useBotCreation } from "../../bots/useBotCreation";
 import { use, useCallback, useEffect, useRef } from "react";
 import { isDuoDevice } from "../../../lib/device-type";
 import { useDeviceType } from "../../../native/native-layout-metrics";
@@ -62,13 +60,9 @@ export function WorkspaceToolbar(props: {
   // The Settings list takes the selected tab's place, so search follows it.
   const selectedTab = workspace.settingsOpen ? "settings" : workspace.state.selectedTab;
   const tab = workspace.state.tabs[selectedTab];
-  const navigation = useNavigation();
   const bots = selectedTab === "bots";
   const showBotActions = useEnvironmentBots(bots).length > 0 || tab.searchMode !== "resting";
-  const botEnvironment = useBotEnvironmentIds()[0];
-  const canCreateBot = useAtomValue(
-    serverEnvironment.createBot.permissionAtom(bots ? (botEnvironment ?? null) : null),
-  );
+  const createBot = useBotCreation("bot", undefined, bots);
   const botsSearch = bots && deviceType === "phone";
   const searchLabel = m(
     SEARCH_LABELS[selectedTab === "usage" || selectedTab === "workflows" ? "threads" : selectedTab],
@@ -231,16 +225,16 @@ export function WorkspaceToolbar(props: {
         </Toolbar>
       ) : (
         <Toolbar placement="right">
-          {bots &&
-          showBotActions &&
-          (!botsSearch || !searchVisible) &&
-          botEnvironment !== undefined &&
-          canCreateBot ? (
-            <Toolbar.Button
-              accessibilityLabel={gt("New bot")}
-              icon="plus"
-              onPress={() => navigation.navigate("BotEditor", { environmentId: botEnvironment })}
-            />
+          {bots && showBotActions && (!botsSearch || !searchVisible) ? (
+            createBot.menu !== undefined ? (
+              createNativeHeaderMenu(createBot.menu)
+            ) : createBot.onPress !== undefined ? (
+              <Toolbar.Button
+                accessibilityLabel={createBot.title}
+                icon="plus"
+                onPress={createBot.onPress}
+              />
+            ) : null
           ) : null}
           {searchButton}
           {nativeToolbarCompose && foldedSearch ? <Toolbar.Spacer width={8} /> : null}

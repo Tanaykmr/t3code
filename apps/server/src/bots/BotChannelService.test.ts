@@ -3,6 +3,7 @@ import {
   BotMessageId,
   BotRoomId,
   type BotCreateInput,
+  type ModelSelection,
   ProjectId,
   ProviderInstanceId,
   RunId,
@@ -10,7 +11,9 @@ import {
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -21,9 +24,16 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as BotChannelService from "./BotChannelService.ts";
 import * as BotService from "./BotService.ts";
 
-const sends: Array<{ threadId: string; text: string; commandId: string }> = [];
+const sends: Array<{
+  threadId: string;
+  text: string;
+  commandId: string;
+  modelSelection: ModelSelection | undefined;
+}> = [];
+const dmModels = new Map<string, ModelSelection>();
 const busyThreads = new Set<string>();
 const modeChanges: Array<string> = [];
+const pausedSends = new Map<string, (threadId: ThreadId) => Effect.Effect<void>>();
 
 const database = NodeSqliteClient.layer({ filename: ":memory:" });
 const launchMock = Layer.mock(ThreadLaunchService.ThreadLaunchService)({
@@ -44,7 +54,10 @@ const threadsMock = Layer.unwrap(
           status: busyThreads.has(threadId) ? "running" : "idle",
           runtimeMode: threadId === "thread-bot-dm:cora" ? "approval-required" : "full-access",
           interactionMode: "default",
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+          modelSelection: dmModels.get(threadId) ?? {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5",
+          },
         } as never),
       hasReceipt: () => Effect.succeed(false),
       dispatch: (command) =>
@@ -54,7 +67,14 @@ const threadsMock = Layer.unwrap(
         }),
       sendToThread: (input) =>
         Effect.gen(function* () {
-          sends.push({ threadId: input.threadId, text: input.text, commandId: input.commandId });
+          const pause = pausedSends.get(input.commandId);
+          if (pause !== undefined) yield* pause(input.threadId);
+          sends.push({
+            threadId: input.threadId,
+            text: input.text,
+            commandId: input.commandId,
+            modelSelection: input.modelSelection,
+          });
           const runId = `run-${input.commandId}`;
           const payload = JSON.stringify({ text: `reply from ${input.threadId}` });
           yield* sql`
@@ -259,6 +279,152 @@ layer("BotChannelService", (it) => {
       const delivery = exchange[0]!.deliveries.find((d) => d.messageId === sent.message.id);
       assert.strictEqual(delivery?.status, "blocked");
       assert.match(delivery?.reason ?? "", /more access/);
+    }),
+  );
+  it.effect("uses the DM's current model for existing peer and room seats", () =>
+    Effect.gen(function* () {
+      const channels = yield* BotChannelService.BotChannelService;
+      const before = sends.length;
+      const boltId = BotId.make("bolt");
+      const boltDm = "thread-bot-dm:bolt";
+      const selection = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "sonnet" };
+      dmModels.set(boltDm, selection);
+      yield* Effect.addFinalizer(() => Effect.sync(() => dmModels.delete(boltDm)));
+      yield* channels.sendRoomMessage({
+        roomId: BotRoomId.make("release"),
+        messageId: BotMessageId.make("current-model"),
+        text: "Check this release.",
+        mentions: [{ botId: boltId, label: "Bolt" }],
+      });
+      yield* channels.sendFromThread({
+        threadId: ThreadId.make("thread-bot-dm:ada"),
+        to: "Bolt",
+        text: "Check this patch.",
+      });
+      yield* settle;
+      assert.deepEqual(
+        sends
+          .slice(before)
+          .filter((send) => send.threadId.endsWith(":bolt"))
+          .map((send) => [send.threadId, send.modelSelection]),
+        [
+          ["thread-bot-room:release:bolt", selection],
+          ["thread-bot-peer:bolt", selection],
+        ],
+      );
+    }),
+  );
+
+  it.effect("archives only after an in-flight delivery has started", () =>
+    Effect.gen(function* () {
+      const bots = yield* BotService.BotService;
+      const channels = yield* BotChannelService.BotChannelService;
+      const roomId = BotRoomId.make("release");
+      const boltId = BotId.make("bolt");
+      const starting = yield* Deferred.make<ThreadId>();
+      const resume = yield* Deferred.make<void>();
+      const commandId = "bot-delivery:archive-race:bolt";
+      pausedSends.set(commandId, (threadId) =>
+        Deferred.succeed(starting, threadId).pipe(
+          Effect.andThen(Deferred.await(resume)),
+          Effect.tap(() => Effect.sync(() => busyThreads.add(threadId))),
+        ),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          pausedSends.delete(commandId);
+          busyThreads.delete("thread-bot-room:release:bolt");
+        }),
+      );
+      yield* channels.sendRoomMessage({
+        roomId,
+        messageId: BotMessageId.make("archive-race"),
+        text: "Bolt, check the release.",
+        mentions: [{ botId: boltId, label: "Bolt" }],
+      });
+      yield* Deferred.await(starting);
+      const archival = yield* bots
+        .archive({ botId: boltId })
+        .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.succeed(resume, undefined);
+      const result = yield* Fiber.join(archival);
+      assert.ok(result._tag === "Failure");
+      assert.match(result.failure.message, /still working/);
+    }),
+  );
+
+  it.effect("orders room sends behind a queued default change", () =>
+    Effect.gen(function* () {
+      const channels = yield* BotChannelService.BotChannelService;
+      const sql = yield* SqlClient.SqlClient;
+      const roomId = BotRoomId.make("release");
+      const boltId = BotId.make("bolt");
+      const reachedSend = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      const commandId = "bot-delivery:update-race:ada";
+      pausedSends.set(commandId, () =>
+        Deferred.succeed(reachedSend, undefined).pipe(Effect.andThen(Deferred.await(resume))),
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(() => pausedSends.delete(commandId)));
+      yield* channels.sendRoomMessage({
+        roomId,
+        messageId: BotMessageId.make("update-race"),
+        text: "Wait here.",
+        mentions: [],
+      });
+      yield* Deferred.await(reachedSend);
+      const update = yield* channels
+        .updateRoom({ roomId, defaultBotId: boltId })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      const post = yield* channels
+        .sendRoomMessage({
+          roomId,
+          messageId: BotMessageId.make("after-update"),
+          text: "Who is on call?",
+          mentions: [],
+        })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.succeed(resume, undefined);
+      yield* Fiber.join(update);
+      yield* Fiber.join(post);
+      const deliveries = yield* sql<{ target_bot_id: string }>`
+        SELECT target_bot_id FROM bot_deliveries WHERE message_id = 'after-update'
+      `;
+      assert.deepEqual(
+        deliveries.map((delivery) => delivery.target_bot_id),
+        [boltId],
+      );
+    }),
+  );
+
+  it.effect("routes an unmentioned post to an active member after the default is archived", () =>
+    Effect.gen(function* () {
+      const bots = yield* BotService.BotService;
+      const channels = yield* BotChannelService.BotChannelService;
+      const sql = yield* SqlClient.SqlClient;
+      const { bot: alternate } = yield* bots.create(bot("alternate", "Alternate"));
+      const { bot: primary } = yield* bots.create(bot("primary", "Primary"));
+      const roomId = BotRoomId.make("archived-default");
+      yield* channels.createRoom({
+        roomId,
+        name: "Support",
+        memberBotIds: [alternate.id, primary.id],
+        defaultBotId: primary.id,
+      });
+      yield* bots.archive({ botId: primary.id });
+      yield* channels.sendRoomMessage({
+        roomId,
+        messageId: BotMessageId.make("fallback"),
+        text: "Who can help?",
+        mentions: [],
+      });
+      const deliveries = yield* sql<{ target_bot_id: string }>`
+        SELECT target_bot_id FROM bot_deliveries WHERE message_id = 'fallback'
+      `;
+      assert.deepEqual(
+        deliveries.map((delivery) => delivery.target_bot_id),
+        [alternate.id],
+      );
     }),
   );
 });

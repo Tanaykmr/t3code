@@ -225,7 +225,12 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import { botProviderRejection } from "../bots/BotProviderPolicy.ts";
-import { ensureBotSchema, isBotOwnedThread } from "../bots/botStore.ts";
+import {
+  botThreadOwnership,
+  ensureBotSchema,
+  isBotOwnedThread,
+  RoomSeatMessageThread,
+} from "../bots/botStore.ts";
 
 const isMessageQuestionAnswer = Schema.is(
   Schema.Union([TrimmedNonEmptyString, Schema.NonEmptyArray(TrimmedNonEmptyString)]),
@@ -3639,6 +3644,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(message.senderThreadId === undefined ? {} : { senderThreadId: message.senderThreadId }),
         ...(message.linkedSender === undefined ? {} : { linkedSender: message.linkedSender }),
       }).pipe(
+        Effect.provideService(RoomSeatMessageThread, threadId),
         Effect.catchCause((cause) =>
           Effect.logWarning("Failed to requeue an unread steer", {
             threadId,
@@ -7196,7 +7202,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    { requireRoomDelivery = false } = {},
   ) {
+    const botOwner = yield* botThreadOwnership(sql, command.threadId).pipe(
+      mapDispatchError(command),
+    );
+    if (botOwner?.archived_at != null) {
+      return yield* new OrchestratorCommandRejectedError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "This bot is archived.",
+      });
+    }
+    if (
+      requireRoomDelivery &&
+      botOwner?.room_seat === 1 &&
+      (yield* RoomSeatMessageThread) !== command.threadId
+    ) {
+      return yield* new OrchestratorCommandRejectedError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Send messages from the room.",
+      });
+    }
     // A compacted thread reads every run, but attempts, nodes, messages, provider turns and prompts
     // only for its recent runs and the runs this command names. An idle compaction reads in full:
     // its busy check below looks for a delegated result's message under any old run.
@@ -16047,7 +16075,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (continuation !== undefined) yield* refuseNativeSubagentMessage(command);
         yield* dispatchThreadMutation(command, events, effects);
         if (continuation !== undefined) {
-          cancelUnsettledEffects = yield* dispatchMessage(continuation, events, effects);
+          cancelUnsettledEffects = yield* dispatchMessage(continuation, events, effects, {
+            requireRoomDelivery: true,
+          });
           yield* recordSubagentFollowup(continuation, events).pipe(mapDispatchError(command));
         }
         break;
@@ -16085,7 +16115,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 text: guestSend.text,
                 context: { version: 1 as const, records: [], guest: guestSend.guest },
               };
-        cancelUnsettledEffects = yield* dispatchMessage(dispatched, events, effects);
+        cancelUnsettledEffects = yield* dispatchMessage(dispatched, events, effects, {
+          requireRoomDelivery: true,
+        });
         yield* recordSubagentFollowup(dispatched, events).pipe(mapDispatchError(command));
         break;
       }

@@ -3,6 +3,7 @@ import {
   type EnvironmentBot,
   type EnvironmentBotRoom,
   botDmThreadKeys,
+  roomSeatThreadKeys,
   sortBots,
 } from "@t3tools/client-runtime/state/bots";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
@@ -57,6 +58,15 @@ const environmentBotRoomsAtom = Atom.make((get): ReadonlyArray<EnvironmentBotRoo
 const botDmThreadKeysAtom = Atom.make((get) =>
   botDmThreadKeys(get(environmentBotsAtom), get(environmentBotRoomsAtom)),
 ).pipe(Atom.withLabel("web-bot-dm-thread-keys"));
+
+const roomSeatKeysAtom = Atom.make(
+  (get) => new Set(roomSeatThreadKeys(get(environmentBotRoomsAtom))),
+);
+
+export function useIsRoomSeat(ref: ScopedThreadRef | null): boolean {
+  const keys = useAtomValue(roomSeatKeysAtom);
+  return ref !== null && keys.has(scopedThreadKey(ref));
+}
 
 const botByDmThreadKeyAtom = Atom.make(
   (get) =>

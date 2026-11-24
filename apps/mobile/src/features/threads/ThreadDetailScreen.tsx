@@ -1,3 +1,5 @@
+import { useIsRoomSeat } from "../../state/bots";
+import { ReadOnlyComposerBar } from "./ReadOnlyComposerBar";
 import { BotComposerSlot } from "../bots/BotRestoreFooter";
 import type { Bot } from "@t3tools/contracts";
 import { ChildThreadApprovals } from "./ChildThreadApprovals";
@@ -97,6 +99,7 @@ import {
   AppState,
   Keyboard,
   Platform,
+  Text,
   useWindowDimensions,
   View,
   type GestureResponderEvent,
@@ -512,6 +515,10 @@ function ThreadDetailBody(
   const nativeMetrics = usesNativeWorkspaceColumns ? columnMetrics : screenMetrics;
   const controlInsets = deriveBottomControlInsets(nativeMetrics);
   const selectedThreadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+  const isRoomSeat = useIsRoomSeat({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+  });
   const childThreadInputs = useChildThreadInputs({
     environmentId: props.environmentId,
     threadId: props.selectedThread.id,
@@ -1443,6 +1450,7 @@ function ThreadDetailBody(
 
   const canCiteAssistantText =
     !props.botChat?.archived &&
+    !isRoomSeat &&
     props.composerDraftKey !== null &&
     !isProviderSubagent &&
     !composerSlotHidden &&
@@ -1926,7 +1934,18 @@ function ThreadDetailBody(
                       paddingBottom: composerBottomInset + 6,
                     }}
                   >
-                    {isProviderSubagent ? (
+                    {isRoomSeat ? (
+                      <View
+                        className="self-center px-3 pt-1.5"
+                        style={{ width: "100%", maxWidth: contentMaxWidth }}
+                      >
+                        <ReadOnlyComposerBar>
+                          <Text className="text-center text-sm text-foreground-muted">
+                            {gt("Read-only")}
+                          </Text>
+                        </ReadOnlyComposerBar>
+                      </View>
+                    ) : isProviderSubagent ? (
                       <View
                         className="self-center px-3 pt-1.5"
                         style={{

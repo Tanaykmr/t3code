@@ -1,6 +1,5 @@
 import type { EnvironmentBot } from "@t3tools/client-runtime/state/bots";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useGT } from "gt-react-native";
 import { Pressable, ScrollView, Text, View } from "react-native";
@@ -8,15 +7,16 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { SymbolView } from "../../components/ui/AppSymbol";
+import { Menu } from "../../components/ui/Menu";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { cn } from "../../lib/cn";
 import { useBotEnvironmentIds, useEnvironmentBotRooms, useBotInbox } from "../../state/bots";
 import { useQuietThreadShell } from "../../state/entities";
-import { serverEnvironment } from "../../state/server";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { useMessageTimeFormatter } from "../threads/useMessageTimeFormatter";
+import { useBotCreation } from "./useBotCreation";
 import { BotGlyph } from "./BotGlyph";
 import { botInboxItem, partitionBots } from "./bot-list";
 import { partitionRooms } from "./bot-room";
@@ -140,24 +140,70 @@ export function BotRow({
   );
 }
 
+function BotCreationButton({
+  action,
+  iconOnly,
+}: {
+  readonly action: ReturnType<typeof useBotCreation>;
+  readonly iconOnly?: boolean;
+}) {
+  if (action.onPress === undefined && action.menu === undefined) return null;
+  const button = (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={action.title}
+      onPress={action.onPress}
+      className={
+        iconOnly
+          ? "size-11 items-center justify-center"
+          : "min-h-12 justify-center rounded-full border border-foreground-muted px-10 active:bg-subtle"
+      }
+    >
+      {iconOnly ? (
+        <SymbolView name="plus" size={18} tintColorClassName="accent-icon-muted" />
+      ) : (
+        <Text className="text-base font-semibold text-foreground">{action.title}</Text>
+      )}
+    </Pressable>
+  );
+  if (action.menu === undefined) return button;
+  const { items } = action.menu;
+  return (
+    <Menu
+      title={action.title}
+      accessibilityRole="button"
+      accessibilityLabel={action.title}
+      actions={items.map(({ id, title, subtitle }) => ({ id, title, subtitle }))}
+      onPressAction={({ nativeEvent }) =>
+        items.find(({ id }) => id === nativeEvent.event)?.onPress()
+      }
+    >
+      {button}
+    </Menu>
+  );
+}
+
 export function BotsScreen() {
   const gt = useGT();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const selectDetail = useSelectWorkspaceDetail();
-  const environmentId = useBotEnvironmentIds()[0];
-  const canCreateBot = useAtomValue(
-    serverEnvironment.createBot.permissionAtom(environmentId ?? null),
-  );
-  const canCreateRoom = useAtomValue(
-    serverEnvironment.createBotRoom.permissionAtom(environmentId ?? null),
-  );
+  const environmentIds = useBotEnvironmentIds();
+  const createBot = useBotCreation("bot");
   const workspace = useWorkspaceTabs();
   const tab = workspace?.state.tabs.bots;
   const query = tab?.query ?? "";
   const searching = (tab?.searchMode ?? "resting") !== "resting";
   const { ordered, pinned } = useBotInbox();
   const { active, archived } = partitionBots(ordered, query);
+  const createRoom = useBotCreation(
+    "room",
+    new Set(
+      ordered
+        .filter(({ bot }) => bot.archivedAt === null)
+        .map(({ environmentId }) => environmentId),
+    ),
+  );
   const formatTime = useMessageTimeFormatter(gt("Yesterday"));
   const rooms = partitionRooms(useEnvironmentBotRooms(), query);
   const open = (entry: EnvironmentBot) => {
@@ -166,10 +212,7 @@ export function BotsScreen() {
       params: { environmentId: entry.environmentId, threadId: entry.bot.dmThreadId },
     });
   };
-  const createBot = () => {
-    if (environmentId !== undefined) navigation.navigate("BotEditor", { environmentId });
-  };
-  if (environmentId === undefined) {
+  if (environmentIds.length === 0) {
     return (
       <EmptyState
         variant="plain"
@@ -205,15 +248,7 @@ export function BotsScreen() {
               {gt("Create a bot with its own persona and a private chat.")}
             </Text>
           </View>
-          {canCreateBot ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={createBot}
-              className="min-h-12 justify-center rounded-full border border-foreground-muted px-10 active:bg-subtle"
-            >
-              <Text className="text-base font-semibold text-foreground">{gt("New bot")}</Text>
-            </Pressable>
-          ) : null}
+          <BotCreationButton action={createBot} />
         </View>
       ) : (
         <>
@@ -255,16 +290,7 @@ export function BotsScreen() {
           {!searching || rooms.length > 0 ? (
             <View className="mt-5 min-h-10 flex-row items-center justify-between">
               <Text className="text-xs font-semibold text-foreground-muted">{gt("Rooms")}</Text>
-              {canCreateRoom && active.length > 0 ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={gt("New room")}
-                  className="size-11 items-center justify-center"
-                  onPress={() => navigation.navigate("BotRoomEditor", { environmentId })}
-                >
-                  <SymbolView name="plus" size={18} tintColorClassName="accent-icon-muted" />
-                </Pressable>
-              ) : null}
+              <BotCreationButton action={createRoom} iconOnly />
             </View>
           ) : null}
           {rooms.map(({ environmentId: roomEnvironmentId, room }) => (

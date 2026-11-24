@@ -14,6 +14,14 @@ export interface EnvironmentBotRoom {
   readonly room: BotRoom;
 }
 
+export function roomSeatThreadKeys(
+  rooms: ReadonlyArray<EnvironmentBotRoom>,
+): ReadonlyArray<string> {
+  return rooms.flatMap(({ environmentId, room }) =>
+    room.participants.map(({ threadId }) => scopedThreadKey({ environmentId, threadId })),
+  );
+}
+
 /**
  * The threads bots own (DMs and room seats), keyed like thread shells, so
  * thread lists can leave them out.
@@ -29,9 +37,7 @@ export function botDmThreadKeys(
         ? []
         : [scopedThreadKey({ environmentId, threadId: bot.peerThreadId })]),
     ]),
-    ...rooms.flatMap(({ environmentId, room }) =>
-      room.participants.map((seat) => scopedThreadKey({ environmentId, threadId: seat.threadId })),
-    ),
+    ...roomSeatThreadKeys(rooms),
   ]);
 }
 

@@ -17,6 +17,7 @@ const layer = it.layer(
 
 const dm = ThreadId.make("dm-ada");
 const seat = ThreadId.make("seat-ada");
+const peer = ThreadId.make("peer-ada");
 
 layer("BotKnowledgeService", (it) => {
   it.effect("memory reaches only the DM; enabled skills reach DM and room seat", () =>
@@ -24,8 +25,8 @@ layer("BotKnowledgeService", (it) => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
         INSERT INTO bots (bot_id, name, title, avatar, persona, persona_revision, project_id,
-          model_selection_json, dm_thread_id, created_at, updated_at, archived_at)
-        VALUES ('ada', 'Ada', '', 'bot', '', 1, 'p', '{}', ${dm}, 'now', 'now', NULL)
+          model_selection_json, dm_thread_id, peer_thread_id, created_at, updated_at, archived_at)
+        VALUES ('ada', 'Ada', '', 'bot', '', 1, 'p', '{}', ${dm}, ${peer}, 'now', 'now', NULL)
       `;
       yield* sql`INSERT INTO bot_room_threads (room_id, bot_id, thread_id) VALUES ('r', 'ada', ${seat})`;
       yield* sql`
@@ -75,7 +76,16 @@ layer("BotKnowledgeService", (it) => {
       assert.deepEqual(keys(inDm), ["t3_bot_persona", "t3_bot_skills", "t3_bot_memory"]);
       assert.match(inDm[2]!.text, new RegExp(`\\[${memoryId}\\] Prefers pnpm`));
       assert.notMatch(inDm[1]!.text, /haiku/);
-      assert.deepEqual(keys(yield* context.forThread(seat)), ["t3_bot_persona", "t3_bot_skills"]);
+      assert.match(inDm[0]!.text, /private chat with the user/);
+      for (const [threadId, description] of [
+        [seat, /shared room/],
+        [peer, /messages from other bots/],
+      ] as const) {
+        const inSeat = yield* context.forThread(threadId);
+        assert.deepEqual(keys(inSeat), ["t3_bot_persona", "t3_bot_skills"]);
+        assert.notMatch(inSeat[0]!.text, /private chat with the user/);
+        assert.match(inSeat[0]!.text, description);
+      }
 
       // Forgetting and disabling apply to the very next turn.
       yield* knowledge.forgetFromThread({ threadId: dm, memoryId });

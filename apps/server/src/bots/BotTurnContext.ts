@@ -14,7 +14,7 @@ export interface BotTurnContextEntry {
   readonly text: string;
 }
 
-/** The persona a bot's DM sends with each provider turn; other threads get none. */
+/** The context sent with provider turns in a bot's DM, peer seat, or room seat. */
 export class BotTurnContext extends Context.Service<
   BotTurnContext,
   {
@@ -76,11 +76,17 @@ function personaText(bot: {
   readonly name: string;
   readonly title: string;
   readonly persona: string;
+  readonly conversation: "dm" | "peer" | "room";
 }): string {
+  const location = {
+    dm: "This thread is your private chat with the user.",
+    peer: "This thread is your seat for messages from other bots.",
+    room: "This thread is your seat in a shared room.",
+  }[bot.conversation];
   const role = bot.title === "" ? "" : `, ${bot.title}`;
   const persona = bot.persona.trim();
   return [
-    `You are ${bot.name}${role}: a named bot the user chats with in T3 Code. This thread is your private chat with the user. Answer as ${bot.name}.`,
+    `You are ${bot.name}${role}: a named bot the user chats with in T3 Code. ${location} Answer as ${bot.name}.`,
     ...(persona === "" ? [] : [`Your persona, written by the user:\n${persona}`]),
   ].join("\n\n");
 }
@@ -110,7 +116,6 @@ export const layer = Layer.effect(
     });
     const forThread = Effect.fn("BotTurnContext.forThread")(
       function* (threadId: ThreadId) {
-        // A bot's DM or its seat in a room; only the DM sees the bot's private memory.
         const rows = yield* sql<{
           bot_id: string;
           name: string;
@@ -118,16 +123,16 @@ export const layer = Layer.effect(
           persona: string;
           project_id: string;
           allowed_project_ids_json: string;
-          is_dm: number;
+          conversation: "dm" | "peer" | "room";
         }>`
-        SELECT bot_id, name, title, persona, project_id, allowed_project_ids_json, 1 AS is_dm
+        SELECT bot_id, name, title, persona, project_id, allowed_project_ids_json, 'dm' AS conversation
         FROM bots WHERE dm_thread_id = ${threadId}
         UNION ALL
-        SELECT bot_id, name, title, persona, project_id, allowed_project_ids_json, 0 AS is_dm
+        SELECT bot_id, name, title, persona, project_id, allowed_project_ids_json, 'peer' AS conversation
         FROM bots WHERE peer_thread_id = ${threadId}
         UNION ALL
         SELECT bots.bot_id, bots.name, bots.title, bots.persona, bots.project_id,
-          bots.allowed_project_ids_json, 0 AS is_dm FROM bot_room_threads
+          bots.allowed_project_ids_json, 'room' AS conversation FROM bot_room_threads
         JOIN bots ON bots.bot_id = bot_room_threads.bot_id
         WHERE bot_room_threads.thread_id = ${threadId}
       `;
@@ -162,7 +167,7 @@ export const layer = Layer.effect(
           (deliveryId !== null && woken[0] === undefined) ||
           woken[0]?.sender_bot_id != null;
         const memories =
-          bot.is_dm === 1
+          bot.conversation === "dm"
             ? yield* sql<{ memory_id: string; text: string }>`
               SELECT memory_id, text FROM bot_memories WHERE bot_id = ${bot.bot_id}
               ORDER BY updated_at DESC LIMIT ${MEMORY_ENTRIES}
@@ -179,7 +184,7 @@ export const layer = Layer.effect(
             ? []
             : [{ key: "t3_bot_work_targets", text: workTargetsText(targets) }]),
           { key: "t3_bot_skills", text: boundedText(skillsText(skills)) },
-          ...(bot.is_dm === 1
+          ...(bot.conversation === "dm"
             ? [
                 {
                   key: "t3_bot_memory",

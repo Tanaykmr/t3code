@@ -7,8 +7,9 @@ routines.
 
 ## Create a bot
 
-Choose **+** next to **Bots** in the sidebar, or **New bot** in the Bots tab on iPhone. Pick a home
-project and an agent; bots run on Codex or Claude. The bot's chat opens right away. Its overview
+Choose **+** next to **Bots** in the sidebar, or **New bot** in the Bots tab on mobile. If you can
+create bots on multiple environments, choose where the bot should live. Pick a home project and an
+agent. Bots run on Codex or Claude. The bot's chat opens right away. Its overview
 (the details panel on desktop, **Overview** in the chat header on iPhone) shows the profile, where
 you can edit it or archive the bot. Restoring an archived bot brings back the same chat.
 
@@ -22,8 +23,9 @@ others.
   too, or pick nobody.
 - A bot can message another bot itself, and the answer comes back to it once.
 - A **room** is a shared chat with several bots. Pick bots with **@** to choose exactly who answers;
-  a message without picks goes to the room's default responder. Removing a bot from a room stops any
-  of its replies that have not started yet.
+  a message without picks goes to the room's default responder. If that bot is archived, the first
+  active member answers. Open a delivery to inspect the bot's work. Send follow-ups in the room.
+  Removing a bot from a room stops any of its replies that have not started yet.
 
 Bots cannot grant each other access or approve anything for you.
 

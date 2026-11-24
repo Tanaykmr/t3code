@@ -12,7 +12,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
-import { ensureBotSchema } from "../bots/botStore.ts";
+import { ensureBotSchema, RoomSeatMessageThread } from "../bots/botStore.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -71,6 +71,53 @@ it.effect("restricts model changes on bot DMs, peer chats and room seats in comm
       VALUES ('ada', 'Ada', '', '{}', '', 1, 'project:bot-provider-dispatch', '{}', ${dm}, ${peer}, 'now', 'now')
     `;
     yield* sql`INSERT INTO bot_room_threads (room_id, bot_id, thread_id) VALUES ('room', 'ada', ${seat})`;
+
+    // An archived bot from an older version may still have unarchived seats.
+    yield* sql`UPDATE bots SET archived_at = 'now' WHERE bot_id = 'ada'`;
+    for (const threadId of [peer, seat]) {
+      const message = {
+        type: "message.dispatch",
+        commandId: CommandId.make(`seat-message:${threadId}`),
+        threadId,
+        messageId: MessageId.make(`seat-message:${threadId}`),
+        text: "Hello again",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        dispatchMode: { type: "start_immediately" },
+      } as const;
+      const result = yield* engine.dispatch(message).pipe(Effect.result);
+      assert.ok(result._tag === "Failure", `Archived bot accepted a message in ${threadId}`);
+      assert.match(userFacingDispatchErrorMessage(result.failure) ?? "", /bot is archived/i);
+    }
+    yield* sql`UPDATE bots SET archived_at = NULL WHERE bot_id = 'ada'`;
+    const roomSeatMessage = {
+      type: "message.dispatch",
+      commandId: CommandId.make("room-seat-message"),
+      threadId: seat,
+      messageId: MessageId.make("room-seat-input"),
+      text: "Hello again",
+      attachments: [],
+      createdBy: "user",
+      creationSource: "web",
+      dispatchMode: { type: "start_immediately" },
+    } as const;
+    const bypass = yield* engine.dispatch(roomSeatMessage).pipe(Effect.result);
+    assert.ok(bypass._tag === "Failure", "Room seat accepted a message from the thread route");
+    assert.match(userFacingDispatchErrorMessage(bypass.failure) ?? "", /send.*from.*room/i);
+
+    yield* engine.dispatch({
+      ...roomSeatMessage,
+      commandId: CommandId.make("restored-peer-message"),
+      messageId: MessageId.make("restored-peer-input"),
+      threadId: peer,
+    });
+    yield* engine
+      .dispatch({
+        ...roomSeatMessage,
+        commandId: CommandId.make("room-delivery"),
+      })
+      .pipe(Effect.provideService(RoomSeatMessageThread, seat));
 
     const modelSelection = { instanceId: cursor, model: "auto" };
     const commands: ReadonlyArray<OrchestrationV2ServerCommand> = [

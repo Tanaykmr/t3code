@@ -1,13 +1,12 @@
-import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import { useGT } from "gt-react-native";
 import { Keyboard } from "react-native";
 
 import { AppBar } from "../../../components/ui/AppBar";
 import { useHardwareBack } from "../../../lib/backHandler";
-import { useBotEnvironmentIds, useEnvironmentBots } from "../../../state/bots";
-import { serverEnvironment } from "../../../state/server";
+import { useEnvironmentBots } from "../../../state/bots";
 import { BotsScreen } from "../../bots/BotsScreen";
+import { useBotCreation } from "../../bots/useBotCreation";
 import { useHardwareKeyboardCommand } from "../../keyboard/hardwareKeyboardCommands";
 import { useWorkspaceTabs } from "./WorkspaceTabsContext";
 
@@ -15,8 +14,7 @@ export function AndroidBotsPane() {
   const gt = useGT();
   const navigation = useNavigation();
   const workspace = useWorkspaceTabs()!;
-  const environmentId = useBotEnvironmentIds()[0];
-  const canCreate = useAtomValue(serverEnvironment.createBot.permissionAtom(environmentId ?? null));
+  const createBot = useBotCreation("bot");
   const tab = workspace.state.tabs.bots;
   const searching = tab.searchMode !== "resting";
   const showActions = useEnvironmentBots().length > 0 || searching;
@@ -45,16 +43,17 @@ export function AndroidBotsPane() {
         title={gt("Bots")}
         hideBottomBorder
         actions={
-          showActions && canCreate && environmentId !== undefined
+          showActions && createBot.onPress !== undefined
             ? [
                 {
-                  accessibilityLabel: gt("New bot"),
+                  accessibilityLabel: createBot.title,
                   icon: "plus",
-                  onPress: () => navigation.navigate("BotEditor", { environmentId }),
+                  onPress: createBot.onPress,
                 },
               ]
             : undefined
         }
+        menus={showActions && createBot.menu !== undefined ? [createBot.menu] : undefined}
         search={
           showActions
             ? {

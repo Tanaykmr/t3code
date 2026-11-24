@@ -1,3 +1,5 @@
+import type { ThreadId } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -24,17 +26,29 @@ const addColumn = Effect.fnUntraced(function* (
   if (added._tag === "Failure" && !(yield* hasColumn)) return yield* Effect.failCause(added.cause);
 });
 
-export const isBotOwnedThread = Effect.fn("botStore.isBotOwnedThread")(function* (
+// Room dispatch and its server-owned continuations may append to a room seat.
+export const RoomSeatMessageThread = Context.Reference<ThreadId | undefined>(
+  "t3/bots/RoomSeatMessageThread",
+  { defaultValue: () => undefined },
+);
+
+export const botThreadOwnership = Effect.fn("botStore.botThreadOwnership")(function* (
   sql: SqlClient.SqlClient,
   threadId: string,
 ) {
-  const [owned] = yield* sql`
-    SELECT 1 FROM bots WHERE dm_thread_id = ${threadId} OR peer_thread_id = ${threadId}
-    UNION ALL SELECT 1 FROM bot_room_threads WHERE thread_id = ${threadId}
+  const [owner] = yield* sql<{ archived_at: string | null; room_seat: number }>`
+    SELECT archived_at, 0 AS room_seat FROM bots WHERE dm_thread_id = ${threadId}
+    UNION ALL SELECT archived_at, 0 FROM bots WHERE peer_thread_id = ${threadId}
+    UNION ALL
+    SELECT bots.archived_at, 1 FROM bot_room_threads LEFT JOIN bots USING (bot_id)
+    WHERE bot_room_threads.thread_id = ${threadId}
     LIMIT 1
   `;
-  return owned !== undefined;
+  return owner;
 });
+
+export const isBotOwnedThread = (sql: SqlClient.SqlClient, threadId: string) =>
+  botThreadOwnership(sql, threadId).pipe(Effect.map((owner) => owner !== undefined));
 
 export const ensureBotDirectorySchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -63,6 +77,7 @@ export const ensureBotSchema = Effect.gen(function* () {
   yield* addColumn(sql, "bots", "allowed_project_ids_json", "TEXT NOT NULL DEFAULT '[]'");
   // Another bot's messages reach this bot in a seat of its own, never in its private DM.
   yield* addColumn(sql, "bots", "peer_thread_id", "TEXT");
+  yield* sql`CREATE INDEX IF NOT EXISTS bots_peer_thread ON bots (peer_thread_id)`;
   yield* sql`
     CREATE TABLE IF NOT EXISTS bot_rooms (
       room_id TEXT PRIMARY KEY,

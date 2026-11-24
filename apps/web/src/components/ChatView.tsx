@@ -1,6 +1,7 @@
 import { m } from "../i18n/messages";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useGT, useMessages } from "gt-react";
+import { ReadOnlyComposerBar, ReadOnlyComposerStatus } from "./chat/ReadOnlyComposerBar";
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
@@ -314,7 +315,7 @@ import { ProviderSubagentBar } from "./chat/ProviderSubagentBar";
 import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
-import { useBotForThread } from "../state/bots";
+import { useBotForThread, useIsRoomSeat } from "../state/bots";
 import { ArchivedBotComposerBar } from "./bots/ArchivedBotComposerBar";
 import { useBotHandoffSend } from "./bots/useBotHandoffSend";
 import { useSideChat } from "./chat/useSideChat";
@@ -1087,6 +1088,7 @@ export default function ChatView(props: ChatViewProps) {
   })();
   const activeThreadRef = useActiveThreadRef(activeThread);
   const activeBot = useBotForThread(activeThreadRef);
+  const isRoomSeat = useIsRoomSeat(activeThreadRef);
   const archivedBot =
     activeBot !== null && (activeBot.bot.archivedAt !== null || serverThread?.archivedAt != null)
       ? activeBot
@@ -1868,7 +1870,10 @@ export default function ChatView(props: ChatViewProps) {
     turnDiffSummaries.some((summary) => summary.repositories !== undefined);
   // Provider-native subagents cannot take messages; approvals and questions go to the top-level parent.
   const showProviderSubagentBar = isProviderSubagent;
-  const composerMounted = !showProviderSubagentBar && archivedBot === null;
+  const composerMounted =
+    !showProviderSubagentBar &&
+    archivedBot === null &&
+    (!isRoomSeat || activePendingUserInput !== null);
   const providerSubagentModels = selectedProviderEntry?.models ?? EMPTY_PROVIDER_MODELS;
   // Providers can report dated model ids or aliases.
   const providerSubagentModelSlug = selectedProviderEntry
@@ -3656,8 +3661,12 @@ export default function ChatView(props: ChatViewProps) {
                   detailLoading={threadDetailLoading}
                   citationRequest={citationRequest}
                   citationHistory={citationHistory}
-                  onCiteAssistantText={citeAssistantTextStable}
-                  onReplyToResponse={replyToResponseStable}
+                  {...(isRoomSeat
+                    ? {}
+                    : {
+                        onCiteAssistantText: citeAssistantTextStable,
+                        onReplyToResponse: replyToResponseStable,
+                      })}
                   {...(activeProject && !runsOutsideHostCheckout
                     ? { onRunShellCommand: parentPanel?.runShellCommand ?? runShellCommandStable }
                     : {})}
@@ -3830,6 +3839,10 @@ export default function ChatView(props: ChatViewProps) {
                                 botId={archivedBot.bot.id}
                                 disabled={!canOperateThread || activeEnvironmentUnavailable}
                               />
+                            ) : isRoomSeat && !composerMounted ? (
+                              <ReadOnlyComposerBar>
+                                <ReadOnlyComposerStatus>{gt("Read-only")}</ReadOnlyComposerStatus>
+                              </ReadOnlyComposerBar>
                             ) : showProviderSubagentBar ? (
                               <ProviderSubagentBar
                                 provider={selectedProviderEntry ?? null}

@@ -42,6 +42,7 @@ export class BotService extends Context.Service<
     readonly restore: (input: BotRefInput) => Effect.Effect<BotMutationResult, BotError>;
     /** Rooms live in the same directory; their writer signals here. */
     readonly notifyDirectoryChanged: Effect.Effect<void>;
+    readonly withDeliveryLock: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
   }
 >()("t3/bots/BotService") {}
 
@@ -76,6 +77,8 @@ const make = Effect.gen(function* () {
   const notifyChanged = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
   // Serializes name checks with their writes, so two creates cannot take one name.
   const writeLock = yield* Semaphore.make(1);
+  // A delivery must finish admission before archival checks the bot's seats.
+  const { withPermit: withDeliveryLock } = yield* Semaphore.make(1);
 
   const toBot = (row: BotRow) =>
     decodeProjectIds(row.allowed_project_ids_json).pipe(
@@ -288,68 +291,68 @@ const make = Effect.gen(function* () {
     return yield* toResult(yield* requireReadyBot(botId));
   });
 
-  const archive: BotService["Service"]["archive"] = Effect.fn("BotService.archive")(
-    function* (input) {
-      const row = yield* requireReadyBot(input.botId);
-      if (row.archived_at !== null) return yield* toResult(row);
-      // The bot also runs in its peer and room seats, which keep going after its DM is idle.
-      const seats = yield* sql<{ thread_id: string }>`
+  const archive: BotService["Service"]["archive"] = Effect.fn("BotService.archive")(function* (
+    input,
+  ) {
+    const row = yield* requireReadyBot(input.botId);
+    if (row.archived_at !== null) return yield* toResult(row);
+    // The bot also runs in its peer and room seats, which keep going after its DM is idle.
+    const seats = yield* sql<{ thread_id: string }>`
         SELECT thread_id FROM bot_room_threads WHERE bot_id = ${input.botId}
       `.pipe(Effect.mapError((cause) => botError("Could not read the bot.", input.botId, cause)));
-      const owned = [row.dm_thread_id, row.peer_thread_id, ...seats.map((seat) => seat.thread_id)];
-      for (const threadId of owned) {
-        if (threadId === null) continue;
-        const shell = yield* threads
-          .getThreadShell(ThreadId.make(threadId))
-          .pipe(
-            Effect.mapError((cause) =>
-              botError("Could not read the bot's chat.", input.botId, cause),
-            ),
-          );
-        if (shell !== null && ACTIVE_STATUSES.has(shell.status)) {
-          return yield* botError(`${row.name} is still working. Stop it first.`, input.botId);
-        }
-      }
-      const archivedAt = DateTime.formatIso(yield* DateTime.now);
-      // The DM is archived with its bot, so nothing, including the composer, wakes it meanwhile.
-      yield* threads
-        .dispatch({
-          type: "thread.archive",
-          commandId: CommandId.make(`bot-archive:${input.botId}:${archivedAt}`),
-          threadId: ThreadId.make(row.dm_thread_id ?? ""),
-        })
+    const owned = [row.dm_thread_id, row.peer_thread_id, ...seats.map((seat) => seat.thread_id)];
+    for (const threadId of owned) {
+      if (threadId === null) continue;
+      const shell = yield* threads
+        .getThreadShell(ThreadId.make(threadId))
         .pipe(
           Effect.mapError((cause) =>
-            botError("Could not archive the bot's chat.", input.botId, cause),
+            botError("Could not read the bot's chat.", input.botId, cause),
           ),
         );
-      return yield* setArchivedAt(input.botId, archivedAt);
-    },
-  );
-
-  const restore: BotService["Service"]["restore"] = Effect.fn("BotService.restore")(
-    function* (input) {
-      return yield* writeLock.withPermits(1)(
-        Effect.gen(function* () {
-          const row = yield* requireReadyBot(input.botId);
-          if (row.archived_at === null) return yield* toResult(row);
-          yield* assertNameFree(row.name, input.botId);
-          yield* threads
-            .dispatch({
-              type: "thread.unarchive",
-              commandId: CommandId.make(`bot-restore:${input.botId}:${row.archived_at}`),
-              threadId: ThreadId.make(row.dm_thread_id ?? ""),
-            })
-            .pipe(
-              Effect.mapError((cause) =>
-                botError("Could not restore the bot's chat.", input.botId, cause),
-              ),
-            );
-          return yield* setArchivedAt(input.botId, null);
-        }),
+      if (shell !== null && ACTIVE_STATUSES.has(shell.status)) {
+        return yield* botError(`${row.name} is still working. Stop it first.`, input.botId);
+      }
+    }
+    const archivedAt = DateTime.formatIso(yield* DateTime.now);
+    // The DM is archived with its bot, so nothing, including the composer, wakes it meanwhile.
+    yield* threads
+      .dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make(`bot-archive:${input.botId}:${archivedAt}`),
+        threadId: ThreadId.make(row.dm_thread_id ?? ""),
+      })
+      .pipe(
+        Effect.mapError((cause) =>
+          botError("Could not archive the bot's chat.", input.botId, cause),
+        ),
       );
-    },
-  );
+    return yield* setArchivedAt(input.botId, archivedAt);
+  }, withDeliveryLock);
+
+  const restore: BotService["Service"]["restore"] = Effect.fn("BotService.restore")(function* (
+    input,
+  ) {
+    return yield* writeLock.withPermits(1)(
+      Effect.gen(function* () {
+        const row = yield* requireReadyBot(input.botId);
+        if (row.archived_at === null) return yield* toResult(row);
+        yield* assertNameFree(row.name, input.botId);
+        yield* threads
+          .dispatch({
+            type: "thread.unarchive",
+            commandId: CommandId.make(`bot-restore:${input.botId}:${row.archived_at}`),
+            threadId: ThreadId.make(row.dm_thread_id ?? ""),
+          })
+          .pipe(
+            Effect.mapError((cause) =>
+              botError("Could not restore the bot's chat.", input.botId, cause),
+            ),
+          );
+        return yield* setArchivedAt(input.botId, null);
+      }),
+    );
+  }, withDeliveryLock);
 
   // A restart between saving a bot and its DM launch finishes the launch with the same command.
   const pending = yield* sql<BotRow>`SELECT * FROM bots WHERE dm_thread_id IS NULL`.pipe(
@@ -368,6 +371,7 @@ const make = Effect.gen(function* () {
     archive,
     restore,
     notifyDirectoryChanged: notifyChanged,
+    withDeliveryLock,
   });
 });
 

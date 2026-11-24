@@ -114,7 +114,9 @@ function BotEditorDialog({ request }: { readonly request: EditorRequest }) {
       isBotProvider({ driverKind: entry.driverKind, instanceId: entry.instanceId }),
   );
   const [instanceId, setInstanceId] = useState<ProviderInstanceId | null>(null);
-  const selectedInstanceId = instanceId ?? providerEntries[0]?.instanceId ?? null;
+  const selectedInstanceId =
+    (providerEntries.find((entry) => entry.instanceId === instanceId) ?? providerEntries[0])
+      ?.instanceId ?? null;
   // Stable across retries, so a resend after a lost reply reuses the bot and its DM.
   const [botId] = useState(() => BotId.make(randomUUID()));
   const [busy, setBusy] = useState(false);

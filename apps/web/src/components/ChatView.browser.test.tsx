@@ -2,6 +2,7 @@ import { createMemoryHistory } from "@tanstack/react-router";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   BotId,
+  BotMessageId,
   BotRoomId,
   EnvironmentId,
   IssueTrackerKind,
@@ -10,6 +11,7 @@ import {
   ThreadId,
   WS_METHODS,
   type Bot,
+  type BotChannelSnapshot,
   type BotRoom,
   type IssueDetail,
   type IssueRef,
@@ -23,6 +25,7 @@ import {
 import type * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 import { expect, it, vi } from "vite-plus/test";
 import { cdp, page, userEvent } from "vite-plus/test/browser";
 
@@ -624,7 +627,7 @@ it("opens the thread actions menu for an older settled thread the shell leaves o
     .toBeVisible();
 });
 
-it("shows singular and plural room counts and opens archived bots for restore", async () => {
+it("opens archived bot chats for restore and room deliveries for inspection", async () => {
   appAtomRegistry.reset();
   const style = document.createElement("style");
   style.textContent = stylesheet;
@@ -649,18 +652,19 @@ it("shows singular and plural room counts and opens archived bots for restore", 
     archivedAt,
   } satisfies Bot;
   const memberBotId = BotId.make("room-bot");
+  const seat = threadWithHistory("room-seat", 1);
   const room = {
     id: BotRoomId.make("single-bot-room"),
     name: "Single",
     memberBotIds: [memberBotId],
     defaultBotId: memberBotId,
-    participants: [],
+    participants: [{ botId: memberBotId, threadId: seat.id }],
     createdAt: archivedAt,
     updatedAt: archivedAt,
     archivedAt: null,
   } satisfies BotRoom;
   const start = threadWithHistory("archive-bot-start", 1);
-  using _environment = installFakeEnvironment([start, { ...thread, archivedAt }], {
+  using _environment = installFakeEnvironment([start, seat, { ...thread, archivedAt }], {
     botDirectory: {
       bots: [bot],
       rooms: [
@@ -674,6 +678,38 @@ it("shows singular and plural room counts and opens archived bots for restore", 
       ],
     },
   });
+  const messageId = BotMessageId.make("room-question");
+  using _channel = answerRpc(WS_METHODS.botsSubscribeChannel, () =>
+    Stream.concat(
+      Stream.make({
+        messages: [
+          {
+            id: messageId,
+            seq: 1,
+            channelKey: `room:${room.id}`,
+            sender: { kind: "user" },
+            text: "Check the release",
+            mentions: [],
+            replyToId: null,
+            originThreadId: null,
+            createdAt: archivedAt,
+          },
+        ],
+        deliveries: [
+          {
+            id: "delivery",
+            messageId,
+            targetBotId: memberBotId,
+            status: "settled",
+            threadId: seat.id,
+            reason: null,
+            updatedAt: archivedAt,
+          },
+        ],
+      } satisfies BotChannelSnapshot),
+      Stream.never,
+    ),
+  );
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
@@ -701,6 +737,12 @@ it("shows singular and plural room counts and opens archived bots for restore", 
   const restore = composer.getByRole("button", { name: "Restore bot" });
   await expect.element(restore).toBeVisible();
   await expect.element(restore).toBeEnabled();
+
+  await single.click();
+  await page.getByRole("link", { name: /Replied/ }).click();
+  await expect.element(page.getByText("Read-only", { exact: true })).toBeVisible();
+  await expect.element(page.getByTestId("composer-editor")).not.toBeInTheDocument();
+  expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${seat.id}`);
 });
 
 it("retains each thread's diff selection when returning from another thread or Settings", async () => {
