@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
@@ -51,7 +52,7 @@ export const Bot = Schema.Struct({
   dmThreadId: ThreadId,
   projectId: ProjectId,
   /** Other projects the user lets this bot start coding work in; its home project always counts. */
-  allowedProjectIds: Schema.Array(ProjectId),
+  allowedProjectIds: Schema.Array(ProjectId).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime),
