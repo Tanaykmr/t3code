@@ -22,7 +22,9 @@ import {
 import { hasPendingBackgroundSubagent } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
@@ -244,11 +246,45 @@ const resolveThreadId = (context: Caller, threadId: ThreadId | undefined) =>
           }),
         );
 
+/**
+ * Whether the thread is another bot's chat or seat, or a fork of one: a fork carries its
+ * source's transcript, so it stays as private as the source.
+ */
+export const isForeignBotThread = Effect.fn("mcp.isForeignBotThread")(function* (
+  threads: Pick<ThreadManagement.ThreadManagementService["Service"], "getThreadShell">,
+  scope: McpInvocationContext.McpInvocationScope,
+  threadId: ThreadId,
+) {
+  const bots = yield* BotTurnContext.optional;
+  if (Option.isNone(bots)) return false;
+  let current: ThreadId | null = threadId;
+  for (let depth = 0; current !== null && depth < 10; depth += 1) {
+    if (current !== scope.thread?.threadId && (yield* bots.value.workTargets(current)) !== null) {
+      return true;
+    }
+    const shell = yield* threads.getThreadShell(current).pipe(Effect.orElseSucceed(() => null));
+    current = shell?.forkedFrom?.type === "run" ? shell.forkedFrom.threadId : null;
+  }
+  return false;
+});
+
+export const privateBotThread = () =>
+  new OrchestratorMcpFailure({
+    code: "invalid_request",
+    message: "That thread belongs to a bot and is private.",
+  });
+
 export const readThread = Effect.fn("mcp.readThread")(function* <
   K extends ProjectionRecordField = never,
 >(threadId?: ThreadId, fields: ReadonlyArray<K> = [], filter?: ProjectionRecordFilter) {
   const context = yield* readCaller();
   const targetId = yield* resolveThreadId(context, threadId);
+  if (
+    context.scope.bot === true &&
+    (yield* isForeignBotThread(context.threads, context.scope, targetId))
+  ) {
+    return yield* privateBotThread();
+  }
   const shell = yield* context.threads.getThreadShell(targetId).pipe(Effect.mapError(unavailable));
   if (shell === null || shell.deletedAt !== null) {
     return yield* threadNotFound(

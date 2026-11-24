@@ -919,12 +919,15 @@ const make = Effect.gen(function* () {
           // A busy bot keeps the delivery here, where membership and archive still apply.
           if (ACTIVE_STATUSES.has(shell.status)) return "deferred" as const;
           if (destination !== target.dm_thread_id) {
-            // A seat refuses a mode change while background work runs; try again later.
             const synced = yield* syncSeatModes(destination, target).pipe(
               Effect.as(true),
               Effect.orElseSucceed(() => false),
             );
-            if (!synced) return "deferred" as const;
+            if (!synced) {
+              // Background work refuses a mode change for now; anything else is lasting.
+              if ((shell.pendingBackgroundTasks?.length ?? 0) > 0) return "deferred" as const;
+              return yield* block("Could not deliver");
+            }
             shell = yield* threads.getThreadShell(destination);
             if (shell === null) return yield* block("Chat deleted");
           }

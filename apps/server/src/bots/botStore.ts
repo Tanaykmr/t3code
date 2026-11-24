@@ -202,7 +202,10 @@ export interface TurnOrigin {
   readonly message_id: string | null;
   readonly scheduled_task_id: string | null;
   readonly sender_thread_id: string | null;
+  readonly depth: number;
 }
+
+const MAX_ORIGIN_LINKS = 50;
 
 /**
  * The input that started the thread's executing turn, following restart and continuation
@@ -233,15 +236,17 @@ export const executingTurnOrigin = Effect.fnUntraced(function* (
           WHERE input.message_id = json_extract(chain.payload_json, '$.userMessageId')
         )
       )
-      WHERE chain.depth < 20
+      WHERE chain.depth < ${MAX_ORIGIN_LINKS}
     )
     SELECT chain.run_id AS origin_run_id, message.message_id,
       json_extract(message.payload_json, '$.scheduledTaskId') AS scheduled_task_id,
-      json_extract(message.payload_json, '$.senderThreadId') AS sender_thread_id
+      json_extract(message.payload_json, '$.senderThreadId') AS sender_thread_id,
+      chain.depth AS depth
     FROM chain
     LEFT JOIN orchestration_v2_projection_messages AS message
       ON message.message_id = json_extract(chain.payload_json, '$.userMessageId')
     ORDER BY chain.depth DESC LIMIT 1
   `;
-  return origin;
+  // A chain this long is unresolved: no origin, so no memory writes or fresh budgets.
+  return origin === undefined || origin.depth >= MAX_ORIGIN_LINKS ? undefined : origin;
 });

@@ -138,7 +138,13 @@ import {
   runtimeModeRank,
   taskPrompt,
 } from "./delegatedTaskModes.ts";
-import { assertTargetWithinLimits, isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
+import {
+  assertTargetWithinLimits,
+  isForeignBotThread,
+  isLiveCallerShell,
+  privateBotThread,
+  threadNotFound,
+} from "./threadAccess.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
@@ -3635,14 +3641,12 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadListResult;
     }),
     readThread: Effect.fn("OrchestratorMcpService.readThread")(function* (scope, input) {
-      // A bot reads only its own thread among bot threads: a peer seat cannot read the DM.
+      // A bot reads only its own thread among bot threads and their forks.
       if (
         scope.bot === true &&
-        input.threadId !== scope.thread?.threadId &&
-        Option.isSome(botTurnContext) &&
-        (yield* botTurnContext.value.workTargets(input.threadId)) !== null
+        (yield* isForeignBotThread(threadManagement, scope, input.threadId))
       ) {
-        return yield* failure("invalid_request", "That thread belongs to a bot and is private.");
+        return yield* privateBotThread();
       }
       const runLimit = input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT;
       const { parent, target, shell, runCount } = yield* loadReadableThread(
@@ -3665,20 +3669,6 @@ const make = Effect.gen(function* () {
           ...(input.itemId === undefined ? {} : { itemId: input.itemId }),
         })
         .pipe(Effect.mapError(threadManagementFailure));
-      // A fork shows its source's messages; another bot's chat stays private through it too.
-      if (scope.bot === true && Option.isSome(botTurnContext)) {
-        for (const sourceThreadId of new Set(timeline.items.map((row) => row.sourceThreadId))) {
-          if (
-            sourceThreadId !== scope.thread?.threadId &&
-            (yield* botTurnContext.value.workTargets(sourceThreadId)) !== null
-          ) {
-            return yield* failure(
-              "invalid_request",
-              "That thread belongs to a bot and is private.",
-            );
-          }
-        }
-      }
       const messageIdsByThread = new Map<ThreadId, Array<MessageId>>();
       for (const row of timeline.items) {
         if (row.item.type !== "user_message" && row.item.type !== "assistant_message") continue;
