@@ -15,7 +15,7 @@ import { useAndroidControlSizing } from "../../../components/ui/useAndroidContro
 import { HomeRouteScreen } from "../../home/HomeRouteScreen";
 import { PullRequestsScreen } from "../../pull-requests/PullRequestsScreen";
 import { ListSearchToolbar } from "./ListSearchToolbar.android";
-import { BotsScreen } from "../../bots/BotsScreen";
+import { AndroidBotsPane } from "./AndroidBotsPane.android";
 import { IssuesScreen } from "../../issues/IssuesScreen";
 import { useAdaptiveWorkspaceLayout } from "../AdaptiveWorkspaceLayout";
 import { WorkspaceSettledContentWidthContext } from "../workspace-content-width";
@@ -100,7 +100,7 @@ function WorkspaceRoot() {
                   tab === "threads" ? (
                     <HomeRouteScreen />
                   ) : tab === "bots" ? (
-                    <BotsScreen />
+                    <AndroidBotsPane />
                   ) : tab === "usage" || tab === "workflows" ? (
                     <WorkspacePageFrame width={workspacePageWidth ?? null}>
                       <WorkspaceExtraTab tab={tab} />

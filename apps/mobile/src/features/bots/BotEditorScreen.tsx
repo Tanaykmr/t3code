@@ -15,9 +15,8 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import { AsyncResult } from "effect/reactivity";
 import { useGT } from "gt-react-native";
 import { useRef, useState } from "react";
-import { Pressable, View } from "react-native";
+import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 
-import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { FitSheet } from "../../components/ui/FitSheet";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
@@ -158,7 +157,6 @@ export function BotEditorScreen({ route }: StaticScreenProps<BotEditorParams>) {
       header={
         <SheetHeader
           title={editing ? gt("Edit bot") : gt("New bot")}
-          subtitle={gt("A bot is a named agent with its own persona and a private chat.")}
           onCancel={() => navigation.goBack()}
           dismissDisabled={busy}
         />
@@ -174,64 +172,80 @@ export function BotEditorScreen({ route }: StaticScreenProps<BotEditorParams>) {
         />
       }
       keyboardShouldPersistTaps="handled"
-      contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 16, paddingBottom: 20 }}
+      contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20 }}
     >
       <View className="gap-4" pointerEvents={busy ? "none" : "auto"}>
-        <View accessibilityRole="radiogroup" className="flex-row flex-wrap gap-2">
-          {BOT_AVATARS.map((glyph) => (
-            <Pressable
-              key={glyph}
-              accessibilityRole="radio"
-              accessibilityLabel={glyph}
-              accessibilityState={{ checked: avatar === glyph }}
-              className={cn(
-                "size-11 items-center justify-center rounded-xl border",
-                avatar === glyph ? "border-foreground" : "border-border-subtle",
-              )}
-              onPress={() => setAvatar(glyph)}
-            >
-              <BotGlyph
-                glyph={glyph}
-                colorClassName={avatar === glyph ? "accent-foreground" : "accent-icon-muted"}
-              />
-            </Pressable>
-          ))}
+        <View className="gap-1.5">
+          <Text className="text-xs text-foreground-muted">{gt("Avatar")}</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: 2 }}
+          >
+            <View accessibilityRole="radiogroup" className="flex-row gap-0.5">
+              {BOT_AVATARS.map((glyph) => (
+                <Pressable
+                  key={glyph}
+                  accessibilityRole="radio"
+                  accessibilityLabel={glyph}
+                  accessibilityState={{ checked: avatar === glyph }}
+                  className={cn(
+                    "size-11 items-center justify-center rounded-xl border",
+                    avatar === glyph ? "border-foreground" : "border-border-subtle",
+                  )}
+                  onPress={() => setAvatar(glyph)}
+                >
+                  <BotGlyph
+                    glyph={glyph}
+                    colorClassName={avatar === glyph ? "accent-foreground" : "accent-icon-muted"}
+                  />
+                </Pressable>
+              ))}
+            </View>
+          </ScrollView>
         </View>
-        <TextInput
-          accessibilityLabel={gt("Name")}
-          placeholder={gt("Name")}
-          placeholderTextColorClassName="accent-foreground-muted"
-          autoCapitalize="words"
-          autoCorrect={false}
-          autoFocus={editing === null}
-          maxLength={BOT_NAME_MAX_LENGTH}
-          value={name}
-          onChangeText={setName}
-          className={FIELD_CLASS}
-        />
-        {nameError ? (
-          <Text className="-mt-2 text-xs text-danger-foreground">{nameError}</Text>
-        ) : null}
-        <TextInput
-          accessibilityLabel={gt("Title")}
-          placeholder={gt("Title, such as Release engineer")}
-          placeholderTextColorClassName="accent-foreground-muted"
-          maxLength={BOT_TITLE_MAX_LENGTH}
-          value={title}
-          onChangeText={setTitle}
-          className={FIELD_CLASS}
-        />
-        <TextInput
-          multiline
-          accessibilityLabel={gt("Persona")}
-          placeholder={gt("How this bot works, what it cares about, and how it talks.")}
-          placeholderTextColorClassName="accent-foreground-muted"
-          maxLength={BOT_PERSONA_MAX_LENGTH}
-          value={persona}
-          onChangeText={setPersona}
-          className="min-h-36 rounded-[20px] bg-grouped-card p-4 text-base text-foreground"
-          style={{ textAlignVertical: "top" }}
-        />
+        <View className="gap-1.5">
+          <Text className="text-xs text-foreground-muted">{gt("Name")}</Text>
+          <TextInput
+            accessibilityLabel={gt("Name")}
+            placeholderTextColorClassName="accent-foreground-muted"
+            autoCapitalize="words"
+            autoCorrect={false}
+            maxLength={BOT_NAME_MAX_LENGTH}
+            value={name}
+            onChangeText={setName}
+            className={FIELD_CLASS}
+          />
+          {nameError ? (
+            <Text className="-mt-2 text-xs text-danger-foreground">{nameError}</Text>
+          ) : null}
+        </View>
+        <View className="gap-1.5">
+          <Text className="text-xs text-foreground-muted">{gt("Title (optional)")}</Text>
+          <TextInput
+            accessibilityLabel={gt("Title (optional)")}
+            placeholder={gt("What does this bot do?")}
+            placeholderTextColorClassName="accent-foreground-muted"
+            maxLength={BOT_TITLE_MAX_LENGTH}
+            value={title}
+            onChangeText={setTitle}
+            className={FIELD_CLASS}
+          />
+        </View>
+        <View className="gap-1.5">
+          <Text className="text-xs text-foreground-muted">{gt("Persona (optional)")}</Text>
+          <TextInput
+            multiline
+            accessibilityLabel={gt("Persona (optional)")}
+            placeholder={gt("How this bot works and what it cares about.")}
+            placeholderTextColorClassName="accent-foreground-muted"
+            maxLength={BOT_PERSONA_MAX_LENGTH}
+            value={persona}
+            onChangeText={setPersona}
+            className="min-h-[92px] rounded-[20px] bg-grouped-card p-4 text-base text-foreground"
+            style={{ textAlignVertical: "top" }}
+          />
+        </View>
         {editing === null ? null : (
           <ListSection
             title={gt("Work targets")}

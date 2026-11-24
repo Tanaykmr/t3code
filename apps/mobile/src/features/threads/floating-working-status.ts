@@ -5,6 +5,7 @@ import { m, type MessageResolver } from "../../i18n/messages";
 
 export interface FloatingStatusAction {
   readonly label: string;
+  readonly icon?: "stop.fill";
   readonly accessibilityLabel: string;
   readonly disabled: boolean;
   readonly onPress: () => void;
@@ -30,6 +31,11 @@ export type FloatingWorkingStatus =
       readonly actions: ReadonlyArray<FloatingStatusAction>;
     }
   | { readonly kind: "extension"; readonly label: string; readonly onPress: () => void }
+  | {
+      readonly kind: "working" | "retrying";
+      readonly label: string;
+      readonly action?: FloatingStatusAction;
+    }
   | { readonly kind: "preparing"; readonly label: string }
   | {
       readonly kind: "connection";
@@ -62,6 +68,7 @@ export function connectionFloatingStatus(
     readonly connectionError: string | null;
     readonly connectionState: EnvironmentConnectionPhase;
     readonly environmentLabel: string | null;
+    readonly showRetrying?: boolean;
     readonly onReconnect: () => void;
   },
   resolve: MessageResolver = m,
@@ -93,6 +100,17 @@ export function connectionFloatingStatus(
       return unavailable(resolve(msg("{environmentLabel} is not connected", { environmentLabel })));
     case "connecting":
     case "reconnecting":
+      return input.showRetrying
+        ? {
+            kind: "retrying",
+            label:
+              input.connectionError === null
+                ? resolve(msg("Reconnecting to {environmentLabel}…", { environmentLabel }))
+                : resolve(
+                    msg("Failed to connect. Retrying {environmentLabel}…", { environmentLabel }),
+                  ),
+          }
+        : null;
     case "connected":
       return null;
   }

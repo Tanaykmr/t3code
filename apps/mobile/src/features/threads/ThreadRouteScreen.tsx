@@ -1,3 +1,4 @@
+import { botChatIsArchived } from "../bots/bot-list";
 import { useBotForThread } from "../../state/bots";
 import * as Dialog from "../../components/ui/Dialog";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
@@ -992,11 +993,12 @@ function ThreadRouteContent(
     connectionRetrying ? routeConnectionError : null,
     RECONNECT_ERROR_DELAY_MS,
   );
+  const awaitingApproval = routeEnvironmentRuntime?.connectionAwaitingApproval === true;
   const connectionStatusLabel = connectionRetryLabel(
     {
       connectionError: retryConnectionError,
       connectionState: routeConnectionState,
-      connectionAwaitingApproval: routeEnvironmentRuntime?.connectionAwaitingApproval === true,
+      connectionAwaitingApproval: awaitingApproval,
     },
     m,
   );
@@ -1031,6 +1033,14 @@ function ThreadRouteContent(
     );
   }
 
+  const botChat = activeBot
+    ? {
+        bot: activeBot,
+        thread: selectedThread,
+        archived: botChatIsArchived(activeBot, selectedThread),
+        canOperate: canOperateThread,
+      }
+    : undefined;
   const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
   const renderThreadRouteBody = () => (
     <>
@@ -1046,16 +1056,13 @@ function ThreadRouteContent(
             props.inspectorPresentation ? null : (
               <ThreadHeader
                 title={activeBot?.name ?? selectedThread.title}
-                subtitle={threadStatusLabel ?? (activeBot?.title || headerSubtitle)}
-                {...(activeBot
-                  ? {
-                      onOpenBotOverview: () =>
-                        navigation.navigate("BotOverview", {
-                          environmentId: String(selectedThread.environmentId),
-                          botId: activeBot.id,
-                        }),
-                    }
-                  : {})}
+                subtitle={
+                  activeBot
+                    ? ((connectionRetrying && !awaitingApproval ? null : threadStatusLabel) ??
+                      activeBot.title)
+                    : (threadStatusLabel ?? headerSubtitle)
+                }
+                botChat={botChat}
                 gitControls={threadGitControlProps}
                 hasThreadCwd={selectedThreadCwd !== null}
                 inspectorMode={inspectorMode}
@@ -1065,6 +1072,7 @@ function ThreadRouteContent(
             )
           }
           canOperateThread={canOperateThread}
+          botChat={botChat}
           selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
           selectedThreadDetailRef={selectedThreadDetailRef}
           contentPresentation={contentPresentation}

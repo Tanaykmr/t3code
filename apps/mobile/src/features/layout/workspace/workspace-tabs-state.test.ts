@@ -269,7 +269,7 @@ vi.mock("../../pull-requests/PullRequestFilterMenuContext", () => ({
 }));
 vi.mock("../../pull-requests/PullRequestsScreen", () => ({ PullRequestsScreen: () => null }));
 vi.mock("../../issues/IssuesScreen", () => ({ IssuesScreen: () => null }));
-vi.mock("../../bots/BotsScreen", () => ({ BotsScreen: () => null }));
+vi.mock("./AndroidBotsPane.android", () => ({ AndroidBotsPane: () => null }));
 vi.mock("./ListSearchToolbar.android", () => ({ ListSearchToolbar: () => null }));
 vi.mock("./AndroidWorkspaceNavigation", () => ({
   AndroidWorkspaceNavigation: () => null,

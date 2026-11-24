@@ -134,6 +134,7 @@ function AppBarView(props: AppBarProps & { readonly searchState?: SearchState })
               }
             : undefined
         }
+        action={menu ? undefined : props.actions?.find((action) => !action.overflowOnly)}
         filter={
           menu
             ? {

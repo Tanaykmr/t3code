@@ -46,6 +46,7 @@ export interface PendingUserInputCardProps {
   readonly pendingUserInput: PendingUserInput;
   readonly maxHeight: DerivedValue<number>;
   readonly collapsed: boolean;
+  readonly compact?: boolean;
   readonly onToggleCollapsed: () => void;
   readonly onStopThread?: () => void;
   readonly cardProgress: SharedValue<number>;
@@ -84,6 +85,7 @@ function QuestionText(props: {
   readonly workspaceRoot: string | null;
   readonly setDirection: TextDirection | undefined;
   readonly preserveSoftBreaks?: boolean;
+  readonly headline?: boolean;
 }) {
   const styles = useMarkdownPreviewStyles();
   const markdown = useLiveThreadLinkLabels(props.markdown, props.environmentId);
@@ -109,7 +111,17 @@ function QuestionText(props: {
   return (
     <SelectableMarkdownText
       markdown={markdown}
-      textStyle={styles.nativeTextStyle}
+      textStyle={
+        props.headline
+          ? {
+              ...styles.nativeTextStyle,
+              fontSize: Math.max(18, styles.nativeTextStyle.fontSize),
+              fontFamily: "",
+              boldFontFamily: "",
+              headingFontFamily: "",
+            }
+          : styles.nativeTextStyle
+      }
       writingDirection={markdownProseDirection(markdown)}
       // Android's renderer aligns relative to each paragraph's direction.
       textAlign={
@@ -124,6 +136,7 @@ function QuestionText(props: {
 export function PendingUserInputCard(props: PendingUserInputCardProps) {
   const gt = useGT();
   const questionCount = props.pendingUserInput.questions.length;
+  const compact = props.compact === true && questionCount === 1;
   const canRespond = props.pendingUserInput.responseCapability !== "not_resumable";
   const isResponding = props.respondingUserInputId === props.pendingUserInput.requestId;
   const responseDisabled = !canRespond || isResponding;
@@ -247,14 +260,23 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
           onPress={props.onToggleCollapsed}
           className="flex-1 flex-row items-start gap-2"
         >
-          <View className="flex-1 gap-2.5">
-            <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary">
-              <T>User input needed</T>
-            </Text>
-            <Text className="font-t3-bold text-lg text-foreground">
-              <T>Fill in the pending answers</T>
-            </Text>
-          </View>
+          {compact ? (
+            <View className="flex-1 flex-row items-center gap-2 self-center">
+              <SymbolView name="list.number" size={14} tintColorClassName="accent-icon-muted" />
+              <Text className="text-xs font-semibold text-foreground-muted">
+                <T>User input needed</T>
+              </Text>
+            </View>
+          ) : (
+            <View className="flex-1 gap-2.5">
+              <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary">
+                <T>User input needed</T>
+              </Text>
+              <Text className="font-t3-bold text-lg text-foreground">
+                <T>Fill in the pending answers</T>
+              </Text>
+            </View>
+          )}
           <View className="h-8 w-8 items-center justify-center rounded-full bg-subtle-strong">
             <SymbolView
               name="chevron.down"
@@ -287,18 +309,21 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
           const draft = props.drafts[question.id];
           return (
             <View key={question.id} className="gap-2 pt-1">
-              <Text
-                className="font-t3-bold text-xs uppercase tracking-[1px] text-foreground-muted"
-                style={proseDirectionStyle(question.header, setDirection)}
-              >
-                {question.header}
-              </Text>
+              {!compact ? (
+                <Text
+                  className="font-t3-bold text-xs uppercase tracking-[1px] text-foreground-muted"
+                  style={proseDirectionStyle(question.header, setDirection)}
+                >
+                  {question.header}
+                </Text>
+              ) : null}
               <QuestionText
                 markdown={question.question}
                 environmentId={props.environmentId}
                 threadId={props.threadId}
                 workspaceRoot={props.workspaceRoot}
                 setDirection={setDirection}
+                headline={compact}
                 preserveSoftBreaks
               />
               <View className="gap-2">
@@ -315,7 +340,14 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                         disabled={responseDisabled}
                         className={cn(
                           "min-h-12 w-full rounded-2xl border px-3.5 py-3",
-                          selected ? "border-primary bg-primary/10" : "border-border bg-input",
+                          compact
+                            ? selected
+                              ? "border-foreground-muted bg-card-alt"
+                              : "border-border bg-card-alt"
+                            : selected
+                              ? "border-primary bg-primary/10"
+                              : "border-border bg-input",
+                          compact && "flex-row items-center gap-2",
                         )}
                         onPress={() =>
                           props.onSelectOption(
@@ -328,7 +360,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                         <View className="min-w-0 flex-1 gap-0.5">
                           <Text
                             className={cn(
-                              "font-t3-bold text-sm",
+                              compact ? "text-base font-medium" : "font-t3-bold text-sm",
                               selected ? "text-foreground" : "text-foreground-secondary",
                             )}
                             style={proseDirectionStyle(option.label, setDirection)}
@@ -344,6 +376,13 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                             </Text>
                           ) : null}
                         </View>
+                        {compact && selected ? (
+                          <SymbolView
+                            name="checkmark"
+                            size={16}
+                            tintColorClassName="accent-foreground"
+                          />
+                        ) : null}
                       </Pressable>
                       {option.preview ? (
                         <View className="px-3.5">
@@ -382,7 +421,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       <Button
         label={gt("Submit answers")}
         fullWidth
-        tone={props.answers ? "primary" : "secondary"}
+        tone={compact ? "contrast" : props.answers ? "primary" : "secondary"}
         disabled={!props.canOperateThread || responseDisabled || props.answers === null}
         onPress={() => void props.onSubmit()}
       />

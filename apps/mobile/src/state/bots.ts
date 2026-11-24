@@ -10,10 +10,14 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { scopedThreadKey } from "../lib/scopedEntities";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { orderBotInbox, pinnedBots } from "../features/bots/bot-list";
+import { environmentThreadShells } from "./threads";
 import { connectedEnvironmentIdsAtom, environmentPresentations } from "./presentation";
 import { serverEnvironment } from "./server";
 
 const EMPTY_BOTS: ReadonlyArray<EnvironmentBot> = Object.freeze([]);
+const emptyBotsAtom = Atom.make(EMPTY_BOTS);
 
 /** Connected environments whose server serves the bot directory. */
 export const botEnvironmentIdsAtom = Atom.make((get) => {
@@ -41,6 +45,28 @@ const environmentBotsAtom = Atom.make((get): ReadonlyArray<EnvironmentBot> => {
   });
   return entries.length === 0 ? EMPTY_BOTS : sortBots(entries);
 }).pipe(Atom.withLabel("mobile-environment-bots"));
+
+const botInboxAtom = Atom.make((get) => {
+  const entries = get(environmentBotsAtom);
+  const shellFor = ({ environmentId, bot }: EnvironmentBot) =>
+    get(
+      environmentThreadShells.quietThreadShellAtom(scopeThreadRef(environmentId, bot.dmThreadId)),
+    );
+  const ordered = orderBotInbox(entries, shellFor);
+  const pinned = pinnedBots(entries, shellFor);
+  const previous = Option.getOrNull(get.self<{ ordered: typeof ordered; pinned: typeof pinned }>());
+  return previous !== null &&
+    previous.ordered.length === ordered.length &&
+    ordered.every((entry, index) => entry === previous.ordered[index]) &&
+    previous.pinned.length === pinned.length &&
+    pinned.every((entry, index) => entry === previous.pinned[index])
+    ? previous
+    : { ordered, pinned };
+}).pipe(Atom.withLabel("mobile-bot-inbox"));
+
+export function useBotInbox() {
+  return useAtomValue(botInboxAtom);
+}
 
 const EMPTY_ROOMS: ReadonlyArray<EnvironmentBotRoom> = Object.freeze([]);
 
@@ -72,8 +98,8 @@ const botByDmThreadKeyAtom = Atom.make(
     ),
 ).pipe(Atom.withLabel("mobile-bot-by-dm-thread"));
 
-export function useEnvironmentBots(): ReadonlyArray<EnvironmentBot> {
-  return useAtomValue(environmentBotsAtom);
+export function useEnvironmentBots(enabled = true): ReadonlyArray<EnvironmentBot> {
+  return useAtomValue(enabled ? environmentBotsAtom : emptyBotsAtom);
 }
 
 export function useEnvironmentBotRooms(): ReadonlyArray<EnvironmentBotRoom> {

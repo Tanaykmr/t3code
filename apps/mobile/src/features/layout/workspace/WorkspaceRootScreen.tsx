@@ -114,6 +114,7 @@ function WorkspaceRootContent() {
   const { state } = workspace;
   // Settings is a workspace tab too; its list takes the place of the selected tab's.
   const settingsOpen = workspace.settingsOpen;
+  const phoneBots = !settingsOpen && state.selectedTab === "bots" && deviceType === "phone";
   const headerOnly = use(NativeWorkspaceTabActivityContext)?.headerOnly === true;
   const renderHeaderTitle = () => (
     <WorkspaceRootTitle
@@ -169,8 +170,9 @@ function WorkspaceRootContent() {
             unstable_headerLeftItems: () => [],
             // Beside a detail column the tab bar names the tab and the detail header the page,
             // so the sidebar keeps the brand.
-            headerTitle:
-              sidebarNavigation || (!settingsOpen && workspaceUsesColumns(state.selectedTab))
+            headerTitle: phoneBots
+              ? ""
+              : sidebarNavigation || (!settingsOpen && workspaceUsesColumns(state.selectedTab))
                 ? renderHeaderTitle
                 : undefined,
           }}

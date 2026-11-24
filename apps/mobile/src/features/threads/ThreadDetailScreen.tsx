@@ -1,3 +1,5 @@
+import { BotComposerSlot } from "../bots/BotRestoreFooter";
+import type { Bot } from "@t3tools/contracts";
 import { ChildThreadApprovals } from "./ChildThreadApprovals";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { useOpenThreadInspector } from "./thread-inspector-navigation";
@@ -280,6 +282,10 @@ export interface ThreadDetailScreenProps {
   readonly activeThreadBusy: boolean;
   readonly canStopThread: boolean;
   readonly queuedRunEdit: QueuedRunEdit | null;
+  readonly botChat?: {
+    readonly bot: Pick<Bot, "id" | "name">;
+    readonly archived: boolean;
+  };
   readonly composerDraftKey: string | null;
   readonly followUpBehavior: FollowUpBehavior;
   readonly canSteerActiveTurn: boolean;
@@ -817,6 +823,7 @@ function ThreadDetailBody(
         connectionError: props.connectionError,
         connectionState: props.connectionStateLabel,
         environmentLabel: props.environmentLabel,
+        showRetrying: props.botChat !== undefined,
         onReconnect: props.onReconnectEnvironment,
       },
       messages,
@@ -910,6 +917,26 @@ function ThreadDetailBody(
         label: goal.title,
         accessibilityLabel: `${goal.title}: ${goal.objective}`,
         actions: goalActions,
+      };
+    }
+    if (
+      props.botChat &&
+      !props.botChat.archived &&
+      props.activeThreadBusy &&
+      contentPresentationKind === "ready"
+    ) {
+      return {
+        kind: "working",
+        label: gt("Working…"),
+        action: props.canStopThread
+          ? {
+              label: gt("Stop", { $context: "verb, stops the thread" }),
+              accessibilityLabel: gt("Stop", { $context: "verb, stops the thread" }),
+              icon: "stop.fill",
+              disabled: !props.canOperateThread,
+              onPress: props.onStopThread,
+            }
+          : undefined,
       };
     }
     if (extensionStatus !== null && contentPresentationKind === "ready") {
@@ -1415,6 +1442,7 @@ function ThreadDetailBody(
   };
 
   const canCiteAssistantText =
+    !props.botChat?.archived &&
     props.composerDraftKey !== null &&
     !isProviderSubagent &&
     !composerSlotHidden &&
@@ -1849,10 +1877,15 @@ function ThreadDetailBody(
                             workspaceRoot={props.threadCwd}
                             canOperateThread={props.canOperateThread}
                             pendingUserInput={props.activePendingUserInput}
+                            compact={props.botChat !== undefined}
                             maxHeight={pendingUserInputMaxHeight}
                             collapsed={userInputCollapsed}
                             onToggleCollapsed={handleToggleUserInputCollapsed}
-                            onStopThread={props.onStopThread}
+                            onStopThread={
+                              props.botChat && props.activePendingUserInput.dismissible
+                                ? undefined
+                                : props.onStopThread
+                            }
                             cardProgress={userInputCardProgress}
                             cardCoverage={userInputCardCoverage}
                             onLayout={
@@ -1876,137 +1909,158 @@ function ThreadDetailBody(
                 </View>
 
                 <View style={composerSlotHidden ? { display: "none" } : undefined}>
-                  {isProviderSubagent ? (
-                    <View
-                      className="self-center px-3 pt-1.5"
-                      style={{
-                        width: "100%",
-                        maxWidth: contentMaxWidth,
-                        paddingBottom: composerBottomInset + 6,
-                      }}
-                    >
-                      <ProviderSubagentBar
-                        provider={providerSubagentProvider ?? null}
-                        modelLabel={
-                          providerSubagentCatalogModel?.name ??
-                          formatModelSlugName(props.selectedThread.modelSelection.model)
-                        }
-                        effortLabel={formatModelSelectionEffort(
-                          props.selectedThread.modelSelection,
-                          providerSubagentProvider?.models,
-                          reportedModelSelection,
-                        )}
-                        status={props.providerSubagentStatus ?? null}
-                        inspect={
-                          providerSubagentProvider?.driver === "antigravity"
-                            ? {
-                                environmentId: props.environmentId,
-                                threadId: props.selectedThread.id,
-                              }
-                            : null
-                        }
-                        onOpenParent={
-                          props.selectedThread.lineage.parentThreadId === null
-                            ? null
-                            : () =>
-                                openLinkedThread({
-                                  environmentId: String(props.environmentId),
-                                  threadId: String(props.selectedThread.lineage.parentThreadId),
-                                })
-                        }
-                      />
-                    </View>
-                  ) : (
-                    <>
-                      <ThreadComposer
-                        isDraft={Boolean(props.draftMode)}
-                        canOperateThread={props.canOperateThread}
-                        reportedModelSelection={reportedModelSelection}
-                        editorRef={composerEditorRef}
-                        placeholder={
-                          props.activePendingApproval
-                            ? props.activePendingApproval.supportsFeedback
-                              ? gt("Send feedback to decline this request")
-                              : gt("Send a message to decline and redirect the agent")
-                            : gt("Ask anything")
-                        }
-                        contentMaxWidth={contentMaxWidth}
-                        draftControls={props.draftMode?.controls(draftViewportHeight)}
-                        connectionState={props.connectionStateLabel}
-                        environmentLabel={props.environmentLabel}
-                        selectedThread={props.selectedThread}
-                        compactBeforeSend={props.compactBeforeSend ?? null}
-                        hasCompactableConversation={
-                          hasCompactableConversation && !props.isCompacting
-                        }
-                        {...(freshSessionAvailable
-                          ? {
-                              onFreshSession: () => setFreshSessionPending(selectedThreadKey, true),
-                            }
-                          : {})}
-                        offersSideChat={
-                          props.offersSideChat &&
-                          !props.draftMode &&
-                          props.canOperateThread &&
-                          props.queuedRunEdit === null &&
-                          props.activePendingApproval === null &&
-                          props.activePendingUserInput === null
-                        }
-                        serverConfig={props.serverConfig}
-                        queueCount={props.selectedThreadQueueCount}
-                        activeThreadBusy={props.activeThreadBusy}
-                        redirectsApproval={
-                          props.activePendingApprovals.length > 0 &&
-                          props.activePendingUserInput === null
-                        }
-                        canStopThread={props.canStopThread}
-                        environmentId={props.environmentId}
-                        projectCwd={props.threadCwd ?? props.projectWorkspaceRoot}
-                        // Keep follow-ups in the draft until server creation succeeds, or rejection strands them in the outbox.
-                        sendBlockedReason={
-                          props.draftMode
-                            ? props.draftMode.sendBlockedReason
-                            : props.creationState?.kind === "preparing" &&
-                                !props.creationState.serverOwned
-                              ? gt("Starting the task…")
+                  <BotComposerSlot
+                    restore={
+                      props.botChat?.archived
+                        ? {
+                            environmentId: props.environmentId,
+                            botId: props.botChat.bot.id,
+                            enabled:
+                              props.canOperateThread && props.connectionStateLabel === "connected",
+                          }
+                        : undefined
+                    }
+                    style={{
+                      width: "100%",
+                      maxWidth: contentMaxWidth,
+                      paddingBottom: composerBottomInset + 6,
+                    }}
+                  >
+                    {isProviderSubagent ? (
+                      <View
+                        className="self-center px-3 pt-1.5"
+                        style={{
+                          width: "100%",
+                          maxWidth: contentMaxWidth,
+                          paddingBottom: composerBottomInset + 6,
+                        }}
+                      >
+                        <ProviderSubagentBar
+                          provider={providerSubagentProvider ?? null}
+                          modelLabel={
+                            providerSubagentCatalogModel?.name ??
+                            formatModelSlugName(props.selectedThread.modelSelection.model)
+                          }
+                          effortLabel={formatModelSelectionEffort(
+                            props.selectedThread.modelSelection,
+                            providerSubagentProvider?.models,
+                            reportedModelSelection,
+                          )}
+                          status={props.providerSubagentStatus ?? null}
+                          inspect={
+                            providerSubagentProvider?.driver === "antigravity"
+                              ? {
+                                  environmentId: props.environmentId,
+                                  threadId: props.selectedThread.id,
+                                }
                               : null
-                        }
-                        interactionLocked={props.draftMode?.interactionLocked}
-                        draftKey={props.composerDraftKey ?? undefined}
-                        followUpBehavior={
-                          props.activePendingApprovals.length > 0 &&
-                          props.activePendingUserInput === null
-                            ? "steer"
-                            : props.followUpBehavior
-                        }
-                        canSteerActiveTurn={props.canSteerActiveTurn}
-                        hidden={composerSlotHidden}
-                        queuedEdit={
-                          props.queuedRunEdit === null
-                            ? null
-                            : {
-                                existingAttachments: props.queuedRunEdit.existingAttachments,
-                                saving: props.isSavingQueuedEdit,
-                                onRemoveExistingAttachment: props.onRemoveQueuedEditAttachment,
+                          }
+                          onOpenParent={
+                            props.selectedThread.lineage.parentThreadId === null
+                              ? null
+                              : () =>
+                                  openLinkedThread({
+                                    environmentId: String(props.environmentId),
+                                    threadId: String(props.selectedThread.lineage.parentThreadId),
+                                  })
+                          }
+                        />
+                      </View>
+                    ) : (
+                      <>
+                        <ThreadComposer
+                          isDraft={Boolean(props.draftMode)}
+                          canOperateThread={props.canOperateThread}
+                          reportedModelSelection={reportedModelSelection}
+                          editorRef={composerEditorRef}
+                          placeholder={
+                            props.activePendingApproval
+                              ? props.activePendingApproval.supportsFeedback
+                                ? gt("Send feedback to decline this request")
+                                : gt("Send a message to decline and redirect the agent")
+                              : props.botChat
+                                ? gt("Ask {name}", { name: props.botChat.bot.name })
+                                : gt("Ask anything")
+                          }
+                          contentMaxWidth={contentMaxWidth}
+                          draftControls={props.draftMode?.controls(draftViewportHeight)}
+                          connectionState={props.connectionStateLabel}
+                          environmentLabel={props.environmentLabel}
+                          selectedThread={props.selectedThread}
+                          compactBeforeSend={props.compactBeforeSend ?? null}
+                          hasCompactableConversation={
+                            hasCompactableConversation && !props.isCompacting
+                          }
+                          {...(freshSessionAvailable
+                            ? {
+                                onFreshSession: () =>
+                                  setFreshSessionPending(selectedThreadKey, true),
                               }
-                        }
-                        bottomInset={composerBottomInset}
-                        onChangeDraftMessage={props.onChangeDraftMessage}
-                        onPickDraftMedia={props.onPickDraftMedia}
-                        onPickDraftFiles={props.onPickDraftFiles}
-                        onNativePasteImages={props.onNativePasteImages}
-                        onNativePasteText={props.onNativePasteText}
-                        onRemoveDraftImage={props.onRemoveDraftImage}
-                        onStopThread={props.onStopThread}
-                        onResumeQueue={props.onResumeQueue}
-                        onSendMessage={handleSendMessage}
-                        onShowUsageLimits={showUsageLimits}
-                        canSwitchProvider={props.canSwitchThreadProvider}
-                        onHeightChange={handleComposerHeightChange}
-                        onEditorFocusChange={handleOwnedInputFocusChange}
-                      />
-                    </>
-                  )}
+                            : {})}
+                          offersSideChat={
+                            props.offersSideChat &&
+                            !props.draftMode &&
+                            props.canOperateThread &&
+                            props.queuedRunEdit === null &&
+                            props.activePendingApproval === null &&
+                            props.activePendingUserInput === null
+                          }
+                          serverConfig={props.serverConfig}
+                          queueCount={props.selectedThreadQueueCount}
+                          activeThreadBusy={props.activeThreadBusy}
+                          redirectsApproval={
+                            props.activePendingApprovals.length > 0 &&
+                            props.activePendingUserInput === null
+                          }
+                          canStopThread={floatingStatus?.kind !== "working" && props.canStopThread}
+                          environmentId={props.environmentId}
+                          projectCwd={props.threadCwd ?? props.projectWorkspaceRoot}
+                          // Keep follow-ups in the draft until server creation succeeds, or rejection strands them in the outbox.
+                          sendBlockedReason={
+                            props.draftMode
+                              ? props.draftMode.sendBlockedReason
+                              : props.creationState?.kind === "preparing" &&
+                                  !props.creationState.serverOwned
+                                ? gt("Starting the task…")
+                                : null
+                          }
+                          interactionLocked={props.draftMode?.interactionLocked}
+                          draftKey={props.composerDraftKey ?? undefined}
+                          followUpBehavior={
+                            props.activePendingApprovals.length > 0 &&
+                            props.activePendingUserInput === null
+                              ? "steer"
+                              : props.followUpBehavior
+                          }
+                          canSteerActiveTurn={props.canSteerActiveTurn}
+                          hidden={composerSlotHidden}
+                          queuedEdit={
+                            props.queuedRunEdit === null
+                              ? null
+                              : {
+                                  existingAttachments: props.queuedRunEdit.existingAttachments,
+                                  saving: props.isSavingQueuedEdit,
+                                  onRemoveExistingAttachment: props.onRemoveQueuedEditAttachment,
+                                }
+                          }
+                          bottomInset={composerBottomInset}
+                          onChangeDraftMessage={props.onChangeDraftMessage}
+                          onPickDraftMedia={props.onPickDraftMedia}
+                          onPickDraftFiles={props.onPickDraftFiles}
+                          onNativePasteImages={props.onNativePasteImages}
+                          onNativePasteText={props.onNativePasteText}
+                          onRemoveDraftImage={props.onRemoveDraftImage}
+                          onStopThread={props.onStopThread}
+                          onResumeQueue={props.onResumeQueue}
+                          onSendMessage={handleSendMessage}
+                          onShowUsageLimits={showUsageLimits}
+                          canSwitchProvider={props.canSwitchThreadProvider}
+                          onHeightChange={handleComposerHeightChange}
+                          onEditorFocusChange={handleOwnedInputFocusChange}
+                        />
+                      </>
+                    )}
+                  </BotComposerSlot>
                 </View>
               </View>
             </Animated.View>

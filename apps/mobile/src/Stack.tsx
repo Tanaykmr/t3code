@@ -35,6 +35,7 @@ import {
 import { PullRequestFilesSheet } from "./features/pull-requests/PullRequestFiles";
 import { PullRequestReviewSheet } from "./features/pull-requests/PullRequestReviewSheet";
 import { PullRequestReviewersScreen } from "./features/pull-requests/PullRequestReviewersScreen";
+import { ArchivedBotsScreen } from "./features/bots/ArchivedBotsScreen";
 import { BotEditorScreen } from "./features/bots/BotEditorScreen";
 import { BotOverviewScreen } from "./features/bots/BotOverviewScreen";
 import { BotRoomEditorScreen } from "./features/bots/BotRoomEditorScreen";
@@ -657,6 +658,10 @@ const RootStackConfig = createWorkspaceStackNavigator({
     IssueFilterSearch: createNativeStackScreen({
       screen: IssueFilterSearchScreen,
       options: SEARCH_SHEET_ROUTE,
+    }),
+    ArchivedBots: createNativeStackScreen({
+      screen: ArchivedBotsScreen,
+      options: pageRoute(),
     }),
     BotEditor: createNativeStackScreen({
       screen: BotEditorScreen,

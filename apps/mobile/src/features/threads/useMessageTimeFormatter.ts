@@ -8,7 +8,7 @@ function systemUses24HourClock() {
   return requireNativeModule<{ is24HourFormat(): boolean }>("T3NativeControls").is24HourFormat();
 }
 
-export function useMessageTimeFormatter() {
+export function useMessageTimeFormatter(yesterday?: string) {
   const [is24Hour, setIs24Hour] = useState(systemUses24HourClock);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Refresh the native clock preference when Android returns to the foreground.
   useEffect(() => {
@@ -18,5 +18,13 @@ export function useMessageTimeFormatter() {
     });
     return () => subscription.remove();
   }, []);
-  return useMemo(() => createMessageTimeFormatter(is24Hour), [is24Hour]);
+  return useMemo(
+    () =>
+      createMessageTimeFormatter(
+        is24Hour,
+        undefined,
+        yesterday === undefined ? undefined : { yesterday },
+      ),
+    [is24Hour, yesterday],
+  );
 }
