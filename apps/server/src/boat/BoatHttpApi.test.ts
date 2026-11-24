@@ -139,6 +139,14 @@ describe("BoatHttpApi", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("leaves a retention policy /me omits unknown", () => {
+    const { layer } = fakeBoat(() => json({ ok: true, user: { id: "usr_1", login: "me" } }));
+    return Effect.gen(function* () {
+      const api = yield* BoatApi;
+      expect((yield* api.account(KEY)).zeroDataRetention).toBeNull();
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("refuses an ID that is not Boat's shape before building a path", () => {
     const { requests, layer } = fakeBoat(() => json({}));
     return Effect.gen(function* () {

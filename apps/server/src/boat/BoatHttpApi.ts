@@ -174,7 +174,7 @@ const make = Effect.gen(function* () {
       return {
         accountId: user.id,
         label: user.displayName ?? user.login ?? user.id,
-        zeroDataRetention: user.zeroDataRetention ?? false,
+        zeroDataRetention: user.zeroDataRetention ?? null,
       };
     }),
     create: Effect.fn("BoatHttpApi.create")(function* (key, request) {

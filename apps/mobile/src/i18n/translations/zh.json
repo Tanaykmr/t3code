@@ -2041,6 +2041,7 @@
   "2a6546ebd34d51af": "正在使用 {account}",
   "f08da84c8b09cf78": "Boat 拒绝了已保存的密钥，请输入新的密钥。",
   "7d2d7d8aa74ed6aa": "添加一个限定权限的 Boat API 密钥，即可从此服务器创建机器。",
+  "a81c0fe784e7251e": "Boat 环境（可选）",
   "c04d0292ad9ee1b8": "Boat API 密钥",
   "f4dc85a721acbe07": "Boat 机器",
   "b5d849725c966b8b": "无法创建 Boat 机器",

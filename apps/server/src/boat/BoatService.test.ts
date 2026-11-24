@@ -12,7 +12,12 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { BoatApiError } from "./BoatApi.ts";
-import { FAKE_BOAT_KEY, type FakeBoatOptions, makeFakeBoat } from "./BoatApiFake.ts";
+import {
+  FAKE_BOAT_KEY,
+  FAKE_OTHER_WALLET_KEY,
+  type FakeBoatOptions,
+  makeFakeBoat,
+} from "./BoatApiFake.ts";
 import * as BoatService from "./BoatService.ts";
 
 let requestCounter = 0;
@@ -619,6 +624,53 @@ describe("BoatService", () => {
       yield* createSmall;
       const error = yield* Effect.flip(boat.setApiKey({ apiKey: null }));
       expect(error.code).toBe("invalid-state");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refuses a same-user key for another wallet while it manages machines", () => {
+    const { layer, secrets } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const stored = secrets.get("boat-api-key");
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      const error = yield* Effect.flip(boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY }));
+      expect(error.code).toBe("conflict");
+      expect(secrets.get("boat-api-key")).toEqual(stored);
+
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY })).toEqual({
+        status: "configured",
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect(
+    "keeps the Boat environment when a replaced key omits it, and clears it on null",
+    () => {
+      const { layer } = setup();
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* boat.setApiKey({ apiKey: FAKE_BOAT_KEY, environment: "t3code" });
+        yield* configure;
+        expect((yield* snapshot).account.environment).toBe("t3code");
+        yield* boat.setApiKey({ apiKey: FAKE_BOAT_KEY, environment: null });
+        expect((yield* snapshot).account.environment).toBeUndefined();
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("refuses to create when Boat does not report the retention policy", () => {
+    const { layer, fake } = setup({ zeroDataRetention: null });
+    return Effect.gen(function* () {
+      yield* configure;
+      const error = yield* Effect.flip(createSmall);
+      expect(error.code).toBe("invalid-state");
+      expect(fake.sandboxes.size).toBe(0);
     }).pipe(Effect.provide(layer));
   });
 });

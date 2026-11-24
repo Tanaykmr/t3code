@@ -2039,6 +2039,7 @@
   "2a6546ebd34d51af": "Verwendet {account}",
   "f08da84c8b09cf78": "Boat hat den gespeicherten Schlüssel abgelehnt. Gib einen neuen ein.",
   "7d2d7d8aa74ed6aa": "Füge einen eingeschränkten Boat-API-Schlüssel hinzu, um Rechner von diesem Server aus zu erstellen.",
+  "a81c0fe784e7251e": "Boat-Umgebung (optional)",
   "c04d0292ad9ee1b8": "Boat-API-Schlüssel",
   "f4dc85a721acbe07": "Boat-Rechner",
   "b5d849725c966b8b": "Boat-Rechner konnte nicht erstellt werden",

@@ -7745,6 +7745,7 @@
   "954f04a3731b6666": "Boat-Konto auf {environment}",
   "e35254a3e57bb3ee": "Schlüssel ersetzen",
   "c04d0292ad9ee1b8": "Boat-API-Schlüssel",
+  "a81c0fe784e7251e": "Boat-Umgebung (optional)",
   "d07f8134999c97ea": "Schlüssel speichern",
   "f4dc85a721acbe07": "Boat-Rechner",
   "cd4dfd94116cbc54": "{environment} kann T3 Code noch nicht auf einem neuen Boat-Rechner einrichten. Aktualisiere es auf eine Version, die das kann.",

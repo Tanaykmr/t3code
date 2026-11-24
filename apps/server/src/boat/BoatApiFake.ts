@@ -18,11 +18,14 @@ import {
 } from "./BoatApi.ts";
 
 export const FAKE_BOAT_KEY = "boat_fake_valid_key";
+/** The same Boat user, acting in another wallet (as an organization's key does). */
+export const FAKE_OTHER_WALLET_KEY = "boat_fake_other_wallet_key";
 
 interface FakeSandbox {
   sandbox: BoatSandbox;
   readonly requestBody: string;
   readonly guestId: EnvironmentId;
+  readonly wallet: string;
   startedAt: number;
 }
 
@@ -31,6 +34,8 @@ export interface FakeBoatOptions {
   readonly latency?: Effect.Effect<void>;
   /** False stands in for a release build, which cannot install T3 on a machine yet. */
   readonly bootstrapAvailable?: boolean;
+  /** Null stands in for a `/me` reply that omits the retention policy. */
+  readonly zeroDataRetention?: boolean | null;
 }
 
 const iso = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(millis));
@@ -56,15 +61,15 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
       failures.delete(name);
       return yield* failure;
     }
-    if (Redacted.value(key) !== FAKE_BOAT_KEY) {
+    if (Redacted.value(key) !== FAKE_BOAT_KEY && Redacted.value(key) !== FAKE_OTHER_WALLET_KEY) {
       return yield* new BoatApiError({ category: "unauthorized" });
     }
     return DateTime.toEpochMillis(yield* DateTime.now);
   });
 
-  const find = Effect.fn("FakeBoat.find")(function* (sandboxId: string) {
+  const find = Effect.fn("FakeBoat.find")(function* (key: BoatKey, sandboxId: string) {
     const entry = sandboxes.get(sandboxId);
-    if (entry === undefined) {
+    if (entry === undefined || entry.wallet !== Redacted.value(key)) {
       return yield* new BoatApiError({ category: "not-found", code: "not_found" });
     }
     return entry;
@@ -92,7 +97,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
     const body = [request.name, request.size, request.ttlSeconds].join("\u0000");
     const existing = idempotency.get(request.idempotencyKey);
     if (existing !== undefined) {
-      const entry = yield* find(existing);
+      const entry = yield* find(key, existing);
       if (entry.requestBody !== body) {
         return yield* new BoatApiError({ category: "conflict", code: "idempotency_key_reused" });
       }
@@ -102,6 +107,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
     const id = `bx_${String(nextId).padStart(8, "2")}`;
     const entry: FakeSandbox = {
       requestBody: body,
+      wallet: Redacted.value(key),
       guestId: EnvironmentId.make(`env-guest-${nextId}`),
       startedAt: now,
       sandbox: {
@@ -123,7 +129,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
 
   const stopSandbox = Effect.fn("FakeBoat.stop")(function* (key: BoatKey, sandboxId: string) {
     const now = yield* enter("stop", key);
-    const entry = yield* find(sandboxId);
+    const entry = yield* find(key, sandboxId);
     if (entry.sandbox.state !== "archived") archive(entry, now);
     return entry.sandbox.stopId;
   });
@@ -136,7 +142,12 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
   const api = BoatApi.of({
     account: Effect.fn("FakeBoat.account")(function* (key) {
       yield* enter("account", key);
-      return { accountId: "acct_fake", label: "fake@boat.dev", zeroDataRetention: false };
+      return {
+        accountId: "acct_fake",
+        label: "fake@boat.dev",
+        zeroDataRetention:
+          options.zeroDataRetention === undefined ? false : options.zeroDataRetention,
+      };
     }),
     create: Effect.fn("FakeBoat.createWithReply")(function* (key, request) {
       const sandbox = yield* createSandbox(key, request);
@@ -145,11 +156,12 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
     }),
     get: Effect.fn("FakeBoat.get")(function* (key, sandboxId) {
       yield* enter("get", key);
-      return (yield* find(sandboxId)).sandbox;
+      return (yield* find(key, sandboxId)).sandbox;
     }),
     list: Effect.fn("FakeBoat.list")(function* (key, labels) {
       yield* enter("list", key);
       return [...sandboxes.values()]
+        .filter((entry) => entry.wallet === Redacted.value(key))
         .map((entry) => entry.sandbox)
         .filter((sandbox) =>
           Object.entries(labels).every(([name, value]) => sandbox.labels[name] === value),
@@ -162,7 +174,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
     }),
     resume: Effect.fn("FakeBoat.resume")(function* (key, sandboxId, ttlSeconds, _environment) {
       const now = yield* enter("resume", key);
-      const entry = yield* find(sandboxId);
+      const entry = yield* find(key, sandboxId);
       if (entry.sandbox.state !== "archived") {
         return yield* new BoatApiError({
           category: "conflict",
@@ -178,7 +190,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
     }),
     delete: Effect.fn("FakeBoat.delete")(function* (key, sandboxId) {
       yield* enter("delete", key);
-      yield* find(sandboxId);
+      yield* find(key, sandboxId);
       sandboxes.delete(sandboxId);
       const operationId = `bdop_${sandboxId.slice(3).padEnd(32, "0")}`;
       deletions.add(operationId);
@@ -193,7 +205,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
     }),
     usage: Effect.fn("FakeBoat.usage")(function* (key, sandboxId) {
       const now = yield* enter("usage", key);
-      const entry = yield* find(sandboxId);
+      const entry = yield* find(key, sandboxId);
       const end = entry.sandbox.stoppedAt === null ? now : Date.parse(entry.sandbox.stoppedAt);
       // Small bills at half of Default's multiplier.
       const seconds = Math.max(0, Math.round((end - entry.startedAt) / 2000));
@@ -208,7 +220,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
     },
     ensure: Effect.fn("FakeBoat.bootstrap")(function* ({ key, sandboxId, expected }) {
       yield* enter("bootstrap", key);
-      const entry = yield* find(sandboxId);
+      const entry = yield* find(key, sandboxId);
       if (expected !== null && expected !== entry.guestId) {
         return yield* new BoatBootstrapError({ reason: "identity-mismatch" });
       }

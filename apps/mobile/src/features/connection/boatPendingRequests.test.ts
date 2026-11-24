@@ -68,7 +68,7 @@ describe("Boat pending requests", () => {
 
   it("keeps a create whose reply was lost and resends it once its controller connects", async () => {
     mocks.run.mockResolvedValueOnce(lost());
-    expect((await sendBoatRequest(create)).ok).toBe(false);
+    expect(await sendBoatRequest(create)).toMatchObject({ ok: false, answered: false });
     expect(saved()).toEqual([expect.objectContaining(create)]);
 
     await resendPendingBoatRequests(new Set());
@@ -85,7 +85,7 @@ describe("Boat pending requests", () => {
       AsyncResult.failure(Cause.fail(new BoatError({ code: "conflict", message: "used" }))),
     );
     const outcome = await sendBoatRequest(create);
-    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("used") });
+    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("used"), answered: true });
     expect(saved()).toEqual([]);
   });
 

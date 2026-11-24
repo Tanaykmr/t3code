@@ -7752,6 +7752,7 @@
   "954f04a3731b6666": "Boat-konto på {environment}",
   "e35254a3e57bb3ee": "Ersätt nyckel",
   "c04d0292ad9ee1b8": "Boat-API-nyckel",
+  "a81c0fe784e7251e": "Boat-miljö (valfritt)",
   "d07f8134999c97ea": "Spara nyckel",
   "f4dc85a721acbe07": "Boat-datorer",
   "cd4dfd94116cbc54": "{environment} kan ännu inte installera T3 Code på en ny Boat-dator. Uppdatera till en version som kan det.",

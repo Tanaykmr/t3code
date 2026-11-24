@@ -115,4 +115,17 @@ export function boatKeyRouteIsPrivate(socketUrl: string | null): boolean {
   }
 }
 
+/**
+ * Whether a failed Boat request got the controller's answer. Otherwise the request may still have
+ * been accepted, and a retry must reuse its request ID and inputs.
+ */
+export function boatRequestAnswered(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "_tag" in error &&
+    (error._tag === "BoatError" || error._tag === "EnvironmentAuthorizationError")
+  );
+}
+
 export const BOAT_TTL_CHOICES_SECONDS = [3600, 2 * 3600, 4 * 3600, 8 * 3600] as const;

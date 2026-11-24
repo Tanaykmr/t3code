@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   type BoatAction,
   boatKeyRouteIsPrivate,
+  boatRequestAnswered,
   BOAT_TTL_CHOICES_SECONDS,
   type BoatRow,
   type BoatTone,
@@ -272,6 +273,7 @@ function BoatKeyRow({
 }) {
   const gt = useGT();
   const [draft, setDraft] = useState("");
+  const [boatEnvironment, setBoatEnvironment] = useState(snapshot.account.environment ?? "");
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const setKey = useAtomCommand(serverEnvironment.setBoatApiKey, {
@@ -279,12 +281,12 @@ function BoatKeyRow({
     reportFailure: false,
   });
   const { account } = snapshot;
-  const save = async (apiKey: string | null) => {
+  const save = async (apiKey: string) => {
     // Checked again at send time: the route may have changed since the form rendered.
     const route = appAtomRegistry.get(
       environmentSession.preparedConnectionValueAtom(environment.environmentId),
     );
-    if (apiKey !== null && !boatKeyRouteIsPrivate(Option.getOrNull(route)?.socketUrl ?? null)) {
+    if (!boatKeyRouteIsPrivate(Option.getOrNull(route)?.socketUrl ?? null)) {
       setDraft("");
       toastManager.add({
         type: "error",
@@ -295,7 +297,10 @@ function BoatKeyRow({
       return;
     }
     setSaving(true);
-    const result = await setKey({ environmentId: environment.environmentId, input: { apiKey } });
+    const result = await setKey({
+      environmentId: environment.environmentId,
+      input: { apiKey, environment: boatEnvironment.trim() === "" ? null : boatEnvironment.trim() },
+    });
     setSaving(false);
     // The key never stays in component state once sent.
     setDraft("");
@@ -364,6 +369,17 @@ function BoatKeyRow({
             value={draft}
             disabled={saving}
             onChange={(event) => setDraft(event.target.value)}
+          />
+          <Input
+            autoComplete="off"
+            spellCheck={false}
+            className="w-48 max-w-full"
+            aria-label={gt("Boat environment (optional)")}
+            placeholder={gt("Boat environment (optional)")}
+            maxLength={120}
+            value={boatEnvironment}
+            disabled={saving}
+            onChange={(event) => setBoatEnvironment(event.target.value)}
           />
           <Button size="xs" type="submit" disabled={saving || draft.trim() === ""}>
             {saving ? <Spinner size="sm" /> : null}
@@ -434,8 +450,12 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
   const [name, setName] = useState("");
   const [size, setSize] = useState<BoatMachineSize>("small");
   const [ttlSeconds, setTtlSeconds] = useState<number>(BOAT_DEFAULT_TTL_SECONDS);
-  // One unanswered request ID per controller, so a retry on either resolves to its own operation.
-  const [pending, setPending] = useState<Readonly<Record<string, BoatRequestId>>>({});
+  // A create the controller may have accepted without answering. Its inputs stay locked so a
+  // retry repeats the same request rather than conflicting with it or making a second machine.
+  const [pending, setPending] = useState<{
+    readonly environmentId: EnvironmentId;
+    readonly requestId: BoatRequestId;
+  } | null>(null);
   const [creating, setCreating] = useState(false);
   const create = useAtomCommand(serverEnvironment.createBoat, {
     label: "boat create",
@@ -467,8 +487,8 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
   const rate = controller.snapshot.rates.find((entry) => entry.size === size);
   const submit = async () => {
     const targetId = controller.environment.environmentId;
-    const requestId = pending[targetId] ?? newRequestId();
-    setPending((current) => ({ ...current, [targetId]: requestId }));
+    const requestId = pending?.environmentId === targetId ? pending.requestId : newRequestId();
+    setPending({ environmentId: targetId, requestId });
     setCreating(true);
     const result = await create({
       environmentId: targetId,
@@ -476,18 +496,17 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
     });
     setCreating(false);
     if (result._tag === "Failure") {
-      if (!isAtomCommandInterrupted(result)) {
-        toastManager.add({
-          type: "error",
-          title: gt("Could not create the Boat machine"),
-          description: String(squashAtomCommandFailure(result)),
-        });
-      }
+      if (isAtomCommandInterrupted(result)) return;
+      const error = squashAtomCommandFailure(result);
+      if (boatRequestAnswered(error)) setPending(null);
+      toastManager.add({
+        type: "error",
+        title: gt("Could not create the Boat machine"),
+        description: String(error),
+      });
       return;
     }
-    setPending((current) =>
-      Object.fromEntries(Object.entries(current).filter(([id]) => id !== targetId)),
-    );
+    setPending(null);
     toastManager.add({
       type: "success",
       title: gt("Creating {name}", { name: name.trim() }),
@@ -496,6 +515,7 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
     onCreated();
   };
   const hours = ttlSeconds / 3600;
+  const locked = creating || pending !== null;
   return (
     <form
       className="space-y-3"
@@ -510,6 +530,7 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
           <select
             className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
             value={controller.environment.environmentId}
+            disabled={locked}
             onChange={(event) => setControllerId(event.target.value as EnvironmentId)}
           >
             {capable.map((entry) => (
@@ -527,7 +548,7 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
             value={name}
             maxLength={64}
             placeholder={gt("Scratch machine")}
-            disabled={creating}
+            disabled={locked}
             onChange={(event) => setName(event.target.value)}
           />
         </label>
@@ -536,7 +557,7 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
           <select
             className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
             value={size}
-            disabled={creating}
+            disabled={locked}
             onChange={(event) => setSize(event.target.value as BoatMachineSize)}
           >
             <option value="small">{gt("Small · 2 CPU, 4 GB")}</option>
@@ -550,7 +571,7 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
           <select
             className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
             value={ttlSeconds}
-            disabled={creating}
+            disabled={locked}
             onChange={(event) => setTtlSeconds(Number(event.target.value))}
           >
             {BOAT_TTL_CHOICES_SECONDS.map((seconds) => (

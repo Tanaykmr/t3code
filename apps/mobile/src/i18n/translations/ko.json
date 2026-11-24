@@ -2040,6 +2040,7 @@
   "2a6546ebd34d51af": "{account} 사용 중",
   "f08da84c8b09cf78": "Boat에서 저장된 키를 거부했습니다. 새 키를 입력하세요.",
   "7d2d7d8aa74ed6aa": "이 서버에서 머신을 만들려면 범위가 제한된 Boat API 키를 추가하세요.",
+  "a81c0fe784e7251e": "Boat 환경(선택 사항)",
   "c04d0292ad9ee1b8": "Boat API 키",
   "f4dc85a721acbe07": "Boat 머신",
   "b5d849725c966b8b": "Boat 머신을 만들 수 없습니다",

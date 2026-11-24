@@ -225,6 +225,7 @@ function BoatKeyRow(props: {
 }) {
   const gt = useGT();
   const [draft, setDraft] = useState("");
+  const [boatEnvironment, setBoatEnvironment] = useState(props.snapshot.account.environment ?? "");
   const [saving, setSaving] = useState(false);
   const setKey = useAtomCommand(serverEnvironment.setBoatApiKey, {
     label: "boat set api key",
@@ -253,7 +254,10 @@ function BoatKeyRow(props: {
     setSaving(true);
     const result = await setKey({
       environmentId: props.environmentId,
-      input: { apiKey: apiKey.trim() },
+      input: {
+        apiKey: apiKey.trim(),
+        environment: boatEnvironment.trim() === "" ? null : boatEnvironment.trim(),
+      },
     });
     setSaving(false);
     // The key is sent once and never kept in screen state.
@@ -285,14 +289,26 @@ function BoatKeyRow(props: {
           )}
         </Text>
       ) : props.canManage && account.status !== "configured" ? (
-        <SecretTextInput
-          accessibilityLabel={gt("Boat API key")}
-          placeholder="boat_…"
-          value={draft}
-          editable={!saving}
-          onChangeText={setDraft}
-          onSubmitEditing={(value) => void save(value)}
-        />
+        <>
+          <AppTextInput
+            accessibilityLabel={gt("Boat environment (optional)")}
+            placeholder={gt("Boat environment (optional)")}
+            maxLength={120}
+            autoCapitalize="none"
+            autoCorrect={false}
+            value={boatEnvironment}
+            editable={!saving}
+            onChangeText={setBoatEnvironment}
+          />
+          <SecretTextInput
+            accessibilityLabel={gt("Boat API key")}
+            placeholder="boat_…"
+            value={draft}
+            editable={!saving}
+            onChangeText={setDraft}
+            onSubmitEditing={(value) => void save(value)}
+          />
+        </>
       ) : null}
     </View>
   );
@@ -349,17 +365,22 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
   const [name, setName] = useState("");
   const [size, setSize] = useState<BoatMachineSize>("small");
   const [ttlSeconds, setTtlSeconds] = useState<number>(BOAT_TTL_CHOICES_SECONDS[0]);
-  // One unanswered request ID per controller, so a retry on either resolves to its own operation.
-  const [pending, setPending] = useState<Readonly<Record<string, BoatRequestId>>>({});
+  // A create the controller may have accepted without answering. Its inputs stay locked so a
+  // retry repeats the same request rather than conflicting with it or making a second machine.
+  const [pending, setPending] = useState<{
+    readonly environmentId: EnvironmentId;
+    readonly requestId: BoatRequestId;
+  } | null>(null);
   const [creating, setCreating] = useState(false);
   const controller =
     eligible.find((entry) => entry.environment.environmentId === controllerId) ?? eligible[0];
   if (controller === undefined) return null;
   const rate = controller.snapshot.rates.find((entry) => entry.size === size);
+  const locked = creating || pending !== null;
   const submit = async () => {
     const targetId = controller.environment.environmentId;
-    const requestId = pending[targetId] ?? newRequestId();
-    setPending((current) => ({ ...current, [targetId]: requestId }));
+    const requestId = pending?.environmentId === targetId ? pending.requestId : newRequestId();
+    setPending({ environmentId: targetId, requestId });
     setCreating(true);
     const outcome = await sendBoatRequest({
       kind: "create",
@@ -368,14 +389,13 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
     });
     setCreating(false);
     if (!outcome.ok) {
+      if (outcome.answered) setPending(null);
       if (outcome.error !== null) {
         Dialog.alert(gt("Could not create the Boat machine"), outcome.error);
       }
       return;
     }
-    setPending((current) =>
-      Object.fromEntries(Object.entries(current).filter(([id]) => id !== targetId)),
-    );
+    setPending(null);
     setName("");
     props.onCreated();
   };
@@ -387,44 +407,49 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
         })}
       </Text>
       <View className="gap-3 rounded-[26px] border-continuous bg-grouped-card p-4">
-        {eligible.length > 1 ? (
-          <SegmentedControl
-            options={eligible.map((entry) => ({
-              value: entry.environment.environmentId,
-              label: entry.environment.label,
-              accessibilityLabel: gt("Create on {environment}", {
-                environment: entry.environment.label,
-              }),
-            }))}
-            selected={controller.environment.environmentId}
-            onSelect={setControllerId}
+        <View
+          pointerEvents={locked ? "none" : "auto"}
+          className={cn("gap-3", locked && "opacity-60")}
+        >
+          {eligible.length > 1 ? (
+            <SegmentedControl
+              options={eligible.map((entry) => ({
+                value: entry.environment.environmentId,
+                label: entry.environment.label,
+                accessibilityLabel: gt("Create on {environment}", {
+                  environment: entry.environment.label,
+                }),
+              }))}
+              selected={controller.environment.environmentId}
+              onSelect={setControllerId}
+            />
+          ) : null}
+          <AppTextInput
+            accessibilityLabel={gt("Machine name")}
+            placeholder={gt("Scratch machine")}
+            maxLength={64}
+            value={name}
+            editable={!locked}
+            onChangeText={setName}
           />
-        ) : null}
-        <AppTextInput
-          accessibilityLabel={gt("Machine name")}
-          placeholder={gt("Scratch machine")}
-          maxLength={64}
-          value={name}
-          editable={!creating}
-          onChangeText={setName}
-        />
-        <SegmentedControl
-          options={[
-            { value: "small", label: gt("Small") },
-            { value: "default", label: gt("Default") },
-          ]}
-          selected={size}
-          onSelect={setSize}
-        />
-        <SegmentedControl
-          options={BOAT_TTL_CHOICES_SECONDS.map((seconds) => ({
-            value: seconds,
-            label: gt("{hours} h", { hours: seconds / 3600 }),
-            accessibilityLabel: gt("Stops after {hours} hours", { hours: seconds / 3600 }),
-          }))}
-          selected={ttlSeconds}
-          onSelect={setTtlSeconds}
-        />
+          <SegmentedControl
+            options={[
+              { value: "small", label: gt("Small") },
+              { value: "default", label: gt("Default") },
+            ]}
+            selected={size}
+            onSelect={setSize}
+          />
+          <SegmentedControl
+            options={BOAT_TTL_CHOICES_SECONDS.map((seconds) => ({
+              value: seconds,
+              label: gt("{hours} h", { hours: seconds / 3600 }),
+              accessibilityLabel: gt("Stops after {hours} hours", { hours: seconds / 3600 }),
+            }))}
+            selected={ttlSeconds}
+            onSelect={setTtlSeconds}
+          />
+        </View>
         {rate ? (
           <Text className="text-sm leading-normal text-foreground-muted">
             {gt(

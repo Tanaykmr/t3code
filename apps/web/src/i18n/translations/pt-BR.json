@@ -7746,6 +7746,7 @@
   "954f04a3731b6666": "Conta do Boat em {environment}",
   "e35254a3e57bb3ee": "Substituir chave",
   "c04d0292ad9ee1b8": "Chave de API do Boat",
+  "a81c0fe784e7251e": "Ambiente do Boat (opcional)",
   "d07f8134999c97ea": "Salvar chave",
   "f4dc85a721acbe07": "Máquinas do Boat",
   "cd4dfd94116cbc54": "{environment} ainda não consegue configurar o T3 Code em uma nova máquina Boat. Atualize para uma versão que consiga.",

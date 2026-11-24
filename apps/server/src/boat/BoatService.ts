@@ -995,7 +995,7 @@ export const make = Effect.gen(function* () {
           if (account.zero_data_retention !== 0) {
             return yield* fail(
               "invalid-state",
-              "This Boat account deletes stopped disks right away, so a stopped machine could not resume.",
+              "Boat did not confirm that this account keeps stopped disks, so a stopped machine might not resume.",
             );
           }
           const managedId = BoatManagedId.make(`boat_${input.requestId}`);
@@ -1086,18 +1086,53 @@ export const make = Effect.gen(function* () {
         "This key belongs to a different Boat account than the machines this server manages.",
       );
     }
+    // The same user's key for another wallet passes the account check but cannot see its machines.
+    if (!(yield* seesAnyMachine(Redacted.make(input.apiKey), servers))) {
+      return yield* fail(
+        "conflict",
+        "This key cannot see the Boat machines this server manages. Use a key for the same Boat wallet.",
+      );
+    }
+    const environment =
+      input.environment === undefined ? (current?.boat_environment ?? null) : input.environment;
     yield* persistence(secrets.set(API_KEY_SECRET, new TextEncoder().encode(input.apiKey)));
+    // 0 only when Boat says it keeps stopped disks; an unreported policy blocks create like 1.
     yield* persistence(sql`
       INSERT INTO boat_account (id, account_id, label, status, zero_data_retention, boat_environment)
       VALUES (1, ${account.value.accountId}, ${account.value.label}, 'configured', ${
-        account.value.zeroDataRetention ? 1 : 0
-      }, ${input.environment ?? null})
+        account.value.zeroDataRetention === false ? 0 : 1
+      }, ${environment})
       ON CONFLICT (id) DO UPDATE SET account_id = excluded.account_id, label = excluded.label,
         status = excluded.status, zero_data_retention = excluded.zero_data_retention,
         boat_environment = excluded.boat_environment
     `);
     yield* publish;
     return { status: "configured" as const };
+  });
+
+  /** True when `key` can read one of the machines' sandboxes, or there is none to read. */
+  const seesAnyMachine = Effect.fn("BoatService.seesAnyMachine")(function* (
+    key: BoatKey,
+    servers: ReadonlyArray<ServerRow>,
+  ) {
+    const sandboxIds = servers.flatMap((server) =>
+      server.sandbox_id === null ? [] : [server.sandbox_id],
+    );
+    if (sandboxIds.length === 0) return true;
+    for (const sandboxId of sandboxIds) {
+      const seen = yield* api.get(key, sandboxId).pipe(
+        Effect.as(true),
+        Effect.catchIf(
+          (error) => error.category === "not-found" || error.category === "unauthorized",
+          () => Effect.succeed(false),
+        ),
+        Effect.mapError(
+          () => new BoatError({ code: "provider-unavailable", message: "Could not reach Boat." }),
+        ),
+      );
+      if (seen) return true;
+    }
+    return false;
   });
 
   /** Refreshes one settled machine: an external archive, restart, or deletion shows up here. */

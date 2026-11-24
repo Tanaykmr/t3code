@@ -57,7 +57,8 @@ export interface BoatSandbox {
 export interface BoatAccount {
   readonly accountId: string;
   readonly label: string;
-  readonly zeroDataRetention: boolean;
+  /** Null when Boat does not report the policy. */
+  readonly zeroDataRetention: boolean | null;
 }
 
 export interface BoatUsage {

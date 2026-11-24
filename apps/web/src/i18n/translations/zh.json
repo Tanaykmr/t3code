@@ -7761,6 +7761,7 @@
   "954f04a3731b6666": "{environment} 上的 Boat 账户",
   "e35254a3e57bb3ee": "替换密钥",
   "c04d0292ad9ee1b8": "Boat API 密钥",
+  "a81c0fe784e7251e": "Boat 环境（可选）",
   "d07f8134999c97ea": "保存密钥",
   "f4dc85a721acbe07": "Boat 机器",
   "cd4dfd94116cbc54": "{environment} 还无法在新的 Boat 机器上设置 T3 Code。请将其更新到支持此功能的版本。",

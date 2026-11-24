@@ -1,6 +1,7 @@
 // iOS may suspend the app between sending a Boat create and reading its reply, so the create's
 // request ID and inputs (never the key) are saved first and replayed with the same ID. Stop,
 // Resume and Delete are not replayed: someone may have changed the machine in the meantime.
+import { boatRequestAnswered } from "@t3tools/client-runtime/boat";
 import {
   isAtomCommandInterrupted,
   runAtomCommand,
@@ -107,19 +108,10 @@ function commandFor(request: BoatPendingRequest) {
   }
 }
 
-/** A typed answer from the controller settles the request; a lost connection does not. */
-function settled(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "_tag" in error &&
-    (error._tag === "BoatError" || error._tag === "EnvironmentAuthorizationError")
-  );
-}
-
+/** `answered` is false when the request may still have been accepted. */
 type Outcome =
   | { readonly ok: true; readonly receipt: BoatOperationReceipt }
-  | { readonly ok: false; readonly error: string | null };
+  | { readonly ok: false; readonly error: string | null; readonly answered: boolean };
 
 async function send(request: BoatPendingRequest): Promise<Outcome> {
   const forget = () =>
@@ -133,10 +125,11 @@ async function send(request: BoatPendingRequest): Promise<Outcome> {
     await forget();
     return { ok: true, receipt: result.value };
   }
-  if (isAtomCommandInterrupted(result)) return { ok: false, error: null };
+  if (isAtomCommandInterrupted(result)) return { ok: false, error: null, answered: false };
   const error = squashAtomCommandFailure(result);
-  if (settled(error)) await forget();
-  return { ok: false, error: String(error) };
+  const answered = boatRequestAnswered(error);
+  if (answered) await forget();
+  return { ok: false, error: String(error), answered };
 }
 
 /** Sends a request; a create is saved first and refused if it cannot be saved. */
@@ -148,7 +141,11 @@ export async function sendBoatRequest(request: BoatPendingRequest): Promise<Outc
       { ...request, savedAt },
     ]);
     if (!saved) {
-      return { ok: false, error: m(msg("Could not save the request on this device. Try again.")) };
+      return {
+        ok: false,
+        error: m(msg("Could not save the request on this device. Try again.")),
+        answered: true,
+      };
     }
   }
   return send(request);
