@@ -2927,11 +2927,24 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+      // Provider enablement and workspace models come from the project the child runs in.
+      const destinationProject =
+        destinationProjectId === undefined
+          ? undefined
+          : yield* requireProject(destinationProjectId);
       const target = yield* resolveTargetRechecking({
-        parent,
+        parent:
+          destinationProject === undefined
+            ? parent
+            : {
+                thread: { ...parent.thread, projectId: destinationProject.id, worktreePath: null },
+              },
         target: input.target,
         providers,
-        cwd: yield* parentWorkspaceCwd(parent),
+        cwd:
+          destinationProject === undefined
+            ? yield* parentWorkspaceCwd(parent)
+            : destinationProject.workspaceRoot,
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
       });
       const runtimeMode = yield* resolveRuntimeMode(
@@ -2977,6 +2990,19 @@ const make = Effect.gen(function* () {
             );
         }
         workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
+      }
+      // The grant is checked again here: the user may have revoked it while the work was prepared.
+      if (
+        destinationProjectId !== undefined &&
+        Option.isSome(botTurnContext) &&
+        !((yield* botTurnContext.value.workTargets(parent.thread.id)) ?? []).includes(
+          destinationProjectId,
+        )
+      ) {
+        return yield* failure(
+          "invalid_request",
+          "The user has not allowed this bot to work in that project. Ask them to add it to your work targets.",
+        );
       }
       const parentNodeId = parentRun.rootNodeId;
       // The command commits the child's preparing run, which only this call
