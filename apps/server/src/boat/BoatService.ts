@@ -34,6 +34,7 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 import type * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
@@ -368,11 +369,14 @@ export const make = Effect.gen(function* () {
     managedId: string,
     sandboxId: string,
     done: (sandbox: BoatSandbox) => boolean,
+    options: { readonly yieldTo?: Effect.Effect<boolean, SqlError.SqlError> } = {},
   ) {
     for (let attempt = 0; ; attempt++) {
       const sandbox = yield* retryTransient(api.get(key, sandboxId));
       yield* observe(managedId, sandbox);
       if (done(sandbox)) return Option.some(sandbox);
+      // Returns the unfinished observation when other queued work should go first.
+      if (options.yieldTo !== undefined && (yield* options.yieldTo)) return Option.some(sandbox);
       if (sandbox.state === "error" || sandbox.state === "cancelled") {
         return yield* new OperationFailed({ code: "provider-rejected" });
       }
@@ -518,7 +522,11 @@ export const make = Effect.gen(function* () {
     server: ServerRow,
   ) {
     const sandboxId = server.sandbox_id;
-    if (sandboxId === null) return true;
+    if (sandboxId === null) {
+      // The create never allocated a machine, so there is nothing to stop; leave it settled.
+      yield* setServer(server.managed_id, { lifecycle: "failed" });
+      return true;
+    }
     yield* setStage(op.request_id, "stopping");
     yield* setServer(server.managed_id, { lifecycle: "stopping" });
     // After a restart the earlier stop may have finished; do not send another.
@@ -559,6 +567,10 @@ export const make = Effect.gen(function* () {
     // resume whose reply was lost may have been accepted.
     const current = yield* retryTransient(api.get(key, sandboxId));
     yield* observe(server.managed_id, current);
+    // A stop is waiting and the machine is not up: never wake it again, hand off to the stop.
+    if (!isLiveState(current.state) && (yield* hasPendingStop(server.managed_id))) {
+      return yield* new OperationRefused({ code: "provider-unavailable" });
+    }
     // This build cannot verify a guest: never wake one; one already woken is failed below.
     if (!bootstrap.available && current.state === "archived") {
       return yield* new OperationRefused({ code: "bootstrap-unavailable" });
@@ -575,11 +587,14 @@ export const make = Effect.gen(function* () {
       );
       if (sent === "unknown") {
         if (!(yield* hasPendingStop(server.managed_id))) return false;
-        // A stop is waiting: look once. A wake under way continues (the stop then runs); still
-        // archived settles the resume so the stop is not held behind repeated sends.
-        const after = yield* retryTransient(api.get(key, sandboxId));
-        yield* observe(server.managed_id, after);
-        if (after.state === "archived") {
+        // A stop is waiting: look once. Only a machine already live continues (the stop then
+        // runs); anything else, including a failed look, hands off to the stop.
+        const after = yield* retryTransient(api.get(key, sandboxId)).pipe(
+          Effect.asSome,
+          Effect.catch(() => Effect.succeedNone),
+        );
+        if (Option.isSome(after)) yield* observe(server.managed_id, after.value);
+        if (Option.isNone(after) || !isLiveState(after.value.state)) {
           return yield* new OperationRefused({ code: "provider-unavailable" });
         }
       }
@@ -593,8 +608,14 @@ export const make = Effect.gen(function* () {
         }
       }
     }
-    const live = yield* pollUntil(key, server.managed_id, sandboxId, (s) => isLiveState(s.state));
+    // A machine that has not come up yet hands off as soon as a stop is waiting.
+    const live = yield* pollUntil(key, server.managed_id, sandboxId, (s) => isLiveState(s.state), {
+      yieldTo: hasPendingStop(server.managed_id),
+    });
     if (Option.isNone(live)) return false;
+    if (!isLiveState(live.value.state)) {
+      return yield* new OperationRefused({ code: "provider-unavailable" });
+    }
     // This build cannot verify a guest. Nothing proves this controller woke it (it may have been
     // started from Boat's dashboard), so refuse without a cleanup stop; the row shows it live.
     if (!bootstrap.available) return yield* new OperationRefused({ code: "bootstrap-unavailable" });
@@ -717,7 +738,7 @@ export const make = Effect.gen(function* () {
         SELECT 1 FROM boat_operations
         WHERE managed_id = ${op.managed_id} AND kind = 'stop'
           AND stage NOT IN ('completed', 'failed')
-      ) THEN 'stopping' ELSE ${lifecycle} END
+      ) AND ${op.kind} = 'resume' THEN 'stopping' ELSE ${lifecycle} END
       WHERE managed_id = ${op.managed_id}
     `;
     yield* publish;

@@ -495,6 +495,30 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect(
+    "settles a stop on a create that never allocated instead of leaving it Stopping",
+    () => {
+      const { layer, fake } = setup({ bootstrapAvailable: false });
+      return Effect.gen(function* () {
+        yield* configure;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+        INSERT INTO boat_servers (managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at)
+        VALUES ('boat_never', 'acct_fake', 'Never', 'small', 3600, 'stopping', 'unknown', '1970-01-01T00:00:00.000Z')
+      `;
+        yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+        VALUES ('00000000-0000-4000-8000-0000000000fa', 'boat_never', 'create', '', 'queued', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z'),
+               ('00000000-0000-4000-8000-0000000000fb', 'boat_never', 'stop', 'boat_never', 'queued', '1970-01-01T00:00:01.000Z', '1970-01-01T00:00:01.000Z')
+      `;
+        yield* settle;
+        expect((yield* server("boat_never"))?.lifecycle).toBe("failed");
+        expect(fake.calls).not.toContain("create");
+        expect(fake.calls).not.toContain("stop");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("keeps the key while it still manages machines", () => {
     const { layer } = setup();
     return Effect.gen(function* () {
