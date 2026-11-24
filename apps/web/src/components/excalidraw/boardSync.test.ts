@@ -563,6 +563,43 @@ describe("board sync", () => {
     expect(ids.includes("box")).toBe(ids.includes("label"));
   });
 
+  it("uploads a group's extra image bytes first, then commits the group whole", () => {
+    const session = synced([]);
+    const images = Array.from({ length: 9 }, (_, index) =>
+      element(`i${index}`, { type: "image", fileId: `f${index}`, groupIds: ["diagram"] }),
+    );
+    const arrow = element("arrow", {
+      type: "arrow",
+      groupIds: ["diagram"],
+      endBinding: { elementId: "i8", focus: 0, gap: 1 },
+    });
+    observeEditor(session, [...images, arrow], "#ffffff");
+    const editorFiles = Object.fromEntries(
+      images.map((_, index) => [`f${index}`, { mimeType: "image/png", dataURL: "data:" }]),
+    );
+    const input = { committedFileIds: new Set<string>(), editorFiles, mutationId: "m1" };
+    const staged = takeBatch(session, input)!;
+    expect(staged.operations).toHaveLength(0);
+    expect(staged.files).toHaveLength(8);
+    acknowledge(session, { revision: 1, orderRevision: 0, elements: [] });
+    const whole = takeBatch(session, { ...input, mutationId: "m2" })!;
+    expect(whole.operations).toHaveLength(10);
+    expect(whole.files.map((file) => file.id)).toEqual(["f8"]);
+  });
+
+  it("keeps a native group's members in one batch", () => {
+    const members = Array.from({ length: 501 }, (_, index) =>
+      element(`g${index}`, { groupIds: ["group"] }),
+    );
+    const session = synced(members);
+    observeEditor(
+      session,
+      members.map((record) => ({ ...record, version: 2, x: 5 })),
+      "#ffffff",
+    );
+    expect(take(session)?.operations).toHaveLength(501);
+  });
+
   it("holds remote records under local drafts and gestures, and applies the rest", () => {
     const session = synced([element("a"), element("b"), element("c")]);
     observeEditor(

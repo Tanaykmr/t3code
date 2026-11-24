@@ -1,4 +1,5 @@
 import {
+  BOARD_BATCH_MAX_BYTES,
   BOARD_BATCH_MAX_FILES,
   type BoardApplyResult,
   type BoardElement,
@@ -45,6 +46,8 @@ export interface BoardSession {
   /** Order revision each draft started from, so a reorder is fenced by what the user saw. */
   readonly draftOrderRevision: Map<string, number>;
   readonly receipts: Map<string, Receipt>;
+  /** Image files committed by our own batches, before the stream lists them. */
+  readonly uploadedFiles: Set<string>;
   shownBackground: string | null;
   draftBackground: string | null;
   /** Revision of our last background commit; older stream values must not roll it back. */
@@ -63,6 +66,7 @@ export function createBoardSession(): BoardSession {
     drafts: new Map(),
     draftOrderRevision: new Map(),
     receipts: new Map(),
+    uploadedFiles: new Set(),
     shownBackground: null,
     draftBackground: null,
     backgroundRevision: 0,
@@ -172,6 +176,8 @@ const basis = (session: BoardSession, id: string): ShownRecord | undefined =>
 const SOFT_OPERATIONS = 500;
 const SOFT_ELEMENT_BYTES = 4 * 1024 * 1024;
 const SOFT_TOTAL_BYTES = 20 * 1024 * 1024;
+// Under the server's payload cap, with room for the batch envelope.
+const HARD_TOTAL_BYTES = BOARD_BATCH_MAX_BYTES - 1024 * 1024;
 
 /** Ids an element is linked to: its container, labels, frame, and bound shapes or arrows. */
 const linksOf = (element: BoardElement | undefined): ReadonlyArray<string> => {
@@ -214,16 +220,29 @@ function connectedDrafts(
     return root;
   };
   for (const id of session.drafts.keys()) parent.set(id, id);
+  // Members of one native group move together, so they save together too.
+  const firstInGroup = new Map<string, string>();
   for (const [id, draft] of session.drafts) {
     const previous = session.receipts.get(id)?.record ?? committedRecord?.(id);
     for (const linked of [...linksOf(draft), ...linksOf(previous)]) {
       if (parent.has(linked)) parent.set(find(linked), find(id));
     }
+    for (const record of [draft, previous]) {
+      const groupIds = record?.["groupIds"];
+      if (!Array.isArray(groupIds)) continue;
+      for (const group of groupIds) {
+        const first = firstInGroup.get(String(group));
+        if (first === undefined) firstInGroup.set(String(group), id);
+        else parent.set(find(first), find(id));
+      }
+    }
   }
   const groups = new Map<string, Array<[string, BoardElement]>>();
   for (const entry of session.drafts) {
     const root = find(entry[0]);
-    groups.set(root, [...(groups.get(root) ?? []), entry]);
+    const members = groups.get(root);
+    if (members === undefined) groups.set(root, [entry]);
+    else members.push(entry);
   }
   return [...groups.values()];
 }
@@ -277,23 +296,53 @@ export function takeBatch(
     ) {
       break;
     }
-    for (const [id, element] of group) {
-      const size = sizeOf(id, element);
-      // An image travels with its bytes, or waits until they are loaded and the batch has room.
-      if (isImage(element) && !element.isDeleted && !input.committedFileIds.has(element.fileId)) {
-        if (!files.some((entry) => entry.id === element.fileId)) {
-          const file = input.editorFiles[element.fileId];
-          // A new image waits for its bytes, or for a batch with room for them. Only creates
-          // wait, and a create arriving after its frame or container is always safe.
-          if (file === undefined || files.length >= BOARD_BATCH_MAX_FILES) continue;
-          totalBytes += file.dataURL.length;
+    // A group's new image bytes go with it. Bytes still loading hold the whole group back;
+    // bytes that do not fit one batch are uploaded first, on their own, so the group's
+    // records still commit together.
+    const needed = [
+      ...new Set(
+        group.flatMap(([, element]) =>
+          isImage(element) &&
+          !element.isDeleted &&
+          !input.committedFileIds.has(element.fileId) &&
+          !session.uploadedFiles.has(element.fileId) &&
+          !files.some((entry) => entry.id === element.fileId)
+            ? [element.fileId]
+            : [],
+        ),
+      ),
+    ];
+    const neededFiles = needed.map((fileId) => ({ fileId, file: input.editorFiles[fileId] }));
+    if (neededFiles.some(({ file }) => file === undefined)) continue;
+    const neededBytes = neededFiles.reduce((total, { file }) => total + file!.dataURL.length, 0);
+    if (
+      files.length + neededFiles.length > BOARD_BATCH_MAX_FILES ||
+      totalBytes + groupBytes + neededBytes > HARD_TOTAL_BYTES
+    ) {
+      if (operations.length === 0 && files.length === 0) {
+        for (const { fileId, file } of neededFiles) {
+          if (files.length >= BOARD_BATCH_MAX_FILES) break;
+          if (files.length > 0 && totalBytes + file!.dataURL.length > HARD_TOTAL_BYTES) break;
+          totalBytes += file!.dataURL.length;
           files.push({
-            id: element.fileId,
-            mimeType: file.mimeType as BoardFileMimeType,
-            dataURL: file.dataURL,
+            id: fileId,
+            mimeType: file!.mimeType as BoardFileMimeType,
+            dataURL: file!.dataURL,
           });
         }
       }
+      break;
+    }
+    for (const { fileId, file } of neededFiles) {
+      totalBytes += file!.dataURL.length;
+      files.push({
+        id: fileId,
+        mimeType: file!.mimeType as BoardFileMimeType,
+        dataURL: file!.dataURL,
+      });
+    }
+    for (const [id, element] of group) {
+      const size = sizeOf(id, element);
       const shown = basis(session, id);
       const settled = element.type === TOMBSTONE && (shown === undefined || shown.isDeleted);
       if (shown === undefined || settled) {
@@ -323,7 +372,7 @@ export function takeBatch(
   }
   const settings =
     session.draftBackground === null ? undefined : { viewBackgroundColor: session.draftBackground };
-  if (operations.length === 0 && settings === undefined) return null;
+  if (operations.length === 0 && settings === undefined && files.length === 0) return null;
   session.pending = {
     mutationId: input.mutationId,
     expectedOrderRevision: fence,
@@ -369,6 +418,7 @@ export function acknowledge(session: BoardSession, result: BoardApplyResult): vo
     }
     if (session.shownOrderRevision === based) session.shownOrderRevision = result.orderRevision;
   }
+  for (const file of pending.files) session.uploadedFiles.add(file.id);
   if (pending.settings !== undefined) {
     session.backgroundRevision = result.revision;
     session.shownBackground = pending.settings.viewBackgroundColor;

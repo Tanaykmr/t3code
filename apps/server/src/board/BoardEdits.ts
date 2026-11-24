@@ -807,7 +807,14 @@ export const compileBoardEdits = (input: {
       return { _tag: "Invalid", message: `${where}: a ${target.type} cannot hold a label.` };
     }
 
-    // A frame's children move with it in the editor; that is not supported here yet.
+    // A frame's children move with it in the editor, and a framed shape moved past its frame
+    // is clipped from view; neither is supported here yet.
+    if ((moves || resizes) && typeof target.frameId === "string") {
+      return {
+        _tag: "Invalid",
+        message: `${where}: "${edit.id}" is inside a frame, and moving or resizing framed shapes is not supported yet.`,
+      };
+    }
     if ((moves || resizes) && (target.type === "frame" || target.type === "magicframe")) {
       return {
         _tag: "Invalid",

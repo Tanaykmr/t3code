@@ -445,7 +445,19 @@ layer("board toolkit", (it) => {
       ).toMatchObject({ code: "invalid_request", message: expect.stringContaining("rotated") });
 
       yield* userEdit(threadId, ids.a!, { type: "frame" });
+      // A shape inside a live frame cannot be moved by an agent.
+      yield* userEdit(threadId, ids.b!, { frameId: ids.a!, angle: 0 });
       read = yield* callAs(as, "board_get", {});
+      const framed = read.elements.find((element) => element.id === ids.b)!;
+      expect(
+        yield* callAs(as, "board_apply", {
+          revision: read.revision,
+          edits: [{ op: "patch", id: framed.id, expected: token(framed), x: 4000 }],
+        }).pipe(Effect.flip),
+      ).toMatchObject({
+        code: "invalid_request",
+        message: expect.stringContaining("inside a frame"),
+      });
       const frame = read.elements.find((element) => element.id === ids.a)!;
       expect(
         yield* callAs(as, "board_apply", {
