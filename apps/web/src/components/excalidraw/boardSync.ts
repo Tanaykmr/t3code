@@ -91,17 +91,16 @@ export function observeEditor(
   for (const element of elements) {
     present.add(element.id);
     const queued = session.drafts.get(element.id);
-    if (queued?.type === TOMBSTONE && !element.isDeleted) {
-      // A record an import dropped came back: cancel its deletion, or restore it after the
-      // deletion already in flight lands.
-      if (session.pending?.sent.get(element.id)?.draft === queued) {
+    const deleting = session.pending?.sent.get(element.id)?.draft.type === TOMBSTONE;
+    if (!element.isDeleted && (queued?.type === TOMBSTONE || (deleting && queued === undefined))) {
+      // A record an import dropped came back. With its deletion in flight it is restored once
+      // that lands; otherwise the queued deletion is cancelled. Either way it keeps its fence.
+      const started = session.draftOrderRevision.get(element.id) ?? session.shownOrderRevision;
+      session.drafts.delete(element.id);
+      session.draftOrderRevision.delete(element.id);
+      if (deleting || session.baseline.get(element.id) !== editorStamp(element)) {
         session.drafts.set(element.id, JSON.parse(JSON.stringify(element)) as BoardElement);
-      } else {
-        session.drafts.delete(element.id);
-        session.draftOrderRevision.delete(element.id);
-        if (session.baseline.get(element.id) !== editorStamp(element)) {
-          session.drafts.set(element.id, JSON.parse(JSON.stringify(element)) as BoardElement);
-        }
+        session.draftOrderRevision.set(element.id, started);
       }
       changed = true;
       continue;
@@ -334,7 +333,12 @@ export function rejectPending(session: BoardSession): void {
     if (session.shown.has(id)) session.shown.delete(id);
     else session.discard.add(id);
   }
-  if (pending.settings !== undefined) session.draftBackground = null;
+  if (pending.settings !== undefined) {
+    // The editor may still show the rejected color; forgetting the shown one re-applies the
+    // committed color instead of saving the rejected one on the next observation.
+    session.draftBackground = null;
+    session.shownBackground = null;
+  }
   session.rejected = rejected.length > 0 ? rejected : null;
   session.pending = null;
 }

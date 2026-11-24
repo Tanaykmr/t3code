@@ -380,6 +380,31 @@ describe("board sync", () => {
     });
   });
 
+  it("restores a record dropped and restored twice while its deletion is in flight", () => {
+    const session = synced([element("a")]);
+    observeEditor(session, [], "#ffffff");
+    take(session);
+    observeEditor(session, [element("a")], "#ffffff");
+    observeEditor(session, [], "#ffffff");
+    observeEditor(session, [element("a")], "#ffffff");
+    acknowledge(session, {
+      revision: 2,
+      orderRevision: 1,
+      previousOrderRevision: 1,
+      elements: [{ id: "a", version: 3, versionNonce: 30, index: "aa" }],
+    });
+    expect(take(session, "m2")?.operations[0]).toMatchObject({ type: "restore" });
+  });
+
+  it("re-shows the committed background after a rejected color change", () => {
+    const session = synced([element("a")]);
+    observeEditor(session, [element("a", { version: 2, x: 4 })], "#ff0000");
+    take(session);
+    rejectPending(session);
+    expect(session.shownBackground).toBeNull();
+    expect(session.draftBackground).toBeNull();
+  });
+
   it("holds remote records under local drafts and gestures, and applies the rest", () => {
     const session = synced([element("a"), element("b"), element("c")]);
     observeEditor(

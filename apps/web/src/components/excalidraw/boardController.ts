@@ -176,7 +176,8 @@ export class BoardController {
         elements as ReadonlyArray<BoardElement>,
         appState.viewBackgroundColor,
       );
-    if (wasHeld) this.showCanonical();
+    // A change to drafts can release records that were held behind them.
+    if (wasHeld || edited) this.showCanonical();
     // A draft waiting for its image bytes goes out once the editor has loaded them.
     const waiting =
       !edited && this.session.pending === null && this.session.drafts.size > 0 && input.canEdit;

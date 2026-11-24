@@ -468,7 +468,8 @@ export const compileBoardEdits = (input: {
    * shape changed, only the end bound to it moves; the other end keeps its native placement.
    */
   const routeArrow = (arrowId: string, seed?: ReadonlyArray<Point>, movedId?: string) => {
-    if (read(arrowId)?.elbowed === true) {
+    // Elbow and rotated arrows need the editor's own geometry to reroute.
+    if (read(arrowId)?.elbowed === true || (read(arrowId)?.angle ?? 0) !== 0) {
       movesElbow = true;
       return;
     }
@@ -809,7 +810,7 @@ export const compileBoardEdits = (input: {
     if (movesElbow) {
       return {
         _tag: "Invalid",
-        message: `${where}: "${edit.id}" has an elbow connector, and rerouting one is not supported yet. Leave its size and position, or delete the connector first.`,
+        message: `${where}: "${edit.id}" has an elbow or rotated connector, and rerouting one is not supported yet. Leave its size and position, or delete the connector first.`,
       };
     }
   }
