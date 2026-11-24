@@ -1,6 +1,6 @@
-// iOS may suspend or kill the app between sending a Boat request and reading its reply. The
-// request ID and inputs (never the key) are saved first, so the same request can be sent again
-// and the controller answers with the operation it already started.
+// iOS may suspend the app between sending a Boat create and reading its reply, so the create's
+// request ID and inputs (never the key) are saved first and replayed with the same ID. Stop,
+// Resume and Delete are not replayed: someone may have changed the machine in the meantime.
 import {
   isAtomCommandInterrupted,
   runAtomCommand,
@@ -12,13 +12,19 @@ import type {
   BoatOperationReceipt,
   EnvironmentId,
 } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
 import * as SecureStore from "expo-secure-store";
+import { msg } from "gt-react-native";
 
+import { m } from "../../i18n/messages";
 import { whenProtectedDataAvailable } from "../../lib/protectedData";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { environmentPresentations } from "../../state/presentation";
 import { serverEnvironment } from "../../state/server";
 
 const storageKey = "t3code.boat-pending.v1";
+/** An unanswered create older than this is dropped rather than started late. */
+const PENDING_CREATE_TTL_MS = 60 * 60 * 1000;
 
 export type BoatPendingRequest =
   | {
@@ -32,6 +38,8 @@ export type BoatPendingRequest =
       readonly input: BoatLifecycleInput;
     };
 
+type SavedCreate = Extract<BoatPendingRequest, { kind: "create" }> & { readonly savedAt: number };
+
 let queue: Promise<unknown> = Promise.resolve();
 /** One writer at a time, so two requests never overwrite each other's entry. */
 function serialized<A>(task: () => Promise<A>): Promise<A> {
@@ -40,27 +48,29 @@ function serialized<A>(task: () => Promise<A>): Promise<A> {
   return next;
 }
 
-async function load(): Promise<ReadonlyArray<BoatPendingRequest>> {
+/** Null when the store could not be read, so callers leave it untouched. */
+async function load(): Promise<ReadonlyArray<SavedCreate> | null> {
   try {
     await whenProtectedDataAvailable();
     const raw = await SecureStore.getItemAsync(storageKey);
     const value: unknown = raw === null ? [] : JSON.parse(raw);
-    return Array.isArray(value) ? (value as ReadonlyArray<BoatPendingRequest>) : [];
+    return Array.isArray(value) ? (value as ReadonlyArray<SavedCreate>) : [];
   } catch {
-    return [];
+    return null;
   }
 }
 
-async function save(requests: ReadonlyArray<BoatPendingRequest>) {
-  try {
-    await SecureStore.setItemAsync(storageKey, JSON.stringify(requests));
-  } catch {
-    // Recovery is best effort; the request itself still goes out.
-  }
-}
-
-const update = (change: (requests: ReadonlyArray<BoatPendingRequest>) => BoatPendingRequest[]) =>
-  serialized(async () => save(change(await load())));
+const update = (change: (saved: ReadonlyArray<SavedCreate>) => SavedCreate[]) =>
+  serialized(async () => {
+    const saved = await load();
+    if (saved === null) return false;
+    try {
+      await SecureStore.setItemAsync(storageKey, JSON.stringify(change(saved)));
+      return true;
+    } catch {
+      return false;
+    }
+  });
 
 function commandFor(request: BoatPendingRequest) {
   switch (request.kind) {
@@ -93,29 +103,78 @@ function settled(error: unknown): boolean {
   );
 }
 
-/** Saves the request, sends it, and forgets it once the controller has answered. */
-export async function sendBoatRequest(
-  request: BoatPendingRequest,
-): Promise<
+type Outcome =
   | { readonly ok: true; readonly receipt: BoatOperationReceipt }
-  | { readonly ok: false; readonly error: string | null }
-> {
-  const sameRequest = (entry: BoatPendingRequest) =>
-    entry.input.requestId === request.input.requestId;
-  await update((requests) => [...requests.filter((entry) => !sameRequest(entry)), request]);
+  | { readonly ok: false; readonly error: string | null };
+
+async function send(request: BoatPendingRequest): Promise<Outcome> {
+  const forget = () =>
+    request.kind === "create"
+      ? update((saved) =>
+          saved.filter((entry) => entry.input.requestId !== request.input.requestId),
+        )
+      : Promise.resolve(true);
   const result = await commandFor(request);
   if (result._tag === "Success") {
-    await update((requests) => requests.filter((entry) => !sameRequest(entry)));
+    await forget();
     return { ok: true, receipt: result.value };
   }
   if (isAtomCommandInterrupted(result)) return { ok: false, error: null };
   const error = squashAtomCommandFailure(result);
-  if (settled(error)) await update((requests) => requests.filter((entry) => !sameRequest(entry)));
+  if (settled(error)) await forget();
   return { ok: false, error: String(error) };
 }
 
-/** Sends again every saved request for the controllers now connected. */
+/** Sends a request; a create is saved first and refused if it cannot be saved. */
+export async function sendBoatRequest(request: BoatPendingRequest): Promise<Outcome> {
+  if (request.kind === "create") {
+    const savedAt = Date.now();
+    const saved = await update((entries) => [
+      ...entries.filter((entry) => entry.input.requestId !== request.input.requestId),
+      { ...request, savedAt },
+    ]);
+    if (!saved) {
+      return { ok: false, error: m(msg("Could not save the request on this device. Try again.")) };
+    }
+  }
+  return send(request);
+}
+
+/** Sends again every saved create for the controllers now connected, and drops stale ones. */
 export async function resendPendingBoatRequests(connected: ReadonlySet<EnvironmentId>) {
-  const pending = (await serialized(load)).filter((entry) => connected.has(entry.environmentId));
-  for (const request of pending) await sendBoatRequest(request);
+  const saved = await serialized(load);
+  if (saved === null) return;
+  const now = Date.now();
+  const stale = saved.filter((entry) => now - entry.savedAt > PENDING_CREATE_TTL_MS);
+  if (stale.length > 0) {
+    await update((entries) => entries.filter((entry) => !stale.includes(entry)));
+  }
+  for (const entry of saved) {
+    if (stale.includes(entry) || !connected.has(entry.environmentId)) continue;
+    const { savedAt: _savedAt, ...request } = entry;
+    await send(request);
+  }
+}
+
+const connectedBoatControllersAtom = Atom.make((get) =>
+  [...get(environmentPresentations.presentationsAtom).entries()]
+    .flatMap(([environmentId, presentation]) =>
+      presentation.connection.phase === "connected" &&
+      presentation.serverConfig?.boatEnvironments === true
+        ? [environmentId]
+        : [],
+    )
+    .join("\n"),
+).pipe(Atom.withLabel("mobile:boat-connected-controllers"));
+
+/** App-lifetime: whenever a Boat controller connects, finish creates left unanswered. */
+export function installBoatRequestRecovery(): () => void {
+  return appAtomRegistry.subscribe(
+    connectedBoatControllersAtom,
+    (key) => {
+      if (key === "") return;
+      void resendPendingBoatRequests(new Set(key.split("\n") as EnvironmentId[]));
+    },
+    { immediate: true },
+  );
 }

@@ -7,7 +7,7 @@ import {
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { boatCost, boatRows } from "./boat.ts";
+import { boatCost, boatKeyRouteIsPrivate, boatRows } from "./boat.ts";
 
 // Wire JSON as a controller sends it; web and mobile both read rows through boatRows.
 const CONTROLLER = EnvironmentId.make("env-controller");
@@ -164,6 +164,15 @@ describe("boatRows on a controller that cannot install T3", () => {
       nowMs,
     });
     expect([...(byId(list, "boat_stopped")?.actions ?? [])]).toEqual(["delete"]);
+  });
+});
+
+describe("boatKeyRouteIsPrivate", () => {
+  it("allows TLS, this machine and relays, and refuses plain HTTP to another machine", () => {
+    expect(boatKeyRouteIsPrivate("https://box.tailnet.ts.net")).toBe(true);
+    expect(boatKeyRouteIsPrivate("http://localhost:3773")).toBe(true);
+    expect(boatKeyRouteIsPrivate(null)).toBe(true);
+    expect(boatKeyRouteIsPrivate("http://192.168.1.20:3773")).toBe(false);
   });
 });
 

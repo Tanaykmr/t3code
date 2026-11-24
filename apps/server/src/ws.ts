@@ -134,6 +134,7 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as Boat from "./boat/BoatService.ts";
 import { isLoopbackHost } from "./startupAccess.ts";
+import { deriveAuthClientMetadata } from "./auth/utils.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -814,13 +815,16 @@ function hasCompatibleOrchestrationProtocol(url: URL): boolean {
   );
 }
 
-function readSettingsClient(url: URL) {
+function readSettingsClient(url: URL, request: HttpServerRequest.HttpServerRequest) {
   const capabilities = url.searchParams.get(CLIENT_CAPABILITIES_QUERY_PARAM)?.split(",") ?? [];
+  const clientIp = deriveAuthClientMetadata({ request }).ipAddress;
   return {
     secretReferences: capabilities.includes(SETTINGS_SECRET_REFERENCES_CAPABILITY),
-    // TLS (directly or at a proxy that sets X-Forwarded-Proto) or this machine itself.
+    // TLS (directly or at a local proxy that sets X-Forwarded-Proto) or a peer on this machine.
     privateTransport:
-      url.protocol === "https:" || url.protocol === "wss:" || isLoopbackHost(url.hostname),
+      url.protocol === "https:" ||
+      url.protocol === "wss:" ||
+      (clientIp !== undefined && isLoopbackHost(clientIp)),
   };
 }
 
@@ -3840,7 +3844,7 @@ export const layer = Layer.unwrap(
               clientAnalyticsProps,
               serverBrowser,
               reportProfiles,
-              readSettingsClient(url.value),
+              readSettingsClient(url.value, request),
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Handler-context reporters see only request defects, not server-wide defects.

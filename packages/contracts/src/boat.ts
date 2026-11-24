@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import {
   EnvironmentId,
   ForwardCompatibleArray,
+  ForwardCompatibleNullable,
   IsoDateTime,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
@@ -71,7 +72,8 @@ export const BoatOperation = Schema.Struct({
   kind: BoatOperationKind,
   requestId: BoatRequestId,
   stage: BoatOperationStage,
-  failure: Schema.NullOr(BoatFailureCode),
+  /** A newer server's reason this client does not know reads as null, keeping the row. */
+  failure: ForwardCompatibleNullable(BoatFailureCode),
   updatedAt: IsoDateTime,
 });
 export type BoatOperation = typeof BoatOperation.Type;

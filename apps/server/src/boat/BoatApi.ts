@@ -47,7 +47,8 @@ export interface BoatSandbox {
   readonly archiveAfter: string | null;
   readonly stoppedAt: string | null;
   readonly dataExpiredAt: string | null;
-  readonly snapshotAvailable: boolean;
+  /** Null when Boat's reply left it out, which says nothing about the disk. */
+  readonly snapshotAvailable: boolean | null;
 }
 
 export interface BoatAccount {

@@ -61,7 +61,7 @@ const toSandbox = (body: typeof SandboxBody.Type): BoatSandbox => ({
   archiveAfter: body.archiveAfter ?? null,
   stoppedAt: body.stoppedAt ?? null,
   dataExpiredAt: body.dataExpiredAt ?? null,
-  snapshotAvailable: body.snapshotAvailable ?? false,
+  snapshotAvailable: body.snapshotAvailable ?? null,
 });
 
 function categoryFor(status: number, code: string | undefined): BoatApiErrorCategory {
@@ -105,6 +105,8 @@ const make = Effect.gen(function* () {
         request.pipe(
           HttpClientRequest.prependUrl(BASE_URL),
           HttpClientRequest.setHeader("Authorization", `Bearer ${Redacted.value(key)}`),
+          // Pin the personal wallet so a changed default org cannot bill or hide a machine.
+          HttpClientRequest.setHeader("X-Boat-Org", "personal"),
           HttpClientRequest.acceptJson,
         ),
       )

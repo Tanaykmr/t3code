@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   type BoatAction,
+  boatKeyRouteIsPrivate,
   BOAT_TTL_CHOICES_SECONDS,
   type BoatRow,
   boatRows,
@@ -20,7 +21,7 @@ import {
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useGT } from "gt-react-native";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text, AppTextInput } from "../../components/ui/AppText";
@@ -36,7 +37,7 @@ import { serverEnvironment } from "../../state/server";
 import { useEnvironmentsWithScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "../settings/components/SettingsSection";
-import { resendPendingBoatRequests, sendBoatRequest } from "./boatPendingRequests";
+import { sendBoatRequest } from "./boatPendingRequests";
 
 // Keyed by a JSON array of the environments that advertise Boat, read as one list.
 const boatSnapshotsAcross = Atom.family((environmentIdsKey: string) => {
@@ -207,6 +208,7 @@ function BoatMachineRow({ row, nowMs }: { readonly row: BoatRow; readonly nowMs:
 function BoatKeyRow(props: {
   readonly environmentId: EnvironmentId;
   readonly label: string;
+  readonly displayUrl: string | null;
   readonly snapshot: BoatSnapshot;
   readonly canManage: boolean;
 }) {
@@ -248,7 +250,15 @@ function BoatKeyRow(props: {
             ? gt("Boat rejected the saved key. Enter a new one.")
             : gt("Add a scoped Boat API key to create machines from this server.")}
       </Text>
-      {props.canManage && account.status !== "configured" ? (
+      {props.canManage &&
+      account.status !== "configured" &&
+      !boatKeyRouteIsPrivate(props.displayUrl) ? (
+        <Text className="text-sm text-foreground-muted">
+          {gt(
+            "This connection is plain HTTP over the network. Enter the key over HTTPS, T3 Connect, or on that machine.",
+          )}
+        </Text>
+      ) : props.canManage && account.status !== "configured" ? (
         <SecretTextInput
           accessibilityLabel={gt("Boat API key")}
           placeholder="boat_…"
@@ -267,15 +277,6 @@ export function BoatMachinesSection() {
   const gt = useGT();
   const { controllers, manageable, environments } = useBoatControllers();
   const nowMs = useNowMinuteMs();
-  const connectedKey = controllers
-    .filter((entry) => entry.connected)
-    .map((entry) => entry.environment.environmentId)
-    .join("\n");
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Resends requests saved before iOS suspended the app, each time a controller connects.
-  useEffect(() => {
-    if (connectedKey === "") return;
-    void resendPendingBoatRequests(new Set(connectedKey.split("\n") as EnvironmentId[]));
-  }, [connectedKey]);
   if (controllers.length === 0) return null;
   const rows = boatRows({
     controllers: controllers.map((entry) => ({
@@ -295,6 +296,7 @@ export function BoatMachinesSection() {
             key={`key:${environment.environmentId}`}
             environmentId={environment.environmentId}
             label={environment.label}
+            displayUrl={environment.displayUrl}
             snapshot={snapshot}
             canManage={manageable.has(environment.environmentId)}
           />
@@ -315,28 +317,28 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
     (entry) =>
       entry.connected &&
       manageable.has(entry.environment.environmentId) &&
-      entry.snapshot.account.status === "configured",
+      entry.snapshot.account.status === "configured" &&
+      entry.snapshot.createAvailable !== false,
   );
+  const [controllerId, setControllerId] = useState<EnvironmentId | null>(null);
   const [name, setName] = useState("");
   const [size, setSize] = useState<BoatMachineSize>("small");
   const [ttlSeconds, setTtlSeconds] = useState<number>(BOAT_TTL_CHOICES_SECONDS[0]);
-  // Kept across a failed attempt to the same controller so a retry resolves to the same operation.
-  const [pending, setPending] = useState<{
-    readonly controllerId: EnvironmentId;
-    readonly requestId: BoatRequestId;
-  } | null>(null);
+  // One unanswered request ID per controller, so a retry on either resolves to its own operation.
+  const [pending, setPending] = useState<Readonly<Record<string, BoatRequestId>>>({});
   const [creating, setCreating] = useState(false);
-  const controller = eligible[0];
-  if (controller === undefined || controller.snapshot.createAvailable === false) return null;
+  const controller =
+    eligible.find((entry) => entry.environment.environmentId === controllerId) ?? eligible[0];
+  if (controller === undefined) return null;
   const rate = controller.snapshot.rates.find((entry) => entry.size === size);
   const submit = async () => {
-    const controllerId = controller.environment.environmentId;
-    const requestId = pending?.controllerId === controllerId ? pending.requestId : newRequestId();
-    setPending({ controllerId, requestId });
+    const targetId = controller.environment.environmentId;
+    const requestId = pending[targetId] ?? newRequestId();
+    setPending((current) => ({ ...current, [targetId]: requestId }));
     setCreating(true);
     const outcome = await sendBoatRequest({
       kind: "create",
-      environmentId: controllerId,
+      environmentId: targetId,
       input: { requestId, displayName: name.trim(), size, ttlSeconds },
     });
     setCreating(false);
@@ -346,7 +348,9 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
       }
       return;
     }
-    setPending(null);
+    setPending((current) =>
+      Object.fromEntries(Object.entries(current).filter(([id]) => id !== targetId)),
+    );
     setName("");
     props.onCreated();
   };
@@ -358,6 +362,19 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
         })}
       </Text>
       <View className="gap-3 rounded-[26px] border-continuous bg-grouped-card p-4">
+        {eligible.length > 1 ? (
+          <SegmentedControl
+            options={eligible.map((entry) => ({
+              value: entry.environment.environmentId,
+              label: entry.environment.label,
+              accessibilityLabel: gt("Create on {environment}", {
+                environment: entry.environment.label,
+              }),
+            }))}
+            selected={controller.environment.environmentId}
+            onSelect={setControllerId}
+          />
+        ) : null}
         <AppTextInput
           accessibilityLabel={gt("Machine name")}
           placeholder={gt("Scratch machine")}

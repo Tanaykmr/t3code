@@ -100,4 +100,19 @@ export function boatRows(input: {
   );
 }
 
+/**
+ * Whether a Boat key may be entered over this route: TLS, this machine, or a relay (no direct
+ * URL). A plain-HTTP LAN address would carry the reusable key in clear text.
+ */
+export function boatKeyRouteIsPrivate(displayUrl: string | null): boolean {
+  if (displayUrl === null) return true;
+  try {
+    const url = new URL(displayUrl);
+    if (url.protocol === "https:" || url.protocol === "wss:") return true;
+    return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export const BOAT_TTL_CHOICES_SECONDS = [3600, 2 * 3600, 4 * 3600, 8 * 3600] as const;

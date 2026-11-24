@@ -338,9 +338,11 @@ export const make = Effect.gen(function* () {
       retention:
         sandbox.state !== "archived"
           ? "unknown"
-          : sandbox.snapshotAvailable && !expired
-            ? "available"
-            : "expired",
+          : expired || sandbox.snapshotAvailable === false
+            ? "expired"
+            : sandbox.snapshotAvailable === true
+              ? "available"
+              : "unknown",
     });
   });
 
@@ -400,14 +402,21 @@ export const make = Effect.gen(function* () {
       sandboxId,
       expected: server.guest_environment_id as EnvironmentId | null,
     });
-    // A stop that arrived during bootstrap runs next; the row must not flash Running first.
-    const stopWaiting = yield* hasPendingStop(server.managed_id);
     yield* setServer(server.managed_id, {
-      ...(stopWaiting ? {} : { lifecycle: "running" as const }),
       guest_environment_id: guest.environmentId,
       origin: guest.origin,
       last_started_at: yield* nowIso,
     });
+    // One statement, so a stop accepted during bootstrap is never overwritten by Running.
+    yield* sql`
+      UPDATE boat_servers SET lifecycle = 'running'
+      WHERE managed_id = ${server.managed_id} AND NOT EXISTS (
+        SELECT 1 FROM boat_operations
+        WHERE managed_id = ${server.managed_id} AND kind = 'stop'
+          AND stage NOT IN ('completed', 'failed')
+      )
+    `;
+    yield* publish;
     yield* updateUsage(key, server.managed_id, sandboxId);
   });
 
@@ -420,6 +429,10 @@ export const make = Effect.gen(function* () {
   ) {
     yield* setStage(op.request_id, "allocating");
     let sandboxId = server.sandbox_id;
+    // A create queued before an update must not allocate a machine this server cannot set up.
+    if (sandboxId === null && !bootstrap.available) {
+      return yield* new OperationFailed({ code: "bootstrap-failed" });
+    }
     if (sandboxId === null) {
       const labels = {
         "t3.role": "environment",
@@ -439,14 +452,23 @@ export const make = Effect.gen(function* () {
           }),
         ).pipe(
           Effect.asSome,
-          Effect.catchIf(isTransient, () => Effect.succeedNone),
+          // An unreadable 2xx may still mean Boat allocated it, so it is replayed too.
+          Effect.catchIf(
+            (error) => isTransient(error) || error.code === "decode",
+            () => Effect.succeedNone,
+          ),
         );
         // Boat may have accepted it: keep the operation pending and replay the same key later.
         if (Option.isNone(created)) return false;
         sandbox = created.value;
       } else {
         // The key no longer fences allocation: adopt exactly one labeled match, never create.
-        const matches = yield* retryTransient(api.list(key, labels));
+        const listed = yield* retryTransient(api.list(key, labels)).pipe(
+          Effect.asSome,
+          Effect.catchIf(isTransient, () => Effect.succeedNone),
+        );
+        if (Option.isNone(listed)) return false;
+        const matches = listed.value;
         const [only] = matches;
         if (matches.length !== 1 || only === undefined) {
           return yield* new OperationFailed({ code: "unresolved-create" });
@@ -511,13 +533,27 @@ export const make = Effect.gen(function* () {
   ) {
     const sandboxId = server.sandbox_id;
     if (sandboxId === null) return yield* new OperationFailed({ code: "not-found" });
+    if (!bootstrap.available) return yield* new OperationFailed({ code: "bootstrap-failed" });
     yield* setStage(op.request_id, "resuming");
     yield* setServer(server.managed_id, { lifecycle: "provisioning" });
-    // A resume whose reply was lost may already have woken it; replaying would be refused.
+    // Only an archived machine is woken; one already waking or live is just watched, since a
+    // resume whose reply was lost may have been accepted.
     const current = yield* retryTransient(api.get(key, sandboxId));
     yield* observe(server.managed_id, current);
-    if (!isLiveState(current.state)) {
-      yield* retryTransient(api.resume(key, sandboxId, server.ttl_seconds));
+    if (current.state === "archived") {
+      const sent = yield* retryTransient(api.resume(key, sandboxId, server.ttl_seconds)).pipe(
+        Effect.as(true),
+        Effect.catchIf(
+          (error) => error.category === "conflict",
+          () => Effect.succeed(false),
+        ),
+      );
+      if (!sent) {
+        // Refused: look again before deciding it failed.
+        const after = yield* retryTransient(api.get(key, sandboxId));
+        yield* observe(server.managed_id, after);
+        if (after.state === "archived" || after.state === "archiving") return false;
+      }
     }
     const live = yield* pollUntil(key, server.managed_id, sandboxId, (s) => isLiveState(s.state));
     if (Option.isNone(live)) return false;
@@ -545,17 +581,25 @@ export const make = Effect.gen(function* () {
         );
         if (Option.isSome(current) && current.value.state !== "archived") {
           yield* observe(server.managed_id, current.value);
+          if (current.value.state === "archiving") return false;
+          if (current.value.state === "error" || current.value.state === "cancelled") {
+            return yield* new OperationFailed({ code: "provider-rejected" });
+          }
           return yield* new OperationFailed({ code: "machine-running" });
         }
-        const accepted = Option.isNone(current)
-          ? Option.none<string>()
-          : yield* retryTransient(api.delete(key, server.sandbox_id)).pipe(
-              Effect.asSome,
+        // Not retried in place: a later pass looks at the machine again before sending it.
+        const attempt = Option.isNone(current)
+          ? Option.some(Option.none<string>())
+          : yield* api.delete(key, server.sandbox_id).pipe(
+              Effect.map((id) => Option.some(Option.some(id))),
               Effect.catchIf(
                 (error) => error.category === "not-found",
-                () => Effect.succeedNone,
+                () => Effect.succeedSome(Option.none<string>()),
               ),
+              Effect.catchIf(isTransient, () => Effect.succeedNone),
             );
+        if (Option.isNone(attempt)) return false;
+        const accepted = attempt.value;
         if (Option.isSome(accepted)) {
           operationId = accepted.value;
           yield* setStage(op.request_id, "deleting", { provider_operation_id: operationId });
@@ -836,8 +880,12 @@ export const make = Effect.gen(function* () {
 
   /** Refreshes one settled machine: an external archive, restart, or deletion shows up here. */
   const refresh = Effect.fn("BoatService.refresh")(
-    function* (key: BoatKey, server: ServerRow) {
-      if (server.sandbox_id === null) return;
+    function* (key: BoatKey, managedId: string) {
+      // Read under the machine's lock; the list read before it may be stale.
+      const server = yield* readServer(managedId);
+      if (server === null || server.sandbox_id === null) return;
+      if ((yield* nextPending(managedId)) !== null) return;
+      const latest = (yield* latestOperations).get(managedId);
       const sandbox = yield* api.get(key, server.sandbox_id).pipe(
         Effect.asSome,
         Effect.catchIf(
@@ -858,7 +906,12 @@ export const make = Effect.gen(function* () {
           lifecycle: "stopped",
           last_stopped_at: sandbox.value.stoppedAt ?? (yield* nowIso),
         });
-      } else if (server.lifecycle === "failed" && isLiveState(sandbox.value.state)) {
+      } else if (
+        server.lifecycle === "failed" &&
+        isLiveState(sandbox.value.state) &&
+        (latest?.kind === "create" || latest?.kind === "resume") &&
+        latest.stage === "failed"
+      ) {
         // A failed create or resume left it billing and the first cleanup did not land.
         yield* api.stop(key, server.sandbox_id).pipe(Effect.ignore);
       } else if (server.lifecycle === "stopped" && isLiveState(sandbox.value.state)) {
@@ -883,7 +936,7 @@ export const make = Effect.gen(function* () {
             return yield* drain(server.managed_id);
           }
           if (Option.isSome(key)) {
-            yield* lockFor(server.managed_id).withPermits(1)(refresh(key.value, server));
+            yield* lockFor(server.managed_id).withPermits(1)(refresh(key.value, server.managed_id));
           }
         }),
       { concurrency: 4, discard: true },

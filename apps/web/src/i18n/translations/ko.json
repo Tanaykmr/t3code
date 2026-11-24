@@ -7710,6 +7710,7 @@
   "5d5a282516439c97": "{environment}에서 머신을 만들려면 범위가 제한된 Boat API 키를 추가하세요.",
   "954f04a3731b6666": "{environment}의 Boat 계정",
   "e35254a3e57bb3ee": "키 교체",
+  "ae365bd7ab23718c": "이 연결은 네트워크를 통한 암호화되지 않은 HTTP입니다. 키는 HTTPS, T3 Connect 또는 해당 머신에서 입력하세요.",
   "c04d0292ad9ee1b8": "Boat API 키",
   "d07f8134999c97ea": "키 저장",
   "f4dc85a721acbe07": "Boat 머신",

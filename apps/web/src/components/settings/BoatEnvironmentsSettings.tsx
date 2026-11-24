@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   type BoatAction,
+  boatKeyRouteIsPrivate,
   BOAT_TTL_CHOICES_SECONDS,
   type BoatRow,
   type BoatTone,
@@ -306,6 +307,7 @@ function BoatKeyRow({
             environment: environment.label,
           });
   const showForm = canManage && (editing || account.status !== "configured");
+  const privateRoute = boatKeyRouteIsPrivate(environment.displayUrl);
   return (
     <SettingsRow
       title={gt("Boat account on {environment}", { environment: environment.label })}
@@ -318,7 +320,13 @@ function BoatKeyRow({
         ) : null
       }
     >
-      {showForm ? (
+      {showForm && !privateRoute ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {gt(
+            "This connection is plain HTTP over the network. Enter the key over HTTPS, T3 Connect, or on that machine.",
+          )}
+        </p>
+      ) : showForm ? (
         <form
           className="mt-2 flex flex-wrap items-center gap-2"
           onSubmit={(event) => {
@@ -399,29 +407,28 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
       manageable.has(entry.environment.environmentId) &&
       entry.snapshot.account.status === "configured",
   );
+  const capable = eligible.filter((entry) => entry.snapshot.createAvailable !== false);
   const [controllerId, setControllerId] = useState<EnvironmentId | null>(null);
   const controller =
-    eligible.find((entry) => entry.environment.environmentId === controllerId) ?? eligible[0];
+    capable.find((entry) => entry.environment.environmentId === controllerId) ?? capable[0];
   const [name, setName] = useState("");
   const [size, setSize] = useState<BoatMachineSize>("small");
   const [ttlSeconds, setTtlSeconds] = useState<number>(BOAT_DEFAULT_TTL_SECONDS);
-  // Kept across a failed attempt to the same controller so a retry resolves to the same operation.
-  const [pending, setPending] = useState<{
-    readonly controllerId: EnvironmentId;
-    readonly requestId: BoatRequestId;
-  } | null>(null);
+  // One unanswered request ID per controller, so a retry on either resolves to its own operation.
+  const [pending, setPending] = useState<Readonly<Record<string, BoatRequestId>>>({});
   const [creating, setCreating] = useState(false);
   const create = useAtomCommand(serverEnvironment.createBoat, {
     label: "boat create",
     reportFailure: false,
   });
 
-  if (controller !== undefined && controller.snapshot.createAvailable === false) {
+  const blocked = eligible.find((entry) => entry.snapshot.createAvailable === false);
+  if (controller === undefined && blocked !== undefined) {
     return (
       <p className="text-sm text-muted-foreground">
         {gt(
           "{environment} cannot set up T3 Code on a new Boat machine yet. Update it to a release that can.",
-          { environment: controller.environment.label },
+          { environment: blocked.environment.label },
         )}
       </p>
     );
@@ -439,12 +446,12 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
   }
   const rate = controller.snapshot.rates.find((entry) => entry.size === size);
   const submit = async () => {
-    const controllerId = controller.environment.environmentId;
-    const requestId = pending?.controllerId === controllerId ? pending.requestId : newRequestId();
-    setPending({ controllerId, requestId });
+    const targetId = controller.environment.environmentId;
+    const requestId = pending[targetId] ?? newRequestId();
+    setPending((current) => ({ ...current, [targetId]: requestId }));
     setCreating(true);
     const result = await create({
-      environmentId: controllerId,
+      environmentId: targetId,
       input: { requestId, displayName: name.trim(), size, ttlSeconds },
     });
     setCreating(false);
@@ -458,7 +465,9 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
       }
       return;
     }
-    setPending(null);
+    setPending((current) =>
+      Object.fromEntries(Object.entries(current).filter(([id]) => id !== targetId)),
+    );
     toastManager.add({
       type: "success",
       title: gt("Creating {name}", { name: name.trim() }),
@@ -475,7 +484,7 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
         if (name.trim() !== "") void submit();
       }}
     >
-      {eligible.length > 1 ? (
+      {capable.length > 1 ? (
         <label className="block">
           <span className="mb-1.5 block text-xs font-medium text-foreground">{gt("Owned by")}</span>
           <select
@@ -483,7 +492,7 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
             value={controller.environment.environmentId}
             onChange={(event) => setControllerId(event.target.value as EnvironmentId)}
           >
-            {eligible.map((entry) => (
+            {capable.map((entry) => (
               <option key={entry.environment.environmentId} value={entry.environment.environmentId}>
                 {entry.environment.label}
               </option>

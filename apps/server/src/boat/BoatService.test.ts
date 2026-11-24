@@ -345,6 +345,44 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect(
+    "does not allocate a create queued before the server lost the ability to set up",
+    () => {
+      const { layer, fake } = setup({ bootstrapAvailable: false });
+      return Effect.gen(function* () {
+        yield* configure;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+        INSERT INTO boat_servers (managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at)
+        VALUES ('boat_queued', 'acct_fake', 'Queued', 'small', 3600, 'provisioning', 'unknown', '1970-01-01T00:00:00.000Z')
+      `;
+        yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+        VALUES ('00000000-0000-4000-8000-0000000000ff', 'boat_queued', 'create', '', 'queued', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z')
+      `;
+        yield* settle;
+        expect((yield* server("boat_queued"))?.operation?.failure).toBe("bootstrap-failed");
+        expect(fake.calls).not.toContain("create");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("keeps stopping a machine a failed create left running", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      yield* configure;
+      fake.failNext("bootstrap", new BoatApiError({ category: "rejected" }));
+      fake.failNext("stop", new BoatApiError({ category: "rejected" }));
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+      // The cleanup stop failed once; the reconcile pass sent it again.
+      expect(fake.calls.filter((name) => name === "stop")).toHaveLength(2);
+      expect(fake.sandboxes.get(sandboxId)?.sandbox.state).toBe("archived");
+      expect((yield* server(managedId))?.lifecycle).toBe("failed");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("keeps the key while it still manages machines", () => {
     const { layer } = setup();
     return Effect.gen(function* () {

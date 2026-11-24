@@ -7743,6 +7743,7 @@
   "5d5a282516439c97": "Adicione uma chave de API do Boat com escopo limitado para criar máquinas a partir de {environment}.",
   "954f04a3731b6666": "Conta do Boat em {environment}",
   "e35254a3e57bb3ee": "Substituir chave",
+  "ae365bd7ab23718c": "Esta conexão usa HTTP sem criptografia pela rede. Insira a chave via HTTPS, T3 Connect ou nessa máquina.",
   "c04d0292ad9ee1b8": "Chave de API do Boat",
   "d07f8134999c97ea": "Salvar chave",
   "f4dc85a721acbe07": "Máquinas do Boat",
