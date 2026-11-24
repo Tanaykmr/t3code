@@ -609,9 +609,6 @@ export const make = Effect.gen(function* () {
       }
       // Sent once per pass: a later pass looks at the machine again before any resend.
       const sent = yield* api.resume(key, sandboxId, server.ttl_seconds).pipe(
-        Effect.tap(() =>
-          setStage(op.request_id, "resuming", { provider_operation_id: ACKNOWLEDGED }),
-        ),
         Effect.as("sent" as const),
         Effect.catchIf(isTransient, () => Effect.succeed("unknown" as const)),
         Effect.catchIf(
@@ -619,6 +616,9 @@ export const make = Effect.gen(function* () {
           () => Effect.succeed("refused" as const),
         ),
       );
+      if (sent === "sent") {
+        yield* setStage(op.request_id, "resuming", { provider_operation_id: ACKNOWLEDGED });
+      }
       if (sent === "unknown") {
         if (!(yield* hasPendingStop(server.managed_id))) return false;
         // A stop is waiting: look once. Only a machine already live continues (the stop then
