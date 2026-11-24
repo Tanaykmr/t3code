@@ -86,6 +86,7 @@ interface ServerRow {
   readonly created_at: string;
   readonly last_started_at: string | null;
   readonly last_stopped_at: string | null;
+  readonly boat_environment: string | null;
 }
 
 interface OperationRow {
@@ -102,6 +103,7 @@ interface OperationRow {
 
 interface AccountRow {
   readonly account_id: string;
+  readonly boat_environment: string | null;
   readonly label: string;
   readonly status: BoatAccountStatus;
   readonly zero_data_retention: number;
@@ -279,7 +281,13 @@ export const make = Effect.gen(function* () {
       account:
         account === null
           ? { status: "missing" as const, label: null }
-          : { status: account.status, label: account.label },
+          : {
+              status: account.status,
+              label: account.label,
+              ...(account.boat_environment === null
+                ? {}
+                : { environment: account.boat_environment }),
+            },
       rates: RATES,
       servers,
       createAvailable: bootstrap.available,
@@ -473,6 +481,7 @@ export const make = Effect.gen(function* () {
             size: server.size,
             ttlSeconds: server.ttl_seconds,
             labels,
+            environment: server.boat_environment,
           }),
         ).pipe(
           Effect.asSome,
@@ -665,14 +674,16 @@ export const make = Effect.gen(function* () {
         return yield* new OperationRefused({ code: "provider-unavailable" });
       }
       // Sent once per pass: a later pass looks at the machine again before any resend.
-      const sent = yield* api.resume(key, sandboxId, server.ttl_seconds).pipe(
-        Effect.as("sent" as const),
-        Effect.catchIf(isTransient, () => Effect.succeed("unknown" as const)),
-        Effect.catchIf(
-          (error) => error.category === "conflict",
-          () => Effect.succeed("refused" as const),
-        ),
-      );
+      const sent = yield* api
+        .resume(key, sandboxId, server.ttl_seconds, server.boat_environment)
+        .pipe(
+          Effect.as("sent" as const),
+          Effect.catchIf(isTransient, () => Effect.succeed("unknown" as const)),
+          Effect.catchIf(
+            (error) => error.category === "conflict",
+            () => Effect.succeed("refused" as const),
+          ),
+        );
       if (sent === "sent") {
         yield* setStage(op.request_id, "resuming", { provider_operation_id: ACKNOWLEDGED });
       }
@@ -975,8 +986,8 @@ export const make = Effect.gen(function* () {
           const managedId = BoatManagedId.make(`boat_${input.requestId}`);
           const now = yield* nowIso;
           yield* sql`
-          INSERT INTO boat_servers (managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at)
-          VALUES (${managedId}, ${account.account_id}, ${input.displayName}, ${input.size}, ${input.ttlSeconds}, 'provisioning', 'unknown', ${now})
+          INSERT INTO boat_servers (managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at, boat_environment)
+          VALUES (${managedId}, ${account.account_id}, ${input.displayName}, ${input.size}, ${input.ttlSeconds}, 'provisioning', 'unknown', ${now}, ${account.boat_environment})
         `;
           yield* insertOperation(input.requestId, managedId, "create", payload, now);
           return { managedId, requestId: input.requestId, kind: "create" as const };
@@ -1062,12 +1073,13 @@ export const make = Effect.gen(function* () {
     }
     yield* persistence(secrets.set(API_KEY_SECRET, new TextEncoder().encode(input.apiKey)));
     yield* persistence(sql`
-      INSERT INTO boat_account (id, account_id, label, status, zero_data_retention)
+      INSERT INTO boat_account (id, account_id, label, status, zero_data_retention, boat_environment)
       VALUES (1, ${account.value.accountId}, ${account.value.label}, 'configured', ${
         account.value.zeroDataRetention ? 1 : 0
-      })
+      }, ${input.environment ?? null})
       ON CONFLICT (id) DO UPDATE SET account_id = excluded.account_id, label = excluded.label,
-        status = excluded.status, zero_data_retention = excluded.zero_data_retention
+        status = excluded.status, zero_data_retention = excluded.zero_data_retention,
+        boat_environment = excluded.boat_environment
     `);
     yield* publish;
     return { status: "configured" as const };

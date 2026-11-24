@@ -136,6 +136,8 @@ export const BoatSnapshot = Schema.Struct({
   account: Schema.Struct({
     status: BoatAccountStatus,
     label: Schema.NullOr(TrimmedNonEmptyString),
+    /** The Boat environment new machines go to; absent means Boat's default. */
+    environment: Schema.optionalKey(TrimmedNonEmptyString),
   }),
   rates: ForwardCompatibleArray(BoatRate),
   servers: ForwardCompatibleArray(BoatServer),
@@ -171,6 +173,8 @@ export type BoatOperationReceipt = typeof BoatOperationReceipt.Type;
 /** Null removes the stored key. The key is write-only: no read returns it. */
 export const BoatSetApiKeyInput = Schema.Struct({
   apiKey: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(512))),
+  /** The Boat environment new machines are created in; a scoped key may allow only its own. */
+  environment: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
 });
 export type BoatSetApiKeyInput = typeof BoatSetApiKeyInput.Type;
 

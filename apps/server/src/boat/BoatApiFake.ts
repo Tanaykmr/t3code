@@ -160,7 +160,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
       yield* maybeLoseReply("stop");
       return stopId;
     }),
-    resume: Effect.fn("FakeBoat.resume")(function* (key, sandboxId, ttlSeconds) {
+    resume: Effect.fn("FakeBoat.resume")(function* (key, sandboxId, ttlSeconds, _environment) {
       const now = yield* enter("resume", key);
       const entry = yield* find(sandboxId);
       if (entry.sandbox.state !== "archived") {

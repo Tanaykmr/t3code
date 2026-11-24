@@ -74,6 +74,8 @@ export interface BoatCreateRequest {
   readonly size: BoatMachineSize;
   readonly ttlSeconds: number;
   readonly labels: Readonly<Record<string, string>>;
+  /** Boat environment to create in; a scoped key may allow only its own. Null sends none. */
+  readonly environment: string | null;
 }
 
 export type BoatKey = Redacted.Redacted<string>;
@@ -99,6 +101,7 @@ export class BoatApi extends Context.Service<
       key: BoatKey,
       sandboxId: string,
       ttlSeconds: number,
+      environment: string | null,
     ) => Effect.Effect<void, BoatApiError>;
     /** Returns the deletion operation ID to poll. */
     readonly delete: (key: BoatKey, sandboxId: string) => Effect.Effect<string, BoatApiError>;

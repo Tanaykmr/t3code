@@ -11,11 +11,25 @@ const KEY = Redacted.make("boat_test_key");
 const SANDBOX_ID = "bx_23456789";
 
 function fakeBoat(reply: (url: URL, init: RequestInit) => Response) {
-  const requests: Array<{ readonly url: URL; readonly headers: Headers; readonly method: string }> =
-    [];
+  const requests: Array<{
+    readonly url: URL;
+    readonly headers: Headers;
+    readonly method: string;
+    readonly body: unknown;
+  }> = [];
   const fetch = (async (input: Request | string | URL, init: RequestInit = {}) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
-    requests.push({ url, headers: new Headers(init.headers), method: init.method ?? "GET" });
+    requests.push({
+      url,
+      headers: new Headers(init.headers),
+      method: init.method ?? "GET",
+      body:
+        typeof init.body === "string"
+          ? JSON.parse(init.body)
+          : init.body instanceof Uint8Array
+            ? JSON.parse(new TextDecoder().decode(init.body))
+            : undefined,
+    });
     return reply(url, init);
   }) as typeof globalThis.fetch;
   const layer = BoatHttpApi.layer.pipe(
@@ -47,13 +61,15 @@ describe("BoatHttpApi", () => {
         size: "small",
         ttlSeconds: 3600,
         labels: { "t3.managed": "boat_1" },
+        environment: "t3code",
       });
-      const [request] = requests;
+      const request = requests.at(-1);
       expect(request?.method).toBe("POST");
       expect(request?.url.pathname).toBe("/api/v1/sandboxes");
       expect(request?.headers.get("x-boat-org")).toBe("personal");
       expect(request?.headers.get("idempotency-key")).toBe("00000000-0000-4000-8000-000000000001");
       expect(request?.headers.get("authorization")).toBe("Bearer boat_test_key");
+      expect(request?.body).toMatchObject({ environment: "t3code", noEnv: true });
     }).pipe(Effect.provide(layer));
   });
 
@@ -66,8 +82,11 @@ describe("BoatHttpApi", () => {
     return Effect.gen(function* () {
       const api = yield* BoatApi;
       expect(yield* api.list(KEY, { "t3.managed": "boat_1" })).toEqual([]);
+      // A probe under the pin, then the real request without it; later calls skip the probe.
+      expect(yield* api.list(KEY, { "t3.managed": "boat_2" })).toEqual([]);
       expect(requests.map((request) => request.headers.get("x-boat-org"))).toEqual([
         "personal",
+        null,
         null,
       ]);
     }).pipe(Effect.provide(layer));
@@ -81,8 +100,8 @@ describe("BoatHttpApi", () => {
     return Effect.gen(function* () {
       const api = yield* BoatApi;
       expect(yield* api.delete(KEY, SANDBOX_ID)).toBe(operationId);
-      expect(requests[0]?.method).toBe("DELETE");
-      expect(requests[0]?.headers.get("x-ascii-confirm-delete")).toBe(SANDBOX_ID);
+      expect(requests.at(-1)?.method).toBe("DELETE");
+      expect(requests.at(-1)?.headers.get("x-ascii-confirm-delete")).toBe(SANDBOX_ID);
     }).pipe(Effect.provide(layer));
   });
 
@@ -114,7 +133,7 @@ describe("BoatHttpApi", () => {
     );
     return Effect.gen(function* () {
       const api = yield* BoatApi;
-      const error = yield* Effect.flip(api.resume(KEY, SANDBOX_ID, 3600));
+      const error = yield* Effect.flip(api.resume(KEY, SANDBOX_ID, 3600, null));
       expect(error.category).toBe("snapshot-expired");
       expect(JSON.stringify(error)).not.toContain("secret detail");
     }).pipe(Effect.provide(layer));

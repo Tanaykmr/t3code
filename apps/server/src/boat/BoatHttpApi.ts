@@ -140,16 +140,31 @@ const make = Effect.gen(function* () {
     return yield* new BoatApiError({ category: categoryFor(response.status, code), code });
   }, Effect.scoped);
 
-  /** The JSON body of a 2xx reply; anything else becomes a categorized error. */
-  const send = (key: BoatKey, request: HttpClientRequest.HttpClientRequest) =>
-    sendOnce(key, request, true).pipe(
-      // A key created for an organization can only act in that organization, which already
-      // pins its wallet; Boat refused the pinned request before doing anything, so resend.
+  // A key created for an organization can act only in that organization, which already pins
+  // its wallet, and Boat refuses it under the personal pin (in any environment it names). Whether
+  // a key is such a key is learned once with a harmless list read under the pin.
+  const orgBound = new Map<string, boolean>();
+  const isOrgBound = Effect.fn("BoatHttpApi.isOrgBound")(function* (key: BoatKey) {
+    const known = orgBound.get(Redacted.value(key));
+    if (known !== undefined) return known;
+    const bound = yield* sendOnce(key, HttpClientRequest.get("/sandboxes?limit=1"), true).pipe(
+      Effect.as(false),
       Effect.catchIf(
         (error) => error.code === "api_key_org_mismatch",
-        () => sendOnce(key, request, false),
+        () => Effect.succeed(true),
       ),
     );
+    orgBound.set(Redacted.value(key), bound);
+    return bound;
+  });
+
+  /** The JSON body of a 2xx reply; anything else becomes a categorized error. */
+  const send = Effect.fn("BoatHttpApi.send")(function* (
+    key: BoatKey,
+    request: HttpClientRequest.HttpClientRequest,
+  ) {
+    return yield* sendOnce(key, request, !(yield* isOrgBound(key)));
+  });
 
   return BoatApi.of({
     account: Effect.fn("BoatHttpApi.account")(function* (key) {
@@ -172,6 +187,7 @@ const make = Effect.gen(function* () {
             ttlSeconds: request.ttlSeconds,
             labels: request.labels,
             name: request.name,
+            ...(request.environment === null ? {} : { environment: request.environment }),
             noEnv: true,
             snapshots: true,
           }),
@@ -217,12 +233,16 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.flatMap(decode(StopEnvelope)));
       return operation?.id ?? null;
     }),
-    resume: Effect.fn("BoatHttpApi.resume")(function* (key, sandboxId, ttlSeconds) {
+    resume: Effect.fn("BoatHttpApi.resume")(function* (key, sandboxId, ttlSeconds, environment) {
       const id = yield* checked(SANDBOX_ID, sandboxId);
       yield* send(
         key,
         HttpClientRequest.post(`/sandboxes/${id}/resume`).pipe(
-          HttpClientRequest.bodyJsonUnsafe({ ttlSeconds, noEnv: true }),
+          HttpClientRequest.bodyJsonUnsafe({
+            ttlSeconds,
+            ...(environment === null ? {} : { environment }),
+            noEnv: true,
+          }),
         ),
       );
     }),
