@@ -13,11 +13,10 @@ import {
   type BotRoomUpdateInput,
   type BotSendResult,
   CommandId,
-  DEFAULT_PROVIDER_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
   MessageId,
   ProjectId,
   RunId,
+  type RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -34,6 +33,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { runtimeModeRank } from "../mcp/delegatedTaskModes.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as BotService from "./BotService.ts";
@@ -98,11 +99,13 @@ interface DeliveryRow {
   readonly thread_id: string | null;
   readonly run_id: string | null;
   readonly reason: string | null;
+  readonly sender_runtime_mode: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
 
 const decodeSnapshot = Schema.decodeUnknownEffect(BotChannelSnapshot);
+const isBotError = Schema.is(BotError);
 const encodeMentions = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(BotMention)));
 const decodeRoom = Schema.decodeUnknownEffect(BotRoom);
 
@@ -144,10 +147,14 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService.ThreadManagementService;
   yield* ensureBotSchema;
 
-  const changes = yield* PubSub.sliding<void>(1);
-  const notifyChannels = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
+  // Keyed by channel, so a delivery in one room does not refresh every open chat.
+  const changes = yield* PubSub.sliding<string>(64);
+  const notifyChannel = (channelKey: string) =>
+    PubSub.publish(changes, channelKey).pipe(Effect.asVoid);
   const wake = yield* Queue.sliding<void>(1);
   const roomLock = yield* Semaphore.make(1);
+  // Room edits and the final check before a send take turns, so a removal cannot slip between.
+  const deliveryLock = yield* Semaphore.make(1);
   const waiting = yield* Ref.make<ReadonlySet<string>>(new Set());
   const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const fail = (message: string) => (cause: unknown) => botError(message, cause);
@@ -159,8 +166,10 @@ const make = Effect.gen(function* () {
     );
 
   const readRoom = Effect.fn("BotChannelService.readRoom")(function* (roomId: string) {
-    const rooms = yield* readRooms(sql).pipe(Effect.mapError(fail("Could not read the room.")));
-    const room = rooms.find((candidate) => candidate.id === roomId);
+    const rooms = yield* readRooms(sql, roomId).pipe(
+      Effect.mapError(fail("Could not read the room.")),
+    );
+    const room = rooms[0];
     if (room === undefined) return yield* botError("That room no longer exists.");
     return yield* decodeRoom(room).pipe(Effect.mapError(fail("Could not read the room.")));
   });
@@ -233,19 +242,20 @@ const make = Effect.gen(function* () {
     const removed = room.memberBotIds.filter((botId) => !members.includes(botId));
     const at = yield* now;
     const archivedAt = input.archived === undefined ? room.archivedAt : input.archived ? at : null;
-    yield* sql
-      .withTransaction(
-        Effect.gen(function* () {
-          yield* sql`
+    yield* deliveryLock.withPermits(1)(
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
             UPDATE bot_rooms SET name = ${input.name ?? room.name}, default_bot_id = ${defaultBotId},
               archived_at = ${archivedAt}, updated_at = ${at}
             WHERE room_id = ${input.roomId}
           `;
-          if (input.memberBotIds !== undefined) yield* writeMembers(input.roomId, members);
-          // Work that has not started stops here; a running turn keeps going until stopped.
-          const blockedBots = archivedAt === null ? removed : room.memberBotIds;
-          for (const botId of blockedBots) {
-            yield* sql`
+            if (input.memberBotIds !== undefined) yield* writeMembers(input.roomId, members);
+            // Work that has not started stops here; a running turn keeps going until stopped.
+            const blockedBots = archivedAt === null ? removed : room.memberBotIds;
+            for (const botId of blockedBots) {
+              yield* sql`
               UPDATE bot_deliveries SET status = 'blocked', updated_at = ${at},
                 reason = ${archivedAt === null ? "Removed from the room" : "Room archived"}
               WHERE status = 'queued' AND target_bot_id = ${botId}
@@ -253,12 +263,13 @@ const make = Effect.gen(function* () {
                   SELECT message_id FROM bot_messages WHERE channel_key = ${roomKey(input.roomId)}
                 )
             `;
-          }
-        }),
-      )
-      .pipe(Effect.mapError(fail("Could not save the room.")));
+            }
+          }),
+        )
+        .pipe(Effect.mapError(fail("Could not save the room."))),
+    );
     yield* bots.notifyDirectoryChanged;
-    yield* notifyChannels;
+    yield* notifyChannel(roomKey(input.roomId));
     return { room: yield* readRoom(input.roomId) };
   });
 
@@ -269,12 +280,19 @@ const make = Effect.gen(function* () {
             SELECT * FROM bot_messages WHERE channel_key = ${roomKey(query.roomId)}
             ORDER BY seq DESC LIMIT ${CHANNEL_PAGE}
           `
-        : yield* sql<MessageRow>`
-            SELECT * FROM bot_messages
-            WHERE channel_key = ${`dm:${query.botId}`}
-              OR (channel_key LIKE 'peer:%' AND channel_key LIKE ${`%${query.botId}%`})
-            ORDER BY seq DESC LIMIT ${CHANNEL_PAGE}
-          `;
+        : yield* Effect.gen(function* () {
+            const others = yield* sql<{ bot_id: string }>`
+              SELECT bot_id FROM bots WHERE bot_id <> ${query.botId}
+            `;
+            const keys = [
+              `dm:${query.botId}`,
+              ...others.map((other) => peerKey(query.botId, other.bot_id)),
+            ];
+            return yield* sql<MessageRow>`
+              SELECT * FROM bot_messages WHERE ${sql.in("channel_key", keys)}
+              ORDER BY seq DESC LIMIT ${CHANNEL_PAGE}
+            `;
+          });
     const ids = rows.map((row) => row.message_id);
     const deliveries =
       ids.length === 0
@@ -293,9 +311,18 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const subscription = yield* PubSub.subscribe(changes);
         const read = snapshot(query).pipe(Effect.mapError(fail("Could not read the messages.")));
+        const concerns = (channelKey: string) =>
+          query.kind === "room"
+            ? channelKey === roomKey(query.roomId)
+            : channelKey === `dm:${query.botId}` ||
+              (channelKey.startsWith("peer:") &&
+                channelKey.slice("peer:".length).split(":").includes(query.botId));
         return Stream.concat(
           Stream.fromEffect(read),
-          Stream.fromSubscription(subscription).pipe(Stream.mapEffect(() => read)),
+          Stream.fromSubscription(subscription).pipe(
+            Stream.filter(concerns),
+            Stream.mapEffect(() => read),
+          ),
         );
       }),
     );
@@ -313,6 +340,7 @@ const make = Effect.gen(function* () {
     readonly rootMessageId?: string;
     readonly hop: number;
     readonly expectsReply: boolean;
+    readonly senderRuntimeMode?: string;
   }) {
     const at = yield* now;
     const mentionsJson = yield* encodeMentions(input.mentions).pipe(
@@ -324,6 +352,14 @@ const make = Effect.gen(function* () {
           const existing =
             yield* sql`SELECT seq FROM bot_messages WHERE message_id = ${input.messageId}`;
           if (existing.length > 0) return;
+          if (input.rootMessageId !== undefined && input.recipients.length > 0) {
+            const [used] = yield* sql<{ count: number }>`
+              SELECT COUNT(*) AS count FROM bot_deliveries WHERE root_message_id = ${input.rootMessageId}
+            `;
+            if ((used?.count ?? 0) + input.recipients.length > MAX_DELIVERIES_PER_ROOT) {
+              return yield* botError("This request has woken enough bots. Answer it yourself.");
+            }
+          }
           yield* sql`
             INSERT INTO bot_messages (
               message_id, channel_key, sender_kind, sender_bot_id, text, mentions_json,
@@ -338,19 +374,23 @@ const make = Effect.gen(function* () {
             yield* sql`
               INSERT INTO bot_deliveries (
                 delivery_id, message_id, target_bot_id, root_message_id, hop, expects_reply,
-                status, thread_id, run_id, reason, created_at, updated_at
+                status, thread_id, run_id, reason, sender_runtime_mode, created_at, updated_at
               ) VALUES (
                 ${`${input.messageId}:${target}`}, ${input.messageId}, ${target},
                 ${input.rootMessageId ?? input.messageId}, ${input.hop}, ${input.expectsReply ? 1 : 0},
-                'queued', NULL, NULL, NULL, ${at}, ${at}
+                'queued', NULL, NULL, NULL, ${input.senderRuntimeMode ?? null}, ${at}, ${at}
               )
               ON CONFLICT (message_id, target_bot_id) DO NOTHING
             `;
           }
         }),
       )
-      .pipe(Effect.mapError(fail("Could not send the message.")));
-    yield* notifyChannels;
+      .pipe(
+        Effect.mapError((cause) =>
+          isBotError(cause) ? cause : botError("Could not send the message.", cause),
+        ),
+      );
+    yield* notifyChannel(input.channelKey);
     yield* Queue.offer(wake, undefined);
     const [row] = yield* sql<MessageRow>`
       SELECT * FROM bot_messages WHERE message_id = ${input.messageId}
@@ -436,29 +476,42 @@ const make = Effect.gen(function* () {
     `.pipe(Effect.mapError(fail("Could not find that bot.")));
     if (target === undefined) return yield* botError(`No active bot is named ${input.to}.`);
     if (target.bot_id === owner.bot.bot_id) return yield* botError("A bot cannot message itself.");
-    // The calling turn was woken by a delivery: continue that request's chain.
-    const [cause] = yield* sql<DeliveryRow>`
-      SELECT * FROM bot_deliveries
-      WHERE thread_id = ${input.threadId} AND status IN ('accepted', 'settled')
-      ORDER BY updated_at DESC LIMIT 1
+    if (owner.bot.archived_at !== null) return yield* botError("An archived bot cannot send.");
+    const callerShell = yield* threads
+      .getThreadShell(ThreadId.make(input.threadId))
+      .pipe(Effect.mapError(fail("Could not read the calling chat.")));
+    if (callerShell === null) return yield* botError("Could not read the calling chat.");
+    // The calling turn itself says which request it serves: a delivery's message, or a fresh one.
+    const [activeRun] = yield* sql<{ run_id: string; user_message_id: string | null }>`
+      SELECT run_id, json_extract(payload_json, '$.userMessageId') AS user_message_id
+      FROM orchestration_v2_projection_runs
+      WHERE thread_id = ${input.threadId}
+        AND status IN ('preparing', 'queued', 'starting', 'running', 'waiting')
+      ORDER BY ordinal DESC LIMIT 1
     `.pipe(Effect.mapError(fail("Could not read the request.")));
+    if (activeRun === undefined) return yield* botError("Message other bots from a running turn.");
+    const causeId = activeRun.user_message_id?.startsWith("bot-delivery:")
+      ? activeRun.user_message_id.slice("bot-delivery:".length)
+      : undefined;
+    const [cause] =
+      causeId === undefined
+        ? []
+        : yield* sql<DeliveryRow>`SELECT * FROM bot_deliveries WHERE delivery_id = ${causeId}`.pipe(
+            Effect.mapError(fail("Could not read the request.")),
+          );
     const hop = cause === undefined ? 1 : cause.hop + 1;
     if (hop > MAX_HOPS) {
       return yield* botError(
         `This request already passed through ${MAX_HOPS} bots. Answer it yourself.`,
       );
     }
-    const rootMessageId = cause?.root_message_id;
-    if (rootMessageId !== undefined) {
-      const [{ count }] = (yield* sql<{ count: number }>`
-        SELECT COUNT(*) AS count FROM bot_deliveries WHERE root_message_id = ${rootMessageId}
-      `.pipe(Effect.mapError(fail("Could not read the request.")))) as [{ count: number }];
-      if (count >= MAX_DELIVERIES_PER_ROOT) {
-        return yield* botError("This request has woken enough bots. Answer it yourself.");
-      }
-    }
+    // Every send from one human-started turn shares that turn's budget.
+    const rootMessageId = cause?.root_message_id ?? `run:${activeRun.run_id}`;
     if (owner.roomId !== null) {
       const room = yield* readRoom(owner.roomId);
+      if (room.archivedAt !== null || !room.memberBotIds.includes(BotId.make(owner.bot.bot_id))) {
+        return yield* botError("You are no longer in this room.");
+      }
       if (!room.memberBotIds.includes(BotId.make(target.bot_id))) {
         return yield* botError(`${target.name} is not in this room.`);
       }
@@ -475,25 +528,36 @@ const make = Effect.gen(function* () {
       replyToId: null,
       originThreadId: input.threadId,
       recipients: [target.bot_id],
-      ...(rootMessageId === undefined ? {} : { rootMessageId }),
+      rootMessageId,
       hop,
       expectsReply: owner.roomId === null,
+      senderRuntimeMode: callerShell.runtimeMode,
     });
   });
 
+  /** Moves a delivery on only from the state the caller saw, so a concurrent block wins. */
   const setDelivery = Effect.fn("BotChannelService.setDelivery")(function* (
     deliveryId: string,
-    fields: { status: string; reason?: string | null; threadId?: string; runId?: string },
+    fields: {
+      status: string;
+      from: string;
+      reason?: string | null;
+      threadId?: string;
+      runId?: string;
+    },
   ) {
     const at = yield* now;
-    yield* sql`
+    const moved = yield* sql<{ channel_key: string }>`
         UPDATE bot_deliveries SET status = ${fields.status}, updated_at = ${at},
           reason = ${fields.reason ?? null},
           thread_id = COALESCE(${fields.threadId ?? null}, thread_id),
           run_id = COALESCE(${fields.runId ?? null}, run_id)
-        WHERE delivery_id = ${deliveryId}
+        WHERE delivery_id = ${deliveryId} AND status = ${fields.from}
+        RETURNING (SELECT channel_key FROM bot_messages
+          WHERE bot_messages.message_id = bot_deliveries.message_id) AS channel_key
       `;
-    yield* notifyChannels;
+    for (const row of moved) yield* notifyChannel(row.channel_key);
+    return moved.length > 0;
   });
 
   const ensureRoomThread = Effect.fn("BotChannelService.ensureRoomThread")(function* (
@@ -512,8 +576,9 @@ const make = Effect.gen(function* () {
       title: `${room.name} · ${bot.name}`,
       titleRenamed: true,
       modelSelection: dm.modelSelection,
-      runtimeMode: DEFAULT_RUNTIME_MODE,
-      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      // A seat runs with the same access its DM was given.
+      runtimeMode: dm.runtimeMode,
+      interactionMode: dm.interactionMode,
       workspaceStrategy: { type: "root" },
       createdBy: "user",
       creationSource: "server",
@@ -603,6 +668,7 @@ const make = Effect.gen(function* () {
     if (shell === null)
       return yield* setDelivery(delivery.delivery_id, {
         status: "cancelled",
+        from: "accepted",
         reason: "Chat deleted",
       });
     let ended = yield* threads.waitForThread({
@@ -623,10 +689,12 @@ const make = Effect.gen(function* () {
     if (status !== "completed") {
       return yield* setDelivery(delivery.delivery_id, {
         status: status === "failed" ? "blocked" : "cancelled",
+        from: "accepted",
         reason: status === "failed" ? "The run failed" : "Stopped",
       });
     }
-    const reply = yield* replyText(delivery.run_id);
+    // A restarted turn ends in its continuation, which holds the reply.
+    const reply = yield* replyText(ended.run?.id ?? delivery.run_id);
     const [message] = yield* sql<MessageRow>`
         SELECT * FROM bot_messages WHERE message_id = ${delivery.message_id}
       `;
@@ -654,7 +722,7 @@ const make = Effect.gen(function* () {
         });
       }
     }
-    yield* setDelivery(delivery.delivery_id, { status: "settled" });
+    yield* setDelivery(delivery.delivery_id, { status: "settled", from: "accepted" });
   });
 
   /** Follows an accepted delivery's run to its end; a second call while one follows is a no-op. */
@@ -665,14 +733,10 @@ const make = Effect.gen(function* () {
         : [true, new Set([...set, delivery.delivery_id])],
     );
     if (!taken) return;
+    // A failed wait leaves the row accepted; the next drain follows it again.
     yield* followRun(delivery).pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("A bot delivery could not finish.", { cause }).pipe(
-          Effect.andThen(
-            setDelivery(delivery.delivery_id, { status: "blocked", reason: "Could not finish" }),
-          ),
-          Effect.ignore,
-        ),
+        Effect.logWarning("A bot delivery could not finish; it will be retried.", { cause }),
       ),
       Effect.ensuring(
         Ref.update(waiting, (set) => {
@@ -684,86 +748,139 @@ const make = Effect.gen(function* () {
     );
   });
 
-  /** Membership, archive and the target's activity are checked here, at the moment of dispatch. */
+  /** Finds the seat or DM a delivery goes to, creating a room seat on first use. */
+  const destinationOf = Effect.fn("BotChannelService.destinationOf")(function* (
+    message: MessageRow,
+    target: BotRow,
+  ) {
+    if (!message.channel_key.startsWith("room:")) {
+      return { threadId: ThreadId.make(target.dm_thread_id ?? ""), room: null };
+    }
+    const room = yield* readRoom(message.channel_key.slice("room:".length));
+    return { threadId: yield* ensureRoomThread(room, target), room };
+  });
+
+  /**
+   * Membership, archive, access and the target's activity are checked here, at the moment of
+   * dispatch, under the same lock room edits take. A send that already committed before a
+   * restart is replayed by its command id and only followed.
+   */
   const dispatch = Effect.fn("BotChannelService.dispatch")(function* (delivery: DeliveryRow) {
     const block = (reason: string) =>
-      setDelivery(delivery.delivery_id, { status: "blocked", reason });
+      setDelivery(delivery.delivery_id, { status: "blocked", from: "queued", reason });
+    const commandId = CommandId.make(`bot-delivery:${delivery.delivery_id}`);
     const target = yield* readBot(delivery.target_bot_id);
     if (target === undefined || target.dm_thread_id === null) return yield* block("Bot deleted");
-    if (target.archived_at !== null) return yield* block("Bot archived");
     const [message] = yield* sql<MessageRow>`
       SELECT * FROM bot_messages WHERE message_id = ${delivery.message_id}
     `;
     if (message === undefined) return yield* block("Message missing");
-    let destination = ThreadId.make(target.dm_thread_id);
-    let text: string;
-    if (message.channel_key.startsWith("room:")) {
-      const room = yield* readRoom(message.channel_key.slice("room:".length));
-      if (room.archivedAt !== null) return yield* block("Room archived");
-      if (!room.memberBotIds.includes(BotId.make(target.bot_id))) {
-        return yield* block("Removed from the room");
-      }
-      destination = yield* ensureRoomThread(room, target);
-      text = yield* roomPrompt(room, target, message);
-    } else {
-      text = yield* peerPrompt(message, delivery);
-    }
-    const shell = yield* threads.getThreadShell(destination);
-    if (shell === null) return yield* block("Chat deleted");
-    // A busy bot keeps the delivery here, where membership and archive still apply.
-    if (ACTIVE_STATUSES.has(shell.status)) return;
-    const sent = yield* threads.sendToThread({
-      projectId: shell.projectId,
-      commandId: CommandId.make(`bot-delivery:${delivery.delivery_id}`),
-      threadId: destination,
-      messageId: MessageId.make(`bot-delivery:${delivery.delivery_id}`),
-      text,
-      attachments: [],
-      mode: "queue",
-      ...(message.origin_thread_id === null || message.origin_thread_id === destination
-        ? {}
-        : { senderThreadId: ThreadId.make(message.origin_thread_id) }),
-      createdBy: message.sender_bot_id === null ? "user" : "agent",
-      creationSource: "server",
-    });
-    yield* setDelivery(delivery.delivery_id, {
-      status: "accepted",
-      threadId: destination,
-      runId: sent.run.id,
-    });
-    yield* Effect.forkDetach(
-      follow({ ...delivery, status: "accepted", thread_id: destination, run_id: sent.run.id }),
+    const committed = yield* threads.hasReceipt(commandId);
+    return yield* deliveryLock.withPermits(1)(
+      Effect.gen(function* () {
+        const [current] = yield* sql<{ status: string }>`
+          SELECT status FROM bot_deliveries WHERE delivery_id = ${delivery.delivery_id}
+        `;
+        if (current?.status !== "queued") return;
+        const { threadId: destination, room } = yield* destinationOf(message, target);
+        if (!committed) {
+          const fresh = yield* readBot(target.bot_id);
+          if (fresh === undefined || fresh.archived_at !== null)
+            return yield* block("Bot archived");
+          if (room !== null) {
+            if (room.archivedAt !== null) return yield* block("Room archived");
+            if (!room.memberBotIds.includes(BotId.make(target.bot_id))) {
+              return yield* block("Removed from the room");
+            }
+          }
+        }
+        const shell = yield* threads.getThreadShell(destination);
+        if (shell === null) return yield* block("Chat deleted");
+        if (!committed) {
+          // A busy bot keeps the delivery here, where membership and archive still apply.
+          if (ACTIVE_STATUSES.has(shell.status)) return "deferred" as const;
+          const senderMode = delivery.sender_runtime_mode;
+          if (
+            senderMode !== null &&
+            runtimeModeRank(shell.runtimeMode) > runtimeModeRank(senderMode as RuntimeMode)
+          ) {
+            return yield* block("Needs more access than the sender has");
+          }
+        }
+        const text =
+          room === null
+            ? yield* peerPrompt(message, delivery)
+            : yield* roomPrompt(room, target, message);
+        const sent = yield* threads.sendToThread({
+          projectId: shell.projectId,
+          commandId,
+          threadId: destination,
+          messageId: MessageId.make(`bot-delivery:${delivery.delivery_id}`),
+          text,
+          attachments: [],
+          mode: "queue",
+          ...(message.origin_thread_id === null || message.origin_thread_id === destination
+            ? {}
+            : { senderThreadId: ThreadId.make(message.origin_thread_id) }),
+          createdBy: message.sender_bot_id === null ? "user" : "agent",
+          creationSource: "server",
+        });
+        yield* setDelivery(delivery.delivery_id, {
+          status: "accepted",
+          from: "queued",
+          threadId: destination,
+          runId: sent.run.id,
+        });
+        yield* Effect.forkDetach(
+          follow({ ...delivery, status: "accepted", thread_id: destination, run_id: sent.run.id }),
+        );
+      }),
     );
   });
 
+  /** Sends what can go now; true when something waits on a busy bot. */
   const drain = Effect.gen(function* () {
-    const queued = yield* sql<DeliveryRow>`
-      SELECT * FROM bot_deliveries WHERE status = 'queued' ORDER BY created_at LIMIT 50
+    // Accepted rows are followed again after a restart or a failed wait; `follow` dedupes.
+    const accepted = yield* sql<DeliveryRow>`
+      SELECT * FROM bot_deliveries WHERE status = 'accepted' AND run_id IS NOT NULL
     `;
-    yield* Effect.forEach(
-      queued,
-      (delivery) =>
-        dispatch(delivery).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Could not dispatch a bot delivery.", { cause }),
+    yield* Effect.forEach(accepted, (delivery) => Effect.forkDetach(follow(delivery)), {
+      discard: true,
+    });
+    const queued = yield* sql<DeliveryRow>`
+      SELECT * FROM bot_deliveries WHERE status = 'queued' ORDER BY created_at
+    `;
+    const outcomes = yield* Effect.forEach(queued, (delivery) =>
+      dispatch(delivery).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Could not deliver a bot message.", { cause }).pipe(
+            Effect.andThen(
+              setDelivery(delivery.delivery_id, {
+                status: "blocked",
+                from: "queued",
+                reason: "Could not deliver",
+              }),
+            ),
+            Effect.ignore,
           ),
         ),
-      { discard: true },
+      ),
     );
+    return outcomes.some((outcome) => outcome === "deferred");
   });
 
-  // Restart: follow accepted runs again; queued ones go out on the first drain.
-  const accepted = yield* sql<DeliveryRow>`
-    SELECT * FROM bot_deliveries WHERE status = 'accepted'
-  `.pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<DeliveryRow>));
-  yield* Effect.forEach(accepted, (delivery) => Effect.forkDetach(follow(delivery)), {
-    discard: true,
-  });
-  // Woken by new posts; the timer retries deliveries waiting on a busy bot.
+  // Woken by new posts; a short timer retries work waiting on a busy bot, a long one recovers.
   yield* Effect.forever(
     drain.pipe(
-      Effect.catchCause((cause) => Effect.logWarning("Bot delivery drain failed.", { cause })),
-      Effect.andThen(Effect.race(Queue.take(wake), Effect.sleep(Duration.seconds(3)))),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Bot delivery drain failed.", { cause }).pipe(Effect.as(true)),
+      ),
+      Effect.flatMap((deferred) =>
+        Effect.race(
+          Queue.take(wake),
+          Effect.sleep(deferred ? Duration.seconds(3) : Duration.seconds(30)),
+        ),
+      ),
     ),
   ).pipe(Effect.forkScoped);
 
@@ -775,8 +892,15 @@ const make = Effect.gen(function* () {
     handoff,
     sendFromThread,
     isBotThread: Effect.fn("BotChannelService.isBotThread")(function* (threadId) {
-      const owner = yield* ownerOfThread(threadId).pipe(Effect.orElseSucceed(() => undefined));
-      return owner !== undefined;
+      const rows = yield* sql`
+        SELECT 1 FROM bots WHERE dm_thread_id = ${threadId}
+        UNION ALL SELECT 1 FROM bot_room_threads WHERE thread_id = ${threadId}
+        LIMIT 1
+      `.pipe(
+        NodeSqliteClient.readOnly,
+        Effect.orElseSucceed(() => []),
+      );
+      return rows.length > 0;
     }),
   });
 });
