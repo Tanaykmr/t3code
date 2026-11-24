@@ -17,6 +17,7 @@ import { useProject } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { BotGlyph } from "./BotGlyph";
+import { BotKnowledge } from "./BotKnowledge";
 import { deliveriesByMessage, newestMessages } from "./bot-room";
 
 export type BotOverviewParams = {
@@ -156,6 +157,7 @@ export function BotOverviewScreen({ route }: StaticScreenProps<BotOverviewParams
               {error}
             </Text>
           ) : null}
+          <BotKnowledge environmentId={environmentId} botId={bot.id} />
           <BotMessages environmentId={environmentId} botId={bot.id} />
         </View>
       )}
