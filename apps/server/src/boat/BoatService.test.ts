@@ -237,7 +237,7 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("shows Boat's own TTL archive and an external deletion on reconcile", () => {
+  it.effect("reconciles Boat’s TTL archive and retains ownership after an unverified 404", () => {
     const { layer, fake } = setup();
     return Effect.gen(function* () {
       const boat = yield* BoatService.BoatService;
@@ -254,16 +254,20 @@ describe("BoatService", () => {
       yield* settle;
       expect(yield* server(managedId)).toMatchObject({
         lifecycle: "stopped",
-        observedPower: "missing",
-        retention: "expired",
+        observedPower: "stopped",
       });
-      expect((yield* Effect.flip(boat.resume({ requestId: requestId(), managedId }))).code).toBe(
-        "invalid-state",
-      );
-      // Deleting what is already gone completes as absence.
+      yield* boat.resume({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toMatchObject({
+        operation: { kind: "resume", stage: "failed", failure: "not-found" },
+      });
+      expect(fake.calls).not.toContain("resume");
+
       yield* boat.delete({ requestId: requestId(), managedId });
       yield* settle;
-      expect(yield* server(managedId)).toBeUndefined();
+      expect(yield* server(managedId)).toMatchObject({
+        operation: { kind: "delete", stage: "failed", failure: "not-found" },
+      });
     }).pipe(Effect.provide(layer));
   });
 
@@ -287,21 +291,44 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("past the window with no labeled match, leaves the create unresolved", () => {
-    const { layer, fake } = setup();
+  it.effect("retains an unresolved create until owned inventory can identify and stop it", () => {
+    let visible = true;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      list: (key, labels) => (visible ? api.list(key, labels) : Effect.succeed([])),
+    }));
     return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
       yield* configure;
-      fake.failNext("create", new BoatApiError({ category: "rejected" }));
       const { managedId } = yield* createSmall;
       yield* settle;
-      expect((yield* server(managedId))?.operation?.failure).toBe("provider-rejected");
+      const sandboxId = (yield* server(managedId))?.sandboxId;
 
+      // The create reply was lost and the active scope cannot list the accepted sandbox.
+      visible = false;
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`UPDATE boat_operations SET stage = 'queued', failure = NULL`;
+      yield* sql`UPDATE boat_operations SET stage = 'allocating'`;
+      yield* sql`UPDATE boat_servers SET lifecycle = 'provisioning', sandbox_id = NULL`;
       yield* TestClock.adjust("25 hours");
       yield* settle;
       expect((yield* server(managedId))?.operation?.failure).toBe("unresolved-create");
-      expect(fake.sandboxes.size).toBe(0);
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toMatchObject({
+        sandboxId: null,
+        operation: { kind: "delete", stage: "failed", failure: "unresolved-create" },
+      });
+      expect((yield* Effect.flip(boat.setApiKey({ apiKey: null }))).code).toBe("invalid-state");
+      expect((yield* Effect.flip(boat.setApiKey({ apiKey: FAKE_BOAT_KEY }))).code).toBe("conflict");
+
+      visible = true;
+      yield* settle;
+      expect((yield* server(managedId))?.sandboxId).toBe(sandboxId);
+      expect(fake.sandboxes.get(sandboxId ?? "")?.sandbox.state).toBe("archived");
+      expect(fake.calls.filter((call) => call === "create")).toHaveLength(1);
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toBeUndefined();
     }).pipe(Effect.provide(layer));
   });
 
@@ -622,6 +649,31 @@ describe("BoatService", () => {
       expect((yield* snapshot).account.status).toBe("configured");
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect.each(["get", "delete"] as const)(
+    "keeps a sandbox when %s returns a scope-masked 404 even though /me works",
+    (masked) => {
+      const { layer, fake } = setup();
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        const sandboxId = (yield* server(managedId))!.sandboxId!;
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+        if (masked === "get") fake.resumeExternally(sandboxId);
+        fake.failNext(masked, new BoatApiError({ category: "not-found", code: "not_found" }));
+
+        yield* boat.delete({ requestId: requestId(), managedId });
+        yield* settle;
+
+        expect(fake.sandboxes.has(sandboxId)).toBe(true);
+        expect(yield* server(managedId)).toBeDefined();
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: null }))).code).toBe("invalid-state");
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("keeps the key while it still manages machines", () => {
     const { layer } = setup();

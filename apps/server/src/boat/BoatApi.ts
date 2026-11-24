@@ -110,6 +110,7 @@ export class BoatApi extends Context.Service<
     readonly deletionCompleted: (
       key: BoatKey,
       operationId: string,
+      sandboxId: string,
     ) => Effect.Effect<boolean, BoatApiError>;
     readonly usage: (key: BoatKey, sandboxId: string) => Effect.Effect<BoatUsage, BoatApiError>;
   }

@@ -98,6 +98,7 @@ it("retries an unanswered Boat create with the same request ID on its original c
   const [request] = mocks.create.mock.calls[0]!;
   expect(request.environmentId).toBe(owner);
 
+  await screen.rerender(<></>);
   mocks.environments = controllers.map((controller) =>
     controller.environmentId === owner
       ? { ...controller, connection: { phase: "offline" } }

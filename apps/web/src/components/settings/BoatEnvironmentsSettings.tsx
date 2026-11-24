@@ -24,11 +24,12 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useGT } from "gt-react";
 import { PlayIcon, SquareIcon, Trash2Icon } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useState, useSyncExternalStore } from "react";
 
 import { requestConfirmDialog } from "../../confirmDialog";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { cn, randomUUID } from "../../lib/utils";
+import { boatCreateJournal, subscribeBoatCreateJournal } from "../../state/boatCreateJournal";
 import { environmentAtomList, environmentIdsKey } from "../../state/environmentAtomList";
 import { type EnvironmentPresentation, useEnvironments } from "../../state/environments";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
@@ -111,7 +112,9 @@ function useBoatLabels() {
     "provider-rejected": gt("Boat rejected the request."),
     "bootstrap-failed": gt("T3 Code could not start on the machine."),
     "snapshot-expired": gt("The saved disk has expired."),
-    "not-found": gt("Boat no longer has this machine."),
+    "not-found": gt(
+      "Boat could not locate this machine. Check the configured key’s access in Boat.",
+    ),
     "unresolved-create": gt("Could not tell which machine Boat made. Check the Boat dashboard."),
     "machine-running": gt("Boat reports it running again. Stop it before deleting."),
     "bootstrap-unavailable": gt("This server cannot set up T3 Code on a Boat machine yet."),
@@ -458,32 +461,32 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
   const gt = useGT();
   const { environments } = useEnvironments();
   const { controllers, manageable } = useBoatControllers(environments);
-  const eligible = controllers.filter(
-    (entry) =>
-      entry.connected &&
-      manageable.has(entry.environment.environmentId) &&
-      entry.snapshot.account.status === "configured",
+  const owners = controllers.filter(
+    (entry) => entry.connected && manageable.has(entry.environment.environmentId),
   );
+  const eligible = owners.filter((entry) => entry.snapshot.account.status === "configured");
   const capable = eligible.filter((entry) => entry.snapshot.createAvailable !== false);
   const [controllerId, setControllerId] = useState<EnvironmentId | null>(null);
-  const [name, setName] = useState("");
-  const [size, setSize] = useState<BoatMachineSize>("small");
-  const [ttlSeconds, setTtlSeconds] = useState<number>(BOAT_DEFAULT_TTL_SECONDS);
-  // Only the original controller can resolve a lost create response against its saved receipt.
-  const [pending, setPending] = useState<{
-    readonly environmentId: EnvironmentId;
-    readonly requestId: BoatRequestId;
-  } | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [draftName, setName] = useState("");
+  const [draftSize, setSize] = useState<BoatMachineSize>("small");
+  const [draftTtl, setTtlSeconds] = useState<number>(BOAT_DEFAULT_TTL_SECONDS);
+  const { entries, busy: creating } = useSyncExternalStore(
+    subscribeBoatCreateJournal,
+    boatCreateJournal.getSnapshot,
+  );
+  const pending = entries?.[0];
+  const name = pending?.input.displayName ?? draftName;
+  const size = pending?.input.size ?? draftSize;
+  const ttlSeconds = pending?.input.ttlSeconds ?? draftTtl;
   const create = useAtomCommand(serverEnvironment.createBoat, {
     label: "boat create",
     reportFailure: false,
   });
 
   const controller = pending
-    ? capable.find((entry) => entry.environment.environmentId === pending.environmentId)
+    ? owners.find((entry) => entry.environment.environmentId === pending.environmentId)
     : (capable.find((entry) => entry.environment.environmentId === controllerId) ?? capable[0]);
-  if (controller === undefined && pending !== null) {
+  if (controller === undefined && pending !== undefined) {
     return (
       <p className="text-sm text-muted-foreground">
         {gt("Reconnect to the environment and try again.")}
@@ -514,27 +517,33 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
   }
   const rate = controller.snapshot.rates.find((entry) => entry.size === size);
   const submit = async () => {
-    const targetId = controller.environment.environmentId;
-    const requestId = pending?.requestId ?? newRequestId();
-    setPending({ environmentId: targetId, requestId });
-    setCreating(true);
-    const result = await create({
-      environmentId: targetId,
-      input: { requestId, displayName: name.trim(), size, ttlSeconds },
-    });
-    setCreating(false);
-    if (result._tag === "Failure") {
-      if (isAtomCommandInterrupted(result)) return;
-      const error = squashAtomCommandFailure(result);
-      if (boatRequestAnswered(error)) setPending(null);
-      toastManager.add({
-        type: "error",
-        title: gt("Could not create the Boat machine"),
-        description: String(error),
-      });
+    const request = pending ?? {
+      kind: "create" as const,
+      environmentId: controller.environment.environmentId,
+      input: { requestId: newRequestId(), displayName: name.trim(), size, ttlSeconds },
+    };
+    const outcome = await boatCreateJournal.submit(
+      request,
+      pending !== undefined,
+      async (saved) => {
+        const result = await create({ environmentId: saved.environmentId, input: saved.input });
+        if (result._tag === "Success") return { ok: true, receipt: result.value };
+        if (isAtomCommandInterrupted(result)) return { ok: false, error: null, answered: false };
+        const error = squashAtomCommandFailure(result);
+        return { ok: false, error: String(error), answered: boatRequestAnswered(error) };
+      },
+    );
+    if (outcome === undefined) return;
+    if (!outcome.ok) {
+      if (outcome.error !== null) {
+        toastManager.add({
+          type: "error",
+          title: gt("Could not create the Boat machine"),
+          description: outcome.error,
+        });
+      }
       return;
     }
-    setPending(null);
     toastManager.add({
       type: "success",
       title: gt("Creating {name}", { name: name.trim() }),
@@ -543,7 +552,7 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
     onCreated();
   };
   const hours = ttlSeconds / 3600;
-  const locked = creating || pending !== null;
+  const locked = creating || pending !== undefined;
   return (
     <form
       className="space-y-3"
@@ -552,7 +561,7 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
         if (!creating && name.trim() !== "") void submit();
       }}
     >
-      {capable.length > 1 ? (
+      {(pending ? owners : capable).length > 1 ? (
         <label className="block">
           <span className="mb-1.5 block text-xs font-medium text-foreground">{gt("Owned by")}</span>
           <select
@@ -561,7 +570,7 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
             disabled={locked}
             onChange={(event) => setControllerId(event.target.value as EnvironmentId)}
           >
-            {capable.map((entry) => (
+            {(pending ? owners : capable).map((entry) => (
               <option key={entry.environment.environmentId} value={entry.environment.environmentId}>
                 {entry.environment.label}
               </option>

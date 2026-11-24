@@ -45,7 +45,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
   const latency = options.latency ?? Effect.void;
   const sandboxes = new Map<string, FakeSandbox>();
   const idempotency = new Map<string, string>();
-  const deletions = new Set<string>();
+  const deletions = new Map<string, string>();
   const calls: Array<string> = [];
   const failures = new Map<string, BoatApiError>();
   const lostResponses = new Set<string>();
@@ -193,16 +193,18 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
       yield* find(key, sandboxId);
       sandboxes.delete(sandboxId);
       const operationId = `bdop_${sandboxId.slice(3).padEnd(32, "0")}`;
-      deletions.add(operationId);
+      deletions.set(operationId, sandboxId);
       return operationId;
     }),
-    deletionCompleted: Effect.fn("FakeBoat.deletionCompleted")(function* (key, operationId) {
-      yield* enter("deletion", key);
-      if (!deletions.has(operationId)) {
-        return yield* new BoatApiError({ category: "not-found", code: "not_found" });
-      }
-      return true;
-    }),
+    deletionCompleted: Effect.fn("FakeBoat.deletionCompleted")(
+      function* (key, operationId, sandboxId) {
+        yield* enter("deletion", key);
+        if (deletions.get(operationId) !== sandboxId) {
+          return yield* new BoatApiError({ category: "not-found", code: "not_found" });
+        }
+        return true;
+      },
+    ),
     usage: Effect.fn("FakeBoat.usage")(function* (key, sandboxId) {
       const now = yield* enter("usage", key);
       const entry = yield* find(key, sandboxId);

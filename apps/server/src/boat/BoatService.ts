@@ -112,6 +112,7 @@ interface AccountRow {
 const decodeServer = Schema.decodeUnknownOption(BoatServer);
 /** Marks a stop or resume Boat acknowledged, so later passes only confirm it. */
 const ACKNOWLEDGED = "acknowledged";
+const NO_ALLOCATION = "no-allocation";
 const SENDING = "sending:";
 const SENT = "stop:";
 const isBoatError = Schema.is(BoatError);
@@ -224,6 +225,10 @@ export const make = Effect.gen(function* () {
     sql<OperationRow>`SELECT * FROM boat_operations WHERE request_id = ${requestId}`.pipe(
       Effect.map((rows) => rows[0] ?? null),
     );
+  const readCreate = (managedId: string) =>
+    sql<OperationRow>`
+      SELECT * FROM boat_operations WHERE managed_id = ${managedId} AND kind = 'create'
+    `.pipe(Effect.map((rows) => rows[0] ?? null));
   // Insertion order breaks timestamp ties; later rows win.
   const latestOperations = sql<OperationRow>`
     SELECT * FROM boat_operations ORDER BY created_at, rowid
@@ -402,15 +407,6 @@ export const make = Effect.gen(function* () {
     });
   });
 
-  const observeMissing = Effect.fn("BoatService.observeMissing")(function* (managedId: string) {
-    yield* setServer(managedId, {
-      observed_power: "missing",
-      observed_at: yield* nowIso,
-      auto_stop_at: null,
-      retention: "expired",
-    });
-  });
-
   /** Polls one sandbox until `done`, recording each observation. None when polling ran out. */
   const pollUntil = Effect.fn("BoatService.pollUntil")(function* (
     key: BoatKey,
@@ -479,6 +475,26 @@ export const make = Effect.gen(function* () {
     yield* updateUsage(key, server.managed_id, sandboxId);
   });
 
+  const allocationLabels = (managedId: string) => ({
+    "t3.role": "environment",
+    "t3.controller": controllerId,
+    "t3.managed": managedId,
+  });
+
+  const findAllocation = Effect.fn("BoatService.findAllocation")(function* (
+    key: BoatKey,
+    managedId: string,
+  ) {
+    const labels = allocationLabels(managedId);
+    const matches = yield* retryTransient(api.list(key, labels));
+    const [only] = matches;
+    return matches.length === 1 &&
+      only !== undefined &&
+      Object.entries(labels).every(([name, value]) => only.labels[name] === value)
+      ? only
+      : null;
+  });
+
   // Each run returns false when it must wait for a later pass (Boat still settling).
 
   const runCreate = Effect.fn("BoatService.runCreate")(function* (
@@ -489,57 +505,52 @@ export const make = Effect.gen(function* () {
     // A create this server cannot finish is refused before Boat sees it. One that may already
     // have been sent (it left "queued") is only discovered, so an accepted machine is not lost.
     const discoverOnly = server.sandbox_id === null && !bootstrap.available;
+    if (op.provider_operation_id === NO_ALLOCATION) {
+      return yield* new OperationFailed({ code: "provider-rejected" });
+    }
     if (discoverOnly && op.stage === "queued") {
+      yield* setStage(op.request_id, "allocating", { provider_operation_id: NO_ALLOCATION });
       return yield* new OperationRefused({ code: "bootstrap-unavailable" });
     }
     yield* setStage(op.request_id, "allocating");
     let sandboxId = server.sandbox_id;
     if (sandboxId === null) {
-      const labels = {
-        "t3.role": "environment",
-        "t3.controller": controllerId,
-        "t3.managed": server.managed_id,
-      };
       const now = DateTime.toEpochMillis(yield* DateTime.now);
       let sandbox: BoatSandbox;
       if (!discoverOnly && now - Date.parse(op.created_at) < IDEMPOTENCY_WINDOW_MS) {
-        const created = yield* retryTransient(
-          api.create(key, {
+        const created = yield* api
+          .create(key, {
             idempotencyKey: op.request_id,
             name: server.display_name,
             size: server.size,
             ttlSeconds: server.ttl_seconds,
-            labels,
+            labels: allocationLabels(server.managed_id),
             environment: server.boat_environment,
-          }),
-        ).pipe(
-          Effect.asSome,
-          // An unreadable 2xx may still mean Boat allocated it, so it is replayed too.
-          Effect.catchIf(
-            (error) => isTransient(error) || error.code === "decode",
-            () => Effect.succeedNone,
-          ),
-        );
-        // Boat may have accepted it: keep the operation pending and replay the same key later.
-        if (Option.isNone(created)) return false;
-        sandbox = created.value;
+          })
+          .pipe(Effect.result);
+        if (created._tag === "Failure") {
+          const error = created.failure;
+          // An earlier attempt might have allocated even if the current key is refused.
+          if (isTransient(error) || error.code === "decode") return false;
+          if (op.stage !== "queued") {
+            return yield* new OperationFailed({ code: "unresolved-create" });
+          }
+          yield* setStage(op.request_id, "allocating", { provider_operation_id: NO_ALLOCATION });
+          return yield* error;
+        }
+        sandbox = created.success;
       } else {
         // The key no longer fences allocation: adopt exactly one labeled match, never create.
-        const listed = yield* retryTransient(api.list(key, labels)).pipe(
+        const listed = yield* findAllocation(key, server.managed_id).pipe(
           Effect.asSome,
           Effect.catchIf(isTransient, () => Effect.succeedNone),
         );
         if (Option.isNone(listed)) return false;
-        const matches = listed.value;
-        const [only] = matches;
-        // Boat may list an accepted machine a little later; keep looking before giving up.
-        if (matches.length === 0 && now - Date.parse(op.created_at) < DISCOVERY_GRACE_MS) {
-          return false;
-        }
-        if (matches.length !== 1 || only === undefined) {
+        if (listed.value === null) {
+          if (now - Date.parse(op.created_at) < DISCOVERY_GRACE_MS) return false;
           return yield* new OperationFailed({ code: "unresolved-create" });
         }
-        sandbox = only;
+        sandbox = listed.value;
       }
       sandboxId = sandbox.id;
       yield* setServer(server.managed_id, { sandbox_id: sandboxId });
@@ -761,78 +772,66 @@ export const make = Effect.gen(function* () {
   ) {
     yield* setStage(op.request_id, "deleting");
     yield* setServer(server.managed_id, { lifecycle: "deleting" });
-    if (server.sandbox_id !== null) {
+    const target = server.sandbox_id;
+    if (target === null) {
+      const create = yield* readCreate(server.managed_id);
+      if (create?.provider_operation_id !== NO_ALLOCATION) {
+        return yield* new OperationFailed({ code: "unresolved-create" });
+      }
+    } else {
       let operationId = op.provider_operation_id;
       if (operationId === null) {
-        // Check that the sandbox is archived or terminal before asking Boat to purge it.
-        const current = yield* retryTransient(api.get(key, server.sandbox_id)).pipe(
-          Effect.asSome,
-          Effect.catchIf(
-            (error) => error.category === "not-found",
-            () => Effect.succeedNone,
-          ),
-        );
+        // A scoped key can miss a live machine in both GET and list. Without a purge receipt,
+        // neither 404 nor inventory under that key releases the controller's cleanup obligation.
+        const current = yield* retryTransient(api.get(key, target));
         if (
-          Option.isSome(current) &&
-          current.value.state !== "archived" &&
-          current.value.state !== "error" &&
-          current.value.state !== "cancelled"
+          current.state !== "archived" &&
+          current.state !== "error" &&
+          current.state !== "cancelled"
         ) {
-          yield* observe(server.managed_id, current.value);
-          if (current.value.state === "archiving") return false;
+          yield* observe(server.managed_id, current);
+          if (current.state === "archiving") return false;
           return yield* new OperationFailed({ code: "machine-running" });
         }
-        // Not retried in place: a later pass looks at the machine again before sending it.
-        const attempt = Option.isNone(current)
-          ? Option.some(Option.none<string>())
-          : yield* api.delete(key, server.sandbox_id).pipe(
-              Effect.map((id) => Option.some(Option.some(id))),
-              Effect.catchIf(
-                (error) => error.category === "not-found",
-                () => Effect.succeedSome(Option.none<string>()),
-              ),
-              Effect.catchIf(isTransient, () => Effect.succeedNone),
-            );
-        if (Option.isNone(attempt)) return false;
-        const accepted = attempt.value;
-        if (Option.isSome(accepted)) {
-          operationId = accepted.value;
-          yield* setStage(op.request_id, "deleting", { provider_operation_id: operationId });
-        } else {
-          // Absent for a key that still authenticates; with no receipt, purge status is unknown.
-          yield* retryTransient(api.account(key));
-        }
+        operationId = yield* api.delete(key, target);
+        yield* setStage(op.request_id, "deleting", { provider_operation_id: operationId });
       }
-      const target = server.sandbox_id;
-      if (operationId !== null) {
-        let completed = false;
-        for (let attempt = 0; !completed && attempt < POLL_ATTEMPTS; attempt++) {
-          if (attempt > 0) yield* Effect.sleep(POLL_INTERVAL);
-          completed = yield* retryTransient(api.deletionCompleted(key, operationId)).pipe(
-            // Boat refuses deletion status to organization keys (seen live); there the sandbox
-            // answering 404 is the best evidence, and purge completion stays unconfirmed.
-            Effect.catchIf(
-              (error) => error.code === "api_key_org_forbidden",
-              () =>
-                api.get(key, target).pipe(
-                  Effect.as(false),
-                  Effect.catchIf(
-                    (error) => error.category === "not-found",
-                    () => Effect.succeed(true),
-                  ),
-                ),
-            ),
-          );
-        }
-        if (!completed) return false;
+      let completed = false;
+      for (let attempt = 0; !completed && attempt < POLL_ATTEMPTS; attempt++) {
+        if (attempt > 0) yield* Effect.sleep(POLL_INTERVAL);
+        completed = yield* retryTransient(api.deletionCompleted(key, operationId, target)).pipe(
+          // Boat documents that accepting a purge irreversibly removes the sandbox from use.
+          // Organization keys cannot read purge status, but we already persisted its receipt.
+          Effect.catchIf(
+            (error) => error.code === "api_key_org_forbidden",
+            () => Effect.succeed(true),
+          ),
+          Effect.catchIf(
+            (error) => error.category === "not-found" || error.code === "decode",
+            () => Effect.succeed(false),
+          ),
+        );
       }
+      if (!completed) return false;
     }
-    const now = yield* nowIso;
-    yield* sql`
-      UPDATE boat_servers SET observed_power = 'missing', observed_at = ${now}, deleted_at = ${now}
-      WHERE managed_id = ${server.managed_id}
-    `;
     return true;
+  });
+
+  const completeDelete = Effect.fn("BoatService.completeDelete")(function* (op: OperationRow) {
+    const now = yield* nowIso;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`
+          UPDATE boat_servers SET observed_power = 'missing', observed_at = ${now}, deleted_at = ${now}
+          WHERE managed_id = ${op.managed_id}
+        `;
+        yield* sql`
+          UPDATE boat_operations SET stage = 'completed', updated_at = ${now}
+          WHERE request_id = ${op.request_id}
+        `;
+      }),
+    );
+    yield* publish;
   });
 
   const settleFailure = Effect.fn("BoatService.settleFailure")(function* (
@@ -921,7 +920,10 @@ export const make = Effect.gen(function* () {
             ),
         ),
       );
-      if (done === true) yield* setStage(op.request_id, "completed");
+      if (done === true) {
+        if (op.kind === "delete") yield* completeDelete(op);
+        else yield* setStage(op.request_id, "completed");
+      }
       return done;
     },
     (effect, op) =>
@@ -1171,7 +1173,11 @@ export const make = Effect.gen(function* () {
     servers: ReadonlyArray<ServerRow>,
   ) {
     for (const server of servers) {
-      if (server.sandbox_id === null) continue;
+      if (server.sandbox_id === null) {
+        const create = yield* readCreate(server.managed_id).pipe(persistence);
+        if (create?.provider_operation_id !== NO_ALLOCATION) return false;
+        continue;
+      }
       const seen = yield* api.get(key, server.sandbox_id).pipe(
         Effect.as(true),
         Effect.catchIf(
@@ -1195,42 +1201,41 @@ export const make = Effect.gen(function* () {
     function* (key: BoatKey, managedId: string) {
       // Read under the machine's lock; the list read before it may be stale.
       const server = yield* readServer(managedId);
-      if (server === null || server.sandbox_id === null) return;
-      if ((yield* nextPending(managedId)) !== null) return;
-      const latest = (yield* latestOperations).get(managedId);
-      const sandbox = yield* api.get(key, server.sandbox_id).pipe(
-        Effect.asSome,
-        Effect.catchIf(
-          (error) => error.category === "not-found",
-          () => Effect.succeedNone,
-        ),
-      );
-      if (Option.isNone(sandbox)) {
-        yield* observeMissing(server.managed_id);
-        if (server.lifecycle === "running") {
-          yield* setServer(server.managed_id, { lifecycle: "stopped" });
-        }
+      if (server === null || (yield* nextPending(managedId)) !== null) return;
+      if (server.sandbox_id === null) {
+        const create = yield* readCreate(managedId);
+        if (create?.stage !== "failed" || create.provider_operation_id === NO_ALLOCATION) return;
+        // Empty scoped inventory leaves ownership intact. A later exact match can be recovered.
+        const recovered = yield* findAllocation(key, managedId);
+        if (recovered === null) return;
+        yield* setServer(managedId, { sandbox_id: recovered.id });
+        yield* observe(managedId, recovered);
+        if (isLiveState(recovered.state)) yield* api.stop(key, recovered.id).pipe(Effect.ignore);
         return;
       }
-      yield* observe(server.managed_id, sandbox.value);
-      if (server.lifecycle === "running" && sandbox.value.state === "archived") {
+      const latest = (yield* latestOperations).get(managedId);
+      const sandbox = yield* api.get(key, server.sandbox_id);
+      yield* observe(server.managed_id, sandbox);
+      if (server.lifecycle === "running" && sandbox.state === "archived") {
         yield* setServer(server.managed_id, {
           lifecycle: "stopped",
-          last_stopped_at: sandbox.value.stoppedAt ?? (yield* nowIso),
+          last_stopped_at: sandbox.stoppedAt ?? (yield* nowIso),
         });
       } else if (
         server.lifecycle === "failed" &&
-        isLiveState(sandbox.value.state) &&
-        (latest?.kind === "create" || latest?.kind === "resume") &&
-        latest.stage === "failed"
+        isLiveState(sandbox.state) &&
+        latest?.stage === "failed" &&
+        (latest.kind === "create" ||
+          latest.kind === "resume" ||
+          (latest.kind === "delete" && latest.failure === "unresolved-create"))
       ) {
         // A failed create or resume left it billing and the first cleanup did not land.
         yield* api.stop(key, server.sandbox_id).pipe(Effect.ignore);
-      } else if (server.lifecycle === "stopped" && isLiveState(sandbox.value.state)) {
+      } else if (server.lifecycle === "stopped" && isLiveState(sandbox.state)) {
         // Restarted outside T3; show it with its new deadline rather than hiding it.
         yield* setServer(server.managed_id, { lifecycle: "running" });
       }
-      if (server.lifecycle === "running" || isLiveState(sandbox.value.state)) {
+      if (server.lifecycle === "running" || isLiveState(sandbox.state)) {
         yield* updateUsage(key, server.managed_id, server.sandbox_id);
       }
     },

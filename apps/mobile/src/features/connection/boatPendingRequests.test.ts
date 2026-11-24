@@ -78,6 +78,17 @@ describe("Boat pending requests", () => {
     expect(await sendBoatRequest(create)).toMatchObject({ ok: false, answered: false });
     expect(saved()).toEqual([expect.objectContaining(create)]);
 
+    const second = {
+      ...create,
+      environmentId: otherId,
+      input: {
+        ...create.input,
+        requestId: BoatRequestId.make("00000000-0000-4000-8000-000000000002"),
+      },
+    };
+    expect(await sendBoatRequest(second)).toBeUndefined();
+    expect(mocks.run).toHaveBeenCalledTimes(1);
+
     expect(selectBoatCreateController([other], CONTROLLER, create)).toBeUndefined();
     await resendPendingBoatRequests(new Set([otherId]));
     expect(mocks.run).toHaveBeenCalledTimes(1);
@@ -108,25 +119,28 @@ describe("Boat pending requests", () => {
     expect(saved()).toEqual([]);
   });
 
-  it("drops an older build's saved Delete and undated or expired creates instead of replaying", async () => {
+  it("keeps expired creates locked until an explicit retry, without replaying older actions", async () => {
     vi.useFakeTimers({ now: 10 * 3600_000, toFake: ["Date"] });
     mocks.store.set(
       "t3code.boat-pending.v1",
       JSON.stringify([
         { kind: "delete", environmentId: CONTROLLER, input: { requestId: "x", managedId: "m" } },
-        create,
         { ...create, savedAt: 0 },
       ]),
     );
     await resendPendingBoatRequests(new Set([CONTROLLER]));
     vi.useRealTimers();
     expect(mocks.run).not.toHaveBeenCalled();
+    expect(await sendBoatRequest(create)).toBeUndefined();
+    mocks.run.mockResolvedValueOnce(AsyncResult.success(receipt));
+    await sendBoatRequest(create, true);
+    expect(mocks.run).toHaveBeenCalledOnce();
     expect(saved()).toEqual([]);
   });
 
   it("does not send a create it could not save, and keeps the queue when it cannot read it", async () => {
     mocks.failWrite = true;
-    expect((await sendBoatRequest(create)).ok).toBe(false);
+    expect((await sendBoatRequest(create))?.ok).toBe(false);
     expect(mocks.run).not.toHaveBeenCalled();
 
     mocks.failWrite = false;

@@ -1,9 +1,12 @@
+import * as Schema from "effect/Schema";
 import {
   boatAllowedActions,
+  BoatCreateInput,
+  type BoatOperationReceipt,
   type BoatOperationKind,
   type BoatServer,
   type BoatSnapshot,
-  type EnvironmentId,
+  EnvironmentId,
 } from "@t3tools/contracts";
 
 export type BoatAction = Exclude<BoatOperationKind, "create">;
@@ -115,17 +118,125 @@ export function boatKeyRouteIsPrivate(socketUrl: string | null): boolean {
   }
 }
 
-/**
- * Whether a failed Boat request got the controller's answer. Otherwise the request may still have
- * been accepted, and a retry must reuse its request ID and inputs.
- */
+const SavedBoatCreate = Schema.Struct({
+  kind: Schema.Literal("create"),
+  environmentId: EnvironmentId,
+  input: BoatCreateInput,
+  savedAt: Schema.Number,
+});
+export type SavedBoatCreate = typeof SavedBoatCreate.Type;
+export type BoatCreateRequest = Omit<SavedBoatCreate, "savedAt">;
+
+const decodeSavedBoatCreate = Schema.decodeUnknownSync(SavedBoatCreate);
+
+export const decodeSavedBoatCreates = (value: unknown): ReadonlyArray<SavedBoatCreate> => {
+  if (!Array.isArray(value)) throw new Error("Invalid Boat create journal");
+  return value.flatMap((entry: unknown) =>
+    typeof entry === "object" && entry !== null && "kind" in entry && entry.kind === "create"
+      ? [decodeSavedBoatCreate({ savedAt: 0, ...entry })]
+      : [],
+  );
+};
+
+type BoatRequestOutcome =
+  | { readonly ok: true; readonly receipt: BoatOperationReceipt }
+  | { readonly ok: false; readonly error: string | null; readonly answered: boolean };
+
 export function boatRequestAnswered(error: unknown): boolean {
   return (
     typeof error === "object" &&
     error !== null &&
     "_tag" in error &&
-    (error._tag === "BoatError" || error._tag === "EnvironmentAuthorizationError")
+    error._tag === "BoatError" &&
+    "code" in error &&
+    error.code !== "persistence"
   );
+}
+
+/** Storage updates must serialize the read, comparison and write, including across browser tabs. */
+export function createBoatCreateJournal(
+  update: (
+    change: (saved: ReadonlyArray<SavedBoatCreate>) => ReadonlyArray<SavedBoatCreate>,
+  ) => Promise<ReadonlyArray<SavedBoatCreate>>,
+  storageError: () => string,
+  now: () => number,
+) {
+  let snapshot: {
+    readonly entries: ReadonlyArray<SavedBoatCreate> | undefined;
+    readonly busy: boolean;
+  } = { entries: undefined, busy: false };
+  const listeners = new Set<() => void>();
+
+  const publish = (next: typeof snapshot) => {
+    snapshot = next;
+    for (const listener of listeners) listener();
+  };
+
+  async function refresh() {
+    if (snapshot.busy) return;
+    const previous = snapshot;
+    try {
+      const entries = await update((saved) => saved);
+      if (snapshot === previous) publish({ entries, busy: false });
+    } catch {
+      // Admission will check storage again before sending.
+    }
+  }
+
+  async function submit(
+    request: BoatCreateRequest,
+    retry: boolean,
+    send: (request: BoatCreateRequest) => Promise<BoatRequestOutcome>,
+  ): Promise<BoatRequestOutcome | undefined> {
+    if (snapshot.busy) return;
+    publish({ ...snapshot, busy: true });
+    let dispatched: SavedBoatCreate | undefined;
+    try {
+      const entries = await update((saved) => {
+        if (retry) {
+          dispatched = saved.find(
+            (entry) =>
+              entry.input.requestId === request.input.requestId &&
+              entry.environmentId === request.environmentId,
+          );
+        } else if (saved.length === 0) {
+          dispatched = { ...request, savedAt: now() };
+          return [dispatched];
+        }
+        return saved;
+      });
+      publish({ entries, busy: true });
+      if (dispatched === undefined) return;
+      const { savedAt: _savedAt, ...original } = dispatched;
+      const outcome = await send(original);
+      if (outcome.ok || outcome.answered) {
+        const remaining = await update((saved) =>
+          saved.filter(
+            (entry) =>
+              entry.input.requestId !== original.input.requestId ||
+              entry.environmentId !== original.environmentId,
+          ),
+        );
+        publish({ entries: remaining, busy: true });
+      }
+      return outcome;
+    } catch {
+      return { ok: false, error: storageError(), answered: false };
+    } finally {
+      publish({ ...snapshot, busy: false });
+    }
+  }
+
+  return {
+    getSnapshot: () => snapshot,
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      void refresh();
+      return () => void listeners.delete(listener);
+    },
+    refresh,
+    submit,
+  };
 }
 
 export const BOAT_TTL_CHOICES_SECONDS = [3600, 2 * 3600, 4 * 3600, 8 * 3600] as const;

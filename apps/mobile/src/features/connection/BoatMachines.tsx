@@ -21,7 +21,7 @@ import {
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useGT } from "gt-react-native";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text, AppTextInput } from "../../components/ui/AppText";
@@ -38,7 +38,11 @@ import { serverEnvironment } from "../../state/server";
 import { environmentSession, useEnvironmentsWithScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "../settings/components/SettingsSection";
-import { selectBoatCreateController, sendBoatRequest } from "./boatPendingRequests";
+import {
+  boatCreateJournal,
+  selectBoatCreateController,
+  sendBoatRequest,
+} from "./boatPendingRequests";
 
 // Keyed by a JSON array of the environments that advertise Boat, read as one list.
 const boatSnapshotsAcross = Atom.family((environmentIdsKey: string) => {
@@ -96,7 +100,9 @@ function useBoatLabels() {
     "provider-rejected": gt("Boat rejected the request."),
     "bootstrap-failed": gt("T3 Code could not start on the machine."),
     "snapshot-expired": gt("The saved disk has expired."),
-    "not-found": gt("Boat no longer has this machine."),
+    "not-found": gt(
+      "Boat could not locate this machine. Check the configured key’s access in Boat.",
+    ),
     "unresolved-create": gt("Could not tell which machine Boat made. Check the Boat dashboard."),
     "machine-running": gt("Boat reports it running again. Stop it before deleting."),
     "bootstrap-unavailable": gt("This server cannot set up T3 Code on a Boat machine yet."),
@@ -382,25 +388,27 @@ export function BoatMachinesSection({
 export function BoatCreateSection(props: { readonly onCreated: () => void }) {
   const gt = useGT();
   const { controllers, manageable } = useBoatControllers();
-  const eligible = controllers.filter(
+  const owners = controllers.filter(
+    (entry) => entry.connected && manageable.has(entry.environment.environmentId),
+  );
+  const eligible = owners.filter(
     (entry) =>
-      entry.connected &&
-      manageable.has(entry.environment.environmentId) &&
-      entry.snapshot.account.status === "configured" &&
-      entry.snapshot.createAvailable !== false,
+      entry.snapshot.account.status === "configured" && entry.snapshot.createAvailable !== false,
   );
   const [controllerId, setControllerId] = useState<EnvironmentId | null>(null);
-  const [name, setName] = useState("");
-  const [size, setSize] = useState<BoatMachineSize>("small");
-  const [ttlSeconds, setTtlSeconds] = useState<number>(BOAT_TTL_CHOICES_SECONDS[0]);
-  // A create the controller may have accepted without answering. Its inputs stay locked so a
-  // retry repeats the same request rather than conflicting with it or making a second machine.
-  const [pending, setPending] = useState<{
-    readonly environmentId: EnvironmentId;
-    readonly requestId: BoatRequestId;
-  } | null>(null);
-  const [creating, setCreating] = useState(false);
-  const controller = selectBoatCreateController(eligible, controllerId, pending);
+  const [draftName, setName] = useState("");
+  const [draftSize, setSize] = useState<BoatMachineSize>("small");
+  const [draftTtl, setTtlSeconds] = useState<number>(BOAT_TTL_CHOICES_SECONDS[0]);
+  const { entries, busy: creating } = useSyncExternalStore(
+    boatCreateJournal.subscribe,
+    boatCreateJournal.getSnapshot,
+  );
+  const pending = entries?.[0] ?? null;
+  const name = pending?.input.displayName ?? draftName;
+  const size = pending?.input.size ?? draftSize;
+  const ttlSeconds = pending?.input.ttlSeconds ?? draftTtl;
+  const selectable = pending === null ? eligible : owners;
+  const controller = selectBoatCreateController(selectable, controllerId, pending);
   if (controller === undefined && pending !== null) {
     return (
       <Text className="px-4 text-sm text-foreground-muted">
@@ -412,24 +420,19 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
   const rate = controller.snapshot.rates.find((entry) => entry.size === size);
   const locked = creating || pending !== null;
   const submit = async () => {
-    const targetId = controller.environment.environmentId;
-    const requestId = pending?.requestId ?? newRequestId();
-    setPending({ environmentId: targetId, requestId });
-    setCreating(true);
-    const outcome = await sendBoatRequest({
-      kind: "create",
-      environmentId: targetId,
-      input: { requestId, displayName: name.trim(), size, ttlSeconds },
-    });
-    setCreating(false);
+    const request = pending ?? {
+      kind: "create" as const,
+      environmentId: controller.environment.environmentId,
+      input: { requestId: newRequestId(), displayName: name.trim(), size, ttlSeconds },
+    };
+    const outcome = await sendBoatRequest(request, pending !== null);
+    if (outcome === undefined) return;
     if (!outcome.ok) {
-      if (outcome.answered) setPending(null);
       if (outcome.error !== null) {
         Dialog.alert(gt("Could not create the Boat machine"), outcome.error);
       }
       return;
     }
-    setPending(null);
     setName("");
     props.onCreated();
   };
@@ -445,9 +448,9 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
           pointerEvents={locked ? "none" : "auto"}
           className={cn("gap-3", locked && "opacity-60")}
         >
-          {eligible.length > 1 ? (
+          {selectable.length > 1 ? (
             <SegmentedControl
-              options={eligible.map((entry) => ({
+              options={selectable.map((entry) => ({
                 value: entry.environment.environmentId,
                 label: entry.environment.label,
                 accessibilityLabel: gt("Create on {environment}", {
@@ -500,7 +503,7 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
           label={gt("Create machine")}
           tone="primary"
           loading={creating}
-          disabled={name.trim() === ""}
+          disabled={creating || name.trim() === ""}
           onPress={() => void submit()}
         />
       </View>

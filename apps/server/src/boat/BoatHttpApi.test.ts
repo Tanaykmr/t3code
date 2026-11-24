@@ -95,13 +95,43 @@ describe("BoatHttpApi", () => {
   it.effect("confirms a delete with the sandbox ID and returns the deletion operation", () => {
     const operationId = `bdop_${"a".repeat(32)}`;
     const { requests, layer } = fakeBoat(() =>
-      json({ ok: true, operation: { id: operationId, status: "pending" } }, 202),
+      json(
+        {
+          ok: true,
+          operation: { id: operationId, kind: "sandbox", targetId: SANDBOX_ID, status: "pending" },
+        },
+        202,
+      ),
     );
     return Effect.gen(function* () {
       const api = yield* BoatApi;
       expect(yield* api.delete(KEY, SANDBOX_ID)).toBe(operationId);
       expect(requests.at(-1)?.method).toBe("DELETE");
       expect(requests.at(-1)?.headers.get("x-ascii-confirm-delete")).toBe(SANDBOX_ID);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("rejects deletion evidence for a different sandbox", () => {
+    const operationId = `bdop_${"a".repeat(32)}`;
+    const { layer } = fakeBoat(() =>
+      json(
+        {
+          operation: {
+            id: operationId,
+            kind: "sandbox",
+            targetId: "bx_98765432",
+            status: "completed",
+          },
+        },
+        202,
+      ),
+    );
+    return Effect.gen(function* () {
+      const api = yield* BoatApi;
+      expect((yield* Effect.flip(api.delete(KEY, SANDBOX_ID))).code).toBe("decode");
+      expect((yield* Effect.flip(api.deletionCompleted(KEY, operationId, SANDBOX_ID))).code).toBe(
+        "decode",
+      );
     }).pipe(Effect.provide(layer));
   });
 

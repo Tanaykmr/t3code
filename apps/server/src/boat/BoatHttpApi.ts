@@ -52,7 +52,12 @@ const UserEnvelope = Schema.Struct({
   }),
 });
 const DeletionEnvelope = Schema.Struct({
-  operation: Schema.Struct({ id: Schema.String, status: Schema.String }),
+  operation: Schema.Struct({
+    id: Schema.String,
+    kind: Schema.Literal("sandbox"),
+    targetId: Schema.String,
+    status: Schema.Literals(["pending", "processing", "blocked", "completed"]),
+  }),
 });
 const StopEnvelope = Schema.Struct({
   operation: Schema.optional(Schema.NullOr(Schema.Struct({ id: Schema.String }))),
@@ -255,16 +260,24 @@ const make = Effect.gen(function* () {
           HttpClientRequest.setHeader("X-Ascii-Confirm-Delete", id),
         ),
       ).pipe(Effect.flatMap(decode(DeletionEnvelope)));
-      return operation.id;
+      if (operation.targetId !== id) {
+        return yield* new BoatApiError({ category: "rejected", code: "decode" });
+      }
+      return yield* checked(DELETION_ID, operation.id);
     }),
-    deletionCompleted: Effect.fn("BoatHttpApi.deletionCompleted")(function* (key, operationId) {
-      const id = yield* checked(DELETION_ID, operationId);
-      const { operation } = yield* send(
-        key,
-        HttpClientRequest.get(`/deletion-operations/${id}`),
-      ).pipe(Effect.flatMap(decode(DeletionEnvelope)));
-      return operation.status === "completed";
-    }),
+    deletionCompleted: Effect.fn("BoatHttpApi.deletionCompleted")(
+      function* (key, operationId, sandboxId) {
+        const id = yield* checked(DELETION_ID, operationId);
+        const { operation } = yield* send(
+          key,
+          HttpClientRequest.get(`/deletion-operations/${id}`),
+        ).pipe(Effect.flatMap(decode(DeletionEnvelope)));
+        if (operation.id !== id || operation.targetId !== sandboxId) {
+          return yield* new BoatApiError({ category: "rejected", code: "decode" });
+        }
+        return operation.status === "completed";
+      },
+    ),
     usage: Effect.fn("BoatHttpApi.usage")(function* (key, sandboxId) {
       const id = yield* checked(SANDBOX_ID, sandboxId);
       return yield* send(key, HttpClientRequest.get(`/sandboxes/${id}/usage`)).pipe(
