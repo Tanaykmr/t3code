@@ -576,6 +576,10 @@ export const make = Effect.gen(function* () {
       return yield* new OperationRefused({ code: "bootstrap-unavailable" });
     }
     if (current.state === "archived") {
+      // Last look before waking it: a stop accepted since the check above still wins.
+      if (yield* hasPendingStop(server.managed_id)) {
+        return yield* new OperationRefused({ code: "provider-unavailable" });
+      }
       // Sent once per pass: a later pass looks at the machine again before any resend.
       const sent = yield* api.resume(key, sandboxId, server.ttl_seconds).pipe(
         Effect.as("sent" as const),
@@ -771,7 +775,20 @@ export const make = Effect.gen(function* () {
       effect.pipe(
         Effect.catchTags({
           OperationRefused: (refusal) => settleRefusal(op, refusal.code),
-          BoatApiError: (error) => settleFailure(op, failureCode(error)),
+          BoatApiError: (error) =>
+            isTransient(error)
+              ? // Boat did not answer: keep the operation for the next pass rather than fail it.
+                // A resume with a stop waiting hands off instead, so the stop is not held up.
+                op.kind === "resume"
+                ? hasPendingStop(op.managed_id).pipe(
+                    Effect.flatMap((stopWaiting) =>
+                      stopWaiting
+                        ? settleRefusal(op, "provider-unavailable")
+                        : Effect.succeed(false),
+                    ),
+                  )
+                : Effect.succeed(false)
+              : settleFailure(op, failureCode(error)),
           BoatBootstrapError: (error) => settleFailure(op, failureCode(error)),
           OperationFailed: (error) => settleFailure(op, error.code as BoatFailureCode),
         }),
