@@ -52,15 +52,16 @@ export function botInboxItem(shell: BotDmShell | null) {
     questionAt !== null &&
     (shell?.lastVisitedAt == null || Date.parse(questionAt) > Date.parse(shell.lastVisitedAt));
   const activity = botActivity(shell);
+  const workingAt = activity === "working" ? shell?.latestRun?.requestedAt : null;
   return {
     preview: question
       ? ({ kind: "question" } as const)
       : activity === "working"
         ? ({ kind: "working" } as const)
         : message?.text.trim()
-          ? ({ kind: "message", text: message.text } as const)
+          ? ({ kind: "message", text: message.text.trim() } as const)
           : null,
-    timestamp: questionAt ?? messageAt ?? shell?.latestRun?.completedAt ?? null,
+    timestamp: questionAt ?? workingAt ?? messageAt ?? shell?.latestRun?.completedAt ?? null,
     unread: unreadQuestion || activity === "unread",
   };
 }

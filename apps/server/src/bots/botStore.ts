@@ -24,7 +24,7 @@ const addColumn = Effect.fnUntraced(function* (
   if (added._tag === "Failure" && !(yield* hasColumn)) return yield* Effect.failCause(added.cause);
 });
 
-export const ensureBotSchema = Effect.gen(function* () {
+export const ensureBotDirectorySchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
     CREATE TABLE IF NOT EXISTS bots (
@@ -43,6 +43,11 @@ export const ensureBotSchema = Effect.gen(function* () {
       archived_at TEXT
     )
   `;
+});
+
+export const ensureBotSchema = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* ensureBotDirectorySchema;
   yield* addColumn(sql, "bots", "allowed_project_ids_json", "TEXT NOT NULL DEFAULT '[]'");
   // Another bot's messages reach this bot in a seat of its own, never in its private DM.
   yield* addColumn(sql, "bots", "peer_thread_id", "TEXT");
