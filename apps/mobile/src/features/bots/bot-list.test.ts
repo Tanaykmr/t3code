@@ -17,6 +17,7 @@ const bot = (name: string, title: string, archived = false) => ({
     dmThreadId: ThreadId.make(`dm-${name}`),
     projectId: ProjectId.make("project"),
     allowedProjectIds: [],
+    peerThreadId: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     archivedAt: archived ? "2026-01-02T00:00:00.000Z" : null,

@@ -460,6 +460,12 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.McpInvocationContext;
         const target = PeerForwarding.remoteTarget(scope, environmentId);
+        // A bot starts threads only through delegate_task, here or in a linked environment.
+        if (target !== undefined && scope.bot === true && name === "t3_thread_launch")
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "A bot starts coding work with delegate_task.",
+          });
         if (target === undefined) return yield* here(params);
         if (scope.linkedEnvironments === false) return yield* PeerForwarding.linkedEnvironmentsOff;
         yield* (remote as RemoteCheck<typeof params>)(params);

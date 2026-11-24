@@ -2047,6 +2047,7 @@ export const layerWsRpc = (
             // A bot's chat keeps to providers that carry its persona and tools.
             Effect.andThen(
               command.type === "thread.model-selection.set" ||
+                command.type === "provider.switch" ||
                 (command.type === "message.dispatch" && command.modelSelection !== undefined)
                 ? bots
                     .assertThreadProvider(command.threadId, command.modelSelection!.instanceId)

@@ -24,8 +24,8 @@ export type BotHandoffOutcome =
   /** The handoff failed: keep the draft. */
   | "failed";
 
-// One id per submission, so a retry after a lost reply hands off once.
-let pendingHandoff: { readonly key: string; readonly messageId: string } | null = null;
+// One id per draft and submission, so a retry after a lost reply hands off once.
+const pendingHandoffs = new Map<string, { readonly key: string; readonly messageId: string }>();
 
 /**
  * In a bot's DM, picked @-chips hand the message to those bots. The DM's own bot
@@ -44,12 +44,16 @@ export function useBotHandoffSend(input: {
     if (others.length === 0) return "none";
     const text = prompt.trim();
     const key = `${targetKey}\u0000${text}\u0000${others.map((m) => m.botId).join(",")}`;
-    if (pendingHandoff?.key !== key) pendingHandoff = { key, messageId: randomUUID() };
+    let pending = pendingHandoffs.get(targetKey);
+    if (pending?.key !== key) {
+      pending = { key, messageId: randomUUID() };
+      pendingHandoffs.set(targetKey, pending);
+    }
     const result = await handoff({
       environmentId: activeBot.environmentId,
       input: {
         botId: activeBot.bot.id,
-        messageId: BotMessageId.make(pendingHandoff.messageId),
+        messageId: BotMessageId.make(pending.messageId),
         text,
         mentions: others,
       },
@@ -64,7 +68,7 @@ export function useBotHandoffSend(input: {
       }
       return "failed";
     }
-    pendingHandoff = null;
+    if (pendingHandoffs.get(targetKey)?.key === key) pendingHandoffs.delete(targetKey);
     clearBotMentionChips(targetKey);
     toastManager.add({
       type: "success",

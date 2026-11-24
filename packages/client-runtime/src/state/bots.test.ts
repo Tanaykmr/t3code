@@ -22,6 +22,7 @@ const bot = (name: string, thread: string) => ({
     dmThreadId: ThreadId.make(thread),
     projectId: ProjectId.make("project"),
     allowedProjectIds: [],
+    peerThreadId: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     archivedAt: null,

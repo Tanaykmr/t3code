@@ -107,6 +107,7 @@ const make = Effect.gen(function* () {
           persona: row.persona,
           personaRevision: row.persona_revision,
           dmThreadId: row.dm_thread_id,
+          peerThreadId: row.peer_thread_id ?? null,
           projectId: row.project_id,
           allowedProjectIds,
           createdAt: row.created_at,
@@ -373,7 +374,7 @@ const make = Effect.gen(function* () {
     assertThreadProvider: Effect.fn("BotService.assertThreadProvider")(
       function* (threadId, instanceId) {
         const owned = yield* sql`
-        SELECT 1 FROM bots WHERE dm_thread_id = ${threadId}
+        SELECT 1 FROM bots WHERE dm_thread_id = ${threadId} OR peer_thread_id = ${threadId}
         UNION ALL SELECT 1 FROM bot_room_threads WHERE thread_id = ${threadId}
         LIMIT 1
       `.pipe(Effect.mapError((cause) => botError("Could not read the bot.", undefined, cause)));

@@ -23,9 +23,12 @@ export function botDmThreadKeys(
   rooms: ReadonlyArray<EnvironmentBotRoom> = [],
 ): ReadonlySet<string> {
   return new Set([
-    ...entries.map(({ environmentId, bot }) =>
+    ...entries.flatMap(({ environmentId, bot }) => [
       scopedThreadKey({ environmentId, threadId: bot.dmThreadId }),
-    ),
+      ...(bot.peerThreadId == null
+        ? []
+        : [scopedThreadKey({ environmentId, threadId: bot.peerThreadId })]),
+    ]),
     ...rooms.flatMap(({ environmentId, room }) =>
       room.participants.map((seat) => scopedThreadKey({ environmentId, threadId: seat.threadId })),
     ),

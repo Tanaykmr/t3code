@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { ensureBotSchema } from "./botStore.ts";
+import { ensureBotSchema, executingTurnOrigin } from "./botStore.ts";
 
 export interface BotTurnContextEntry {
   readonly key: string;
@@ -117,6 +117,9 @@ export const layer = Layer.effect(
         SELECT bot_id, name, title, persona, project_id, allowed_project_ids_json, 1 AS is_dm
         FROM bots WHERE dm_thread_id = ${threadId}
         UNION ALL
+        SELECT bot_id, name, title, persona, project_id, allowed_project_ids_json, 0 AS is_dm
+        FROM bots WHERE peer_thread_id = ${threadId}
+        UNION ALL
         SELECT bots.bot_id, bots.name, bots.title, bots.persona, bots.project_id,
           bots.allowed_project_ids_json, 0 AS is_dm FROM bot_room_threads
         JOIN bots ON bots.bot_id = bot_room_threads.bot_id
@@ -128,15 +131,18 @@ export const layer = Layer.effect(
         SELECT name, instructions FROM bot_skills
         WHERE bot_id = ${bot.bot_id} AND enabled = 1 ORDER BY created_at LIMIT ${SKILL_ENTRIES}
       `;
-        // A turn another bot woke sees no private memory, so a peer cannot draw it out.
-        const [woken] = yield* sql<{ sender_bot_id: string | null }>`
-        SELECT message.sender_bot_id FROM orchestration_v2_projection_runs AS run
-        JOIN bot_deliveries AS delivery
-          ON 'bot-delivery:' || delivery.delivery_id = json_extract(run.payload_json, '$.userMessageId')
-        JOIN bot_messages AS message ON message.message_id = delivery.message_id
-        WHERE run.thread_id = ${threadId} AND run.status IN ('starting', 'running', 'waiting')
-        ORDER BY run.ordinal DESC LIMIT 1
-      `.pipe(Effect.orElseSucceed(() => []));
+        // A turn another bot woke, or a continuation of one, sees no private memory.
+        const origin = yield* executingTurnOrigin(sql, threadId).pipe(
+          Effect.orElseSucceed(() => undefined),
+        );
+        const [woken] =
+          origin?.message_id?.startsWith("bot-delivery:") === true
+            ? yield* sql<{ sender_bot_id: string | null }>`
+              SELECT message.sender_bot_id FROM bot_deliveries AS delivery
+              JOIN bot_messages AS message ON message.message_id = delivery.message_id
+              WHERE delivery.delivery_id = ${origin.message_id.slice("bot-delivery:".length)}
+            `.pipe(Effect.orElseSucceed(() => []))
+            : [];
         const peerTurn = woken?.sender_bot_id != null;
         const memories =
           bot.is_dm === 1
@@ -181,7 +187,8 @@ export const layer = Layer.effect(
     const workTargets = Effect.fn("BotTurnContext.workTargets")(
       function* (threadId: ThreadId) {
         const [bot] = yield* sql<{ project_id: string; allowed_project_ids_json: string }>`
-          SELECT project_id, allowed_project_ids_json FROM bots WHERE dm_thread_id = ${threadId}
+          SELECT project_id, allowed_project_ids_json FROM bots
+          WHERE dm_thread_id = ${threadId} OR peer_thread_id = ${threadId}
           UNION ALL
           SELECT bots.project_id, bots.allowed_project_ids_json FROM bot_room_threads
           JOIN bots ON bots.bot_id = bot_room_threads.bot_id

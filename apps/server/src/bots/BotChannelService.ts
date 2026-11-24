@@ -38,7 +38,7 @@ import { runtimeModeRank } from "../mcp/delegatedTaskModes.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as BotService from "./BotService.ts";
-import { type BotRow, ensureBotSchema, readRooms } from "./botStore.ts";
+import { type BotRow, ensureBotSchema, executingTurnOrigin, readRooms } from "./botStore.ts";
 
 /** Hand-offs one human request may set off, so two bots cannot wake each other forever. */
 const MAX_HOPS = 3;
@@ -462,7 +462,9 @@ const make = Effect.gen(function* () {
 
   /** The bot that owns a thread: its DM, or its seat in a room. */
   const ownerOfThread = Effect.fn("BotChannelService.ownerOfThread")(function* (threadId: string) {
-    const dm = yield* sql<BotRow>`SELECT * FROM bots WHERE dm_thread_id = ${threadId}`;
+    const dm = yield* sql<BotRow>`
+      SELECT * FROM bots WHERE dm_thread_id = ${threadId} OR peer_thread_id = ${threadId}
+    `;
     if (dm[0] !== undefined) return { bot: dm[0], roomId: null as string | null };
     const seat = yield* sql<{ room_id: string; bot_id: string }>`
       SELECT room_id, bot_id FROM bot_room_threads WHERE thread_id = ${threadId}
@@ -491,17 +493,13 @@ const make = Effect.gen(function* () {
       .getThreadShell(ThreadId.make(input.threadId))
       .pipe(Effect.mapError(fail("Could not read the calling chat.")));
     if (callerShell === null) return yield* botError("Could not read the calling chat.");
-    // The calling turn itself says which request it serves: a delivery's message, or a fresh one.
-    const [activeRun] = yield* sql<{ run_id: string; user_message_id: string | null }>`
-      SELECT run_id, json_extract(payload_json, '$.userMessageId') AS user_message_id
-      FROM orchestration_v2_projection_runs
-      WHERE thread_id = ${input.threadId}
-        AND status IN ('starting', 'running', 'waiting')
-      ORDER BY ordinal DESC LIMIT 1
-    `.pipe(Effect.mapError(fail("Could not read the request.")));
-    if (activeRun === undefined) return yield* botError("Message other bots from a running turn.");
-    const causeId = activeRun.user_message_id?.startsWith("bot-delivery:")
-      ? activeRun.user_message_id.slice("bot-delivery:".length)
+    // The calling turn's original input says which request it serves, through restarts.
+    const origin = yield* executingTurnOrigin(sql, input.threadId).pipe(
+      Effect.mapError(fail("Could not read the request.")),
+    );
+    if (origin === undefined) return yield* botError("Message other bots from a running turn.");
+    const causeId = origin.message_id?.startsWith("bot-delivery:")
+      ? origin.message_id.slice("bot-delivery:".length)
       : undefined;
     const [cause] =
       causeId === undefined
@@ -516,7 +514,7 @@ const make = Effect.gen(function* () {
       );
     }
     // Every send from one human-started turn shares that turn's budget.
-    const rootMessageId = cause?.root_message_id ?? `run:${activeRun.run_id}`;
+    const rootMessageId = cause?.root_message_id ?? `run:${origin.origin_run_id}`;
     const roomId = owner.roomId;
     const checkRoom = Effect.gen(function* () {
       if (roomId === null) return;
@@ -612,6 +610,37 @@ const make = Effect.gen(function* () {
     );
     yield* bots.notifyDirectoryChanged;
     return launched.threadId;
+  });
+
+  /**
+   * Another bot's requests wake this seat: it has the bot's persona and skills but not its
+   * private DM history or memory, so a peer cannot draw them out.
+   */
+  const ensurePeerSeat = Effect.fn("BotChannelService.ensurePeerSeat")(function* (bot: BotRow) {
+    if (bot.peer_thread_id !== null) return ThreadId.make(bot.peer_thread_id);
+    const dm = yield* threads.getThreadShell(ThreadId.make(bot.dm_thread_id ?? ""));
+    if (dm === null) return yield* botError(`${bot.name}'s chat is missing.`);
+    const launched = yield* threadLaunch.launch({
+      commandId: CommandId.make(`bot-peer:${bot.bot_id}`),
+      projectId: ProjectId.make(bot.project_id),
+      title: `${bot.name} · bot messages`,
+      titleRenamed: true,
+      modelSelection: dm.modelSelection,
+      runtimeMode: dm.runtimeMode,
+      interactionMode: dm.interactionMode,
+      workspaceStrategy: { type: "root" },
+      createdBy: "user",
+      creationSource: "server",
+    });
+    yield* sql`
+      UPDATE bots SET peer_thread_id = ${launched.threadId}
+      WHERE bot_id = ${bot.bot_id} AND peer_thread_id IS NULL
+    `;
+    yield* bots.notifyDirectoryChanged;
+    const [row] = yield* sql<{ peer_thread_id: string | null }>`
+      SELECT peer_thread_id FROM bots WHERE bot_id = ${bot.bot_id}
+    `;
+    return ThreadId.make(row?.peer_thread_id ?? launched.threadId);
   });
 
   const senderName = (message: MessageRow) =>
@@ -774,6 +803,18 @@ const make = Effect.gen(function* () {
     message: MessageRow,
     target: BotRow,
   ) {
+    if (message.channel_key.startsWith("peer:")) {
+      // An answer goes back to the thread that asked; a request wakes the peer seat.
+      if (message.reply_to_id !== null) {
+        const [asked] = yield* sql<{ origin_thread_id: string | null }>`
+          SELECT origin_thread_id FROM bot_messages WHERE message_id = ${message.reply_to_id}
+        `;
+        if (asked?.origin_thread_id != null) {
+          return { threadId: ThreadId.make(asked.origin_thread_id), room: null };
+        }
+      }
+      return { threadId: yield* ensurePeerSeat(target), room: null };
+    }
     if (!message.channel_key.startsWith("room:")) {
       return { threadId: ThreadId.make(target.dm_thread_id ?? ""), room: null };
     }
@@ -797,7 +838,10 @@ const make = Effect.gen(function* () {
     `;
     if (message === undefined) return yield* block("Message missing");
     // A send that committed before a restart is followed as it is, whatever changed since.
-    const [committedRun] = yield* sql<{ run_id: string; thread_id: string }>`
+    const committed = yield* threads.hasReceipt(commandId);
+    const [committedRun] = !committed
+      ? []
+      : yield* sql<{ run_id: string; thread_id: string }>`
       SELECT run_id, thread_id FROM orchestration_v2_projection_runs
       WHERE json_extract(payload_json, '$.userMessageId') = ${`bot-delivery:${delivery.delivery_id}`}
       LIMIT 1
@@ -821,7 +865,6 @@ const make = Effect.gen(function* () {
       }
       return;
     }
-    const committed = yield* threads.hasReceipt(commandId);
     return yield* deliveryLock.withPermits(1)(
       Effect.gen(function* () {
         const [current] = yield* sql<{ status: string }>`
@@ -942,7 +985,7 @@ const make = Effect.gen(function* () {
     sendFromThread,
     isBotThread: Effect.fn("BotChannelService.isBotThread")(function* (threadId) {
       const rows = yield* sql`
-        SELECT 1 FROM bots WHERE dm_thread_id = ${threadId}
+        SELECT 1 FROM bots WHERE dm_thread_id = ${threadId} OR peer_thread_id = ${threadId}
         UNION ALL SELECT 1 FROM bot_room_threads WHERE thread_id = ${threadId}
         LIMIT 1
       `.pipe(

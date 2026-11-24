@@ -67,6 +67,8 @@ export const Bot = Schema.Struct({
   persona: BotPersona,
   personaRevision: PositiveInt,
   dmThreadId: ThreadId,
+  /** Where other bots' messages wake this bot, apart from its private DM. */
+  peerThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   projectId: ProjectId,
   /** Other projects the user lets this bot start coding work in; its home project always counts. */
   allowedProjectIds: Schema.Array(ProjectId).pipe(Schema.withDecodingDefault(Effect.succeed([]))),

@@ -129,6 +129,21 @@ layer("BotKnowledgeService", (it) => {
         .rememberFromThread({ threadId: dm, text: "x" })
         .pipe(Effect.flip);
       assert.match(fromRoutine.message, /not a routine/);
+      // A server-written restart of the peer's turn keeps the peer's provenance.
+      yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'interrupted' WHERE run_id = 'r3'`;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_runs VALUES
+          ('r4', ${dm}, 4, 'running',
+            '{"userMessageId":"restart-msg","restartContinuationOfRunId":"r2"}')
+      `;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_messages VALUES
+          ('restart-msg', ${dm}, 'r4', 'user', '{"text":"continue"}')
+      `;
+      const fromRestart = yield* knowledge
+        .rememberFromThread({ threadId: dm, text: "x" })
+        .pipe(Effect.flip);
+      assert.match(fromRestart.message, /Only a message the user wrote/);
       const fromSeat = yield* knowledge
         .rememberFromThread({ threadId: seat, text: "x" })
         .pipe(Effect.flip);

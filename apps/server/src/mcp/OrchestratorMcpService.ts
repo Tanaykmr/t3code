@@ -2416,6 +2416,13 @@ const make = Effect.gen(function* () {
       const bindToCurrentThread =
         input.bindToCurrentThread ??
         (parent !== undefined && parent.thread.projectId === projectId);
+      // A bot's routine runs in its own chat, where its limits and persona apply.
+      if (scope.bot === true && !bindToCurrentThread) {
+        return yield* failure(
+          "invalid_request",
+          "A bot's routine runs in its own chat. Set bindToCurrentThread to true.",
+        );
+      }
       if (bindToCurrentThread && (parent === undefined || parent.thread.projectId !== projectId)) {
         return yield* failure(
           "invalid_request",
@@ -2497,6 +2504,16 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
+        if (
+          scope.bot === true &&
+          (existing.projectId !== parent?.thread.projectId ||
+            existing.threadId !== parent.thread.id)
+        ) {
+          return yield* failure(
+            "invalid_request",
+            "A bot edits only the routines bound to its own chat.",
+          );
+        }
         if (
           input.bindToCurrentThread === true &&
           (parent === undefined || parent.thread.projectId !== existing.projectId)

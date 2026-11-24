@@ -216,8 +216,8 @@ layer("BotChannelService", (it) => {
       });
       yield* settle;
       const woken = sends.slice(before).map((send) => send.threadId);
-      // Bolt is woken in its DM, then Ada once with Bolt's answer; nothing goes back to Bolt.
-      assert.deepEqual(woken, ["thread-bot-dm:bolt", "thread-bot-dm:ada"]);
+      // Bolt is woken in its peer seat, never its private DM; Ada's DM gets the answer once.
+      assert.deepEqual(woken, ["thread-bot-peer:bolt", "thread-bot-dm:ada"]);
       assert.match(sends.at(-1)!.text, /needs no reply/);
       assert.strictEqual(sent.message.channelKey, "peer:ada:bolt");
 
