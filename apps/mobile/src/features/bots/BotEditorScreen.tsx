@@ -21,6 +21,7 @@ import { Button } from "../../components/ui/Button";
 import { FitSheet } from "../../components/ui/FitSheet";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { SheetHeader } from "../../components/ui/SheetHeader";
 import { cn } from "../../lib/cn";
 import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
@@ -56,6 +57,9 @@ export function BotEditorScreen({ route }: StaticScreenProps<BotEditorParams>) {
   const [avatar, setAvatar] = useState<BotAvatar>(editing?.avatar ?? "bot");
   const [persona, setPersona] = useState(editing?.persona ?? "");
   const [projectId, setProjectId] = useState<ProjectId | null>(null);
+  const [allowedProjectIds, setAllowedProjectIds] = useState<ReadonlyArray<ProjectId>>(
+    editing?.allowedProjectIds ?? [],
+  );
   const chosenProjectId = projectId ?? projects[0]?.id ?? null;
   const providers = groupByProvider(
     buildModelOptions(config, null, undefined, chosenProjectId).filter(
@@ -104,7 +108,10 @@ export function BotEditorScreen({ route }: StaticScreenProps<BotEditorParams>) {
     const fields = { name: trimmedName, title: title.trim(), avatar, persona };
     const result =
       editing !== null
-        ? await updateBot({ environmentId, input: { botId: editing.id, ...fields } })
+        ? await updateBot({
+            environmentId,
+            input: { botId: editing.id, ...fields, allowedProjectIds },
+          })
         : await createBot({
             environmentId,
             input: {
@@ -213,6 +220,30 @@ export function BotEditorScreen({ route }: StaticScreenProps<BotEditorParams>) {
           className="min-h-36 rounded-[20px] bg-grouped-card p-4 text-base text-foreground"
           style={{ textAlignVertical: "top" }}
         />
+        {editing === null ? null : (
+          <ListSection
+            title={gt("Work targets")}
+            footer={gt("Projects this bot may start coding work in, besides its home project.")}
+          >
+            {projects
+              .filter((project) => project.id !== editing.projectId)
+              .map((project) => (
+                <ListToggleRow
+                  key={project.id}
+                  icon="folder"
+                  label={project.title}
+                  value={allowedProjectIds.includes(project.id)}
+                  onValueChange={(on) =>
+                    setAllowedProjectIds(
+                      on
+                        ? [...allowedProjectIds, project.id]
+                        : allowedProjectIds.filter((id) => id !== project.id),
+                    )
+                  }
+                />
+              ))}
+          </ListSection>
+        )}
         {editing === null ? (
           <>
             <ListSection title={gt("Home project")}>
