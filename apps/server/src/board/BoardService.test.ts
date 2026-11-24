@@ -412,4 +412,55 @@ describe("BoardService subscriptions", () => {
       ),
     ),
   );
+  it.effect("fences reorders and keeps a repaired label right above its container", () =>
+    Effect.gen(function* () {
+      const boards = yield* BoardService.BoardService;
+      const board = yield* boards.create(threadId);
+      const first = yield* boards.apply({
+        actor: "session-a",
+        batch: batch(board, "o1", [
+          { type: "create", element: element("box1", { index: "a5" }) },
+          { type: "create", element: element("label1", { index: "a6", containerId: "box1" }) },
+        ]),
+      });
+      const box1 = first.elements.find((entry) => entry.id === "box1");
+      assert(box1 !== undefined);
+      const unfenced = yield* boards
+        .apply({
+          actor: "session-a",
+          batch: batch(board, "o2", [
+            {
+              type: "replace",
+              element: element("box1", { index: "a9", version: box1.version }),
+              expected: token(box1),
+            },
+          ]),
+        })
+        .pipe(Effect.flip);
+      expect(unfenced).toMatchObject({ _tag: "BoardConflictError" });
+
+      // Another editor created a second box and label at the same indices.
+      const second = yield* boards.apply({
+        actor: "session-b",
+        batch: batch(board, "o3", [
+          { type: "create", element: element("box2", { index: "a5" }) },
+          { type: "create", element: element("label2", { index: "a6", containerId: "box2" }) },
+        ]),
+      });
+      const order = new Map(second.elements.map((entry) => [entry.id, entry.index ?? ""]));
+      const snapshot = yield* boards.get(threadId);
+      const ids = snapshot?.elements.map((entry) => entry.id) ?? [];
+      expect(ids.indexOf("label2")).toBe(ids.indexOf("box2") + 1);
+      expect(ids.indexOf("label1")).toBe(ids.indexOf("box1") + 1);
+      expect(order.get("box2")! < order.get("label2")!).toBe(true);
+    }).pipe(
+      Effect.provide(
+        BoardService.layer.pipe(
+          Layer.provide(SqlitePersistence.layerMemory),
+          Layer.provide(layerThreads),
+          Layer.provide(SecureRandom.layerWebCrypto),
+        ),
+      ),
+    ),
+  );
 });

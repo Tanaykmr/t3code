@@ -1,4 +1,6 @@
 import {
+  BOARD_BATCH_MAX_BYTES,
+  BOARD_BATCH_MAX_ELEMENT_BYTES,
   BOARD_BATCH_MAX_FILES,
   BOARD_MAX_OPERATIONS,
   type BoardApplyResult,
@@ -46,6 +48,8 @@ export interface BoardSession {
   readonly receipts: Map<string, Receipt>;
   shownBackground: string | null;
   draftBackground: string | null;
+  /** Revision of our last background commit; older stream values must not roll it back. */
+  backgroundRevision: number;
   shownOrderRevision: number;
   pending: PendingBatch | null;
   rejected: ReadonlyArray<BoardElement> | null;
@@ -62,6 +66,7 @@ export function createBoardSession(): BoardSession {
     receipts: new Map(),
     shownBackground: null,
     draftBackground: null,
+    backgroundRevision: 0,
     shownOrderRevision: 0,
     pending: null,
     rejected: null,
@@ -92,9 +97,11 @@ export function observeEditor(
     changed = true;
   }
   // Opening a file replaces the editor's scene; records it dropped are deletions.
-  for (const [id, shown] of session.shown) {
-    if (shown.isDeleted || present.has(id) || session.drafts.has(id)) continue;
-    session.drafts.set(id, { id, type: "deleted", ...base(session, id, shown), isDeleted: true });
+  for (const id of new Set([...session.shown.keys(), ...session.receipts.keys()])) {
+    const known = basis(session, id);
+    if (known === undefined || known.isDeleted || present.has(id)) continue;
+    if (session.drafts.get(id)?.isDeleted) continue;
+    session.drafts.set(id, { id, type: TOMBSTONE, ...base(session, id, known), isDeleted: true });
     session.draftOrderRevision.set(id, session.shownOrderRevision);
     changed = true;
   }
@@ -109,6 +116,9 @@ export function observeEditor(
   return changed;
 }
 
+/** Placeholder for a record the editor dropped; it is only ever sent as a delete. */
+const TOMBSTONE = "deleted";
+
 const base = (session: BoardSession, id: string, shown: ShownRecord) => ({
   version: (session.baseline.get(id) ?? shown.version) + 1,
   versionNonce: shown.versionNonce,
@@ -118,6 +128,12 @@ const base = (session: BoardSession, id: string, shown: ShownRecord) => ({
 /** The record a new edit is based on: our own unconfirmed receipt, else what the editor shows. */
 const basis = (session: BoardSession, id: string): ShownRecord | undefined =>
   session.receipts.get(id) ?? session.shown.get(id);
+
+// Headroom under the server's caps for the batch envelope and JSON escaping.
+const ELEMENT_BUDGET = BOARD_BATCH_MAX_ELEMENT_BYTES - 64 * 1024;
+const TOTAL_BUDGET = BOARD_BATCH_MAX_BYTES - 256 * 1024;
+const encoder = new TextEncoder();
+const utf8Bytes = (text: string) => encoder.encode(text).length;
 
 const isImage = (element: BoardElement): element is BoardElement & { readonly fileId: string } =>
   element.type === "image" && typeof element["fileId"] === "string";
@@ -138,14 +154,27 @@ export function takeBatch(
   const files: BoardFileData[] = [];
   const sent = new Map<string, { readonly version: number; readonly isDeleted: boolean }>();
   let fence: number | undefined;
+  let elementBytes = 0;
+  let totalBytes = 0;
   for (const [id, element] of session.drafts) {
     // Larger edits go out over several batches; the rest stay drafts for the next one.
     if (operations.length >= BOARD_MAX_OPERATIONS) break;
+    const size = utf8Bytes(JSON.stringify(element));
+    if (
+      operations.length > 0 &&
+      (elementBytes + size > ELEMENT_BUDGET || totalBytes + size > TOTAL_BUDGET)
+    ) {
+      continue;
+    }
     // An image travels with its bytes, or waits until they are loaded and the batch has room.
     if (isImage(element) && !element.isDeleted && !input.committedFileIds.has(element.fileId)) {
       if (!files.some((entry) => entry.id === element.fileId)) {
         const file = input.editorFiles[element.fileId];
         if (file === undefined || files.length >= BOARD_BATCH_MAX_FILES) continue;
+        if (operations.length > 0 && totalBytes + size + file.dataURL.length > TOTAL_BUDGET) {
+          continue;
+        }
+        totalBytes += file.dataURL.length;
         files.push({
           id: element.fileId,
           mimeType: file.mimeType as BoardFileMimeType,
@@ -154,7 +183,8 @@ export function takeBatch(
       }
     }
     const shown = basis(session, id);
-    if (shown === undefined) {
+    const settled = element.type === TOMBSTONE && (shown === undefined || shown.isDeleted);
+    if (shown === undefined || settled) {
       if (element.isDeleted) {
         session.drafts.delete(id);
         session.draftOrderRevision.delete(id);
@@ -174,6 +204,8 @@ export function takeBatch(
       }
     }
     sent.set(id, { version: element.version, isDeleted: element.isDeleted });
+    elementBytes += size;
+    totalBytes += size;
   }
   const settings =
     session.draftBackground === null ? undefined : { viewBackgroundColor: session.draftBackground };
@@ -212,7 +244,16 @@ export function acknowledge(session: BoardSession, result: BoardApplyResult): vo
       session.draftOrderRevision.delete(accepted.id);
     }
   }
+  // Our own commit right after the order we based it on keeps later drafts' fences current.
+  const based = pending.expectedOrderRevision ?? session.shownOrderRevision;
+  if (result.orderRevision === based + 1) {
+    for (const [id, started] of session.draftOrderRevision) {
+      if (started === based) session.draftOrderRevision.set(id, result.orderRevision);
+    }
+    if (session.shownOrderRevision === based) session.shownOrderRevision = result.orderRevision;
+  }
   if (pending.settings !== undefined) {
+    session.backgroundRevision = result.revision;
     session.shownBackground = pending.settings.viewBackgroundColor;
     if (session.draftBackground === pending.settings.viewBackgroundColor) {
       session.draftBackground = null;
@@ -282,10 +323,12 @@ export function reconcile<T extends { readonly id: string; readonly index: strin
     if (receipt !== undefined) {
       // Until the stream reaches our commit, its older record must not roll the editor back.
       if (canonical.revision < receipt.revision) continue;
+      // Under a gesture the receipt waits, so the canonical record is applied afterwards.
+      if (held.has(record.id) && !session.drafts.has(record.id)) continue;
       session.receipts.delete(record.id);
       const ours =
         receipt.version === record.version && receipt.versionNonce === record.versionNonce;
-      if (session.drafts.has(record.id) || held.has(record.id)) {
+      if (session.drafts.has(record.id)) {
         // A newer local edit continues from our record; a later remote change makes it stale.
         session.shown.set(record.id, ours ? toShown(record) : receipt);
         continue;

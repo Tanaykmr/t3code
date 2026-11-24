@@ -148,7 +148,8 @@ export class BoardController {
     files: BinaryFiles,
     input: { readonly composing: boolean; readonly canEdit: boolean },
   ) {
-    this.files = files;
+    // A remounted editor starts without the bytes of images that are still unsent.
+    this.files = { ...this.files, ...files };
     const gesture = gestureIds(appState, input.composing);
     const wasHeld = this.held.size > 0;
     this.held = gesture ?? new Set();
@@ -161,7 +162,10 @@ export class BoardController {
         appState.viewBackgroundColor,
       );
     if (wasHeld) this.showCanonical();
-    if (!edited) return;
+    // A draft waiting for its image bytes goes out once the editor has loaded them.
+    const waiting =
+      !edited && this.session.pending === null && this.session.drafts.size > 0 && input.canEdit;
+    if (!edited && !waiting) return;
     if (this.flushTimer !== null) window.clearTimeout(this.flushTimer);
     this.flushTimer = window.setTimeout(() => {
       this.flushTimer = null;
@@ -209,7 +213,9 @@ export class BoardController {
     );
     const background = view.settings.viewBackgroundColor;
     const backgroundChanged =
-      session.draftBackground === null && session.shownBackground !== background;
+      session.draftBackground === null &&
+      session.shownBackground !== background &&
+      view.board.revision >= session.backgroundRevision;
     if (next === null && !backgroundChanged) return;
     const restored = new Map(
       asEditorElements(next?.applied ?? []).map((element) => [element.id, element]),
@@ -284,6 +290,7 @@ export class BoardController {
     if (batch === null) {
       // Drafts that cannot go yet, such as an image whose bytes are still loading, wait for
       // the next edit or reopen.
+      if (!hasUnsavedWork(session)) this.files = {};
       this.setSaveState(hasUnsavedWork(session) ? "retrying" : "saved");
       return;
     }

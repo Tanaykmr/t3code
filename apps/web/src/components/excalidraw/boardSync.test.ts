@@ -164,6 +164,64 @@ describe("board sync", () => {
     });
   });
 
+  it("applies a repaired canonical record after a gesture that held it", () => {
+    const session = synced([]);
+    observeEditor(session, [element("a", { index: "a0" })], "#ffffff");
+    take(session);
+    acknowledge(session, {
+      revision: 1,
+      orderRevision: 1,
+      elements: [{ id: "a", version: 2, versionNonce: 20, index: "a0V" }],
+    });
+    const canonical = element("a", { version: 2, versionNonce: 20, index: "a0V" });
+    // The user holds the element while its canonical record arrives.
+    expect(reconcile(session, scene([canonical]), [element("a")], new Set(["a"]))).toBeNull();
+    expect(reconcile(session, scene([canonical]), [element("a")], new Set())?.applied).toEqual([
+      canonical,
+    ]);
+  });
+
+  it("does not resend an import's deletion once its receipt is in", () => {
+    const session = synced([element("a")]);
+    observeEditor(session, [], "#ffffff");
+    take(session);
+    acknowledge(session, {
+      revision: 2,
+      orderRevision: 1,
+      elements: [{ id: "a", version: 3, versionNonce: 30, index: "aa" }],
+    });
+    // The editor still lacks the record before the stream delivers the tombstone.
+    observeEditor(session, [], "#ffffff");
+    expect(take(session, "m2")).toBeNull();
+  });
+
+  it("keeps a batch under the element byte budget", () => {
+    const session = synced([]);
+    const big = "x".repeat(200 * 1024);
+    observeEditor(
+      session,
+      Array.from({ length: 30 }, (_, index) => element(`b${index}`, { text: big })),
+      "#ffffff",
+    );
+    const first = take(session);
+    expect(first!.operations.length).toBeGreaterThan(0);
+    expect(first!.operations.length).toBeLessThan(30);
+    expect(JSON.stringify(first!.operations).length).toBeLessThan(4 * 1024 * 1024);
+  });
+
+  it("advances the order fence across this editor's own reorder", () => {
+    const session = synced([element("a"), element("b")]);
+    observeEditor(session, [element("a", { version: 2, index: "b0" }), element("b")], "#ffffff");
+    expect(take(session)?.expectedOrderRevision).toBe(1);
+    observeEditor(session, [element("a", { version: 3, index: "c0" }), element("b")], "#ffffff");
+    acknowledge(session, {
+      revision: 2,
+      orderRevision: 2,
+      elements: [{ id: "a", version: 3, versionNonce: 30, index: "b0" }],
+    });
+    expect(take(session, "m2")?.expectedOrderRevision).toBe(2);
+  });
+
   it("holds remote records under local drafts and gestures, and applies the rest", () => {
     const session = synced([element("a"), element("b"), element("c")]);
     observeEditor(

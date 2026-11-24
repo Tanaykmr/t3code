@@ -83,8 +83,8 @@ const boardOwnerKey = (threadId: ThreadId): string => threadId;
 const DEFAULT_SETTINGS: BoardSettings = { viewBackgroundColor: "#ffffff" };
 // A subscriber that falls this far behind sees a revision gap and reopens with a snapshot.
 const SUBSCRIBER_BUFFER = 64;
-// Leaves headroom below the largest safe integer for the server's +1 stamp.
-const MAX_PROPOSAL_VERSION = 2 ** 52;
+// Leaves room below the largest safe integer for many stamped successors.
+const MAX_PROPOSAL_VERSION = Number.MAX_SAFE_INTEGER - 2 ** 20;
 const MAX_VERSION_NONCE = 2 ** 31;
 
 interface BoardRow {
@@ -175,42 +175,75 @@ const isValidIndex = (index: string): boolean => {
  * fresh index between its neighbours. Committed elements keep theirs, so only this batch moves.
  */
 const repairIndices = (
-  committed: ReadonlyArray<{ readonly id: string; readonly index: string | null }>,
-  proposed: ReadonlyArray<{ readonly id: string; readonly index: string | null }>,
+  committed: ReadonlyArray<{
+    readonly id: string;
+    readonly index: string | null;
+    readonly containerId: string | null;
+  }>,
+  proposed: ReadonlyArray<BoardElement>,
 ): ReadonlyMap<string, string> => {
   const proposedIds = new Set(proposed.map((entry) => entry.id));
-  const stable: Array<{ id: string; index: string }> = [];
+  const stable: Array<{ id: string; index: string; containerId: string | null }> = [];
   for (const entry of committed) {
     if (!proposedIds.has(entry.id) && entry.index !== null) {
-      stable.push({ id: entry.id, index: entry.index });
+      stable.push({ id: entry.id, index: entry.index, containerId: entry.containerId });
     }
   }
   const taken = new Set(stable.map((entry) => entry.index));
-  const needsRepair: Array<{ id: string; index: string | null }> = [];
-  for (const entry of [...proposed].toSorted(compareCanonical)) {
+  const ordered = [...proposed].toSorted(compareCanonical);
+  const needsRepair = new Set<string>();
+  for (const entry of ordered) {
     if (entry.index !== null && isValidIndex(entry.index) && !taken.has(entry.index)) {
       taken.add(entry.index);
-      stable.push({ id: entry.id, index: entry.index });
     } else {
-      needsRepair.push({ id: entry.id, index: entry.index });
+      needsRepair.add(entry.id);
+    }
+  }
+  // A bound label moves with a repaired container so the two stay adjacent.
+  const containerOf = (entry: BoardElement) =>
+    typeof entry["containerId"] === "string" ? entry["containerId"] : null;
+  for (const entry of ordered) {
+    const container = containerOf(entry);
+    if (container !== null && needsRepair.has(container)) needsRepair.add(entry.id);
+  }
+  for (const entry of ordered) {
+    if (!needsRepair.has(entry.id) && entry.index !== null) {
+      stable.push({ id: entry.id, index: entry.index, containerId: containerOf(entry) });
     }
   }
   stable.sort(compareCanonical);
   const repaired = new Map<string, string>();
-  for (const entry of needsRepair) {
+  for (const entry of ordered) {
+    if (!needsRepair.has(entry.id)) continue;
+    const container = containerOf(entry);
+    const containerPosition =
+      container === null ? -1 : stable.findIndex((candidate) => candidate.id === container);
     const anchor = entry.index !== null && isValidIndex(entry.index) ? entry.index : null;
-    // Place after every element at or below the proposed index, so a collision lands just above.
-    const position =
-      anchor === null
-        ? stable.length
-        : stable.findIndex((candidate) => candidate.index > anchor) === -1
+    const above = stable.findIndex((candidate) => anchor !== null && candidate.index > anchor);
+    // A label goes right above its container; anything else lands just above its proposed slot.
+    let position =
+      containerPosition !== -1
+        ? containerPosition + 1
+        : anchor === null || above === -1
           ? stable.length
-          : stable.findIndex((candidate) => candidate.index > anchor);
+          : above;
+    // Never split another element from the bound labels directly above it.
+    const splitsLabel = (at: number) => {
+      const label = stable[at];
+      return (
+        label !== undefined &&
+        label.containerId !== null &&
+        stable.slice(0, at).some((candidate) => candidate.id === label.containerId)
+      );
+    };
+    if (containerPosition === -1) {
+      while (position > 0 && splitsLabel(position)) position += 1;
+    }
     const index = generateKeyBetween(
       stable[position - 1]?.index ?? null,
       stable[position]?.index ?? null,
     );
-    stable.splice(position, 0, { id: entry.id, index });
+    stable.splice(position, 0, { id: entry.id, index, containerId: container });
     repaired.set(entry.id, index);
   }
   return repaired;
@@ -346,12 +379,13 @@ const make = Effect.gen(function* () {
   const create: BoardService["Service"]["create"] = Effect.fn("BoardService.create")(
     function* (threadId) {
       yield* Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": threadId });
-      yield* requireThread(threadId);
       const ownerKey = boardOwnerKey(threadId);
       const channel = yield* channelFor(ownerKey);
       return yield* Semaphore.withPermit(
         channel.lock,
         Effect.gen(function* () {
+          // Checked under the lock so a create cannot land after the thread's board cleanup.
+          yield* requireThread(threadId);
           const existing = yield* findBoard(ownerKey).pipe(storage("read"));
           if (existing !== null) return toHeader(existing, threadId);
           const boardId = yield* random.uuidV4();
@@ -476,8 +510,19 @@ const make = Effect.gen(function* () {
         conflicts.push({ id, current: tokenOf(row) });
       }
     }
+    // Rearranging existing elements must say which order it was based on.
+    const unfencedReorder =
+      batch.expectedOrderRevision === undefined &&
+      batch.operations.some(
+        (operation) =>
+          (operation.type === "replace" || operation.type === "restore") &&
+          !operation.element.isDeleted &&
+          current.has(operation.element.id) &&
+          current.get(operation.element.id)?.idx !== operation.element.index,
+      );
     if (
       conflicts.length > 0 ||
+      unfencedReorder ||
       (batch.expectedOrderRevision !== undefined &&
         batch.expectedOrderRevision !== board.order_revision)
     ) {
@@ -494,8 +539,10 @@ const make = Effect.gen(function* () {
       }
     }
 
+    // Restore stamps the record live whatever its payload says, so it is checked too.
     const referencedFileIds = batch.operations.flatMap((operation) => {
-      if (operation.type === "delete" || operation.element.isDeleted) return [];
+      if (operation.type === "delete") return [];
+      if (operation.type !== "restore" && operation.element.isDeleted) return [];
       const fileId = operation.element["fileId"];
       return operation.element.type === "image" && typeof fileId === "string" ? [fileId] : [];
     });
@@ -572,11 +619,20 @@ const make = Effect.gen(function* () {
     );
     let changed = stamped;
     if (indexChanged) {
-      const committed = yield* sql<{ readonly element_id: string; readonly idx: string | null }>`
-        SELECT element_id, idx FROM board_element WHERE board_id = ${board.board_id}
+      const committed = yield* sql<{
+        readonly element_id: string;
+        readonly idx: string | null;
+        readonly container_id: string | null;
+      }>`
+        SELECT element_id, idx, json_extract(payload_json, '$.containerId') AS container_id
+        FROM board_element WHERE board_id = ${board.board_id}
       `.pipe(storage("read"));
       const repaired = repairIndices(
-        committed.map((row) => ({ id: row.element_id, index: row.idx })),
+        committed.map((row) => ({
+          id: row.element_id,
+          index: row.idx,
+          containerId: typeof row.container_id === "string" ? row.container_id : null,
+        })),
         stamped,
       );
       changed = stamped.map((element) => {
@@ -609,14 +665,18 @@ const make = Effect.gen(function* () {
     );
 
     const [storedElements] = yield* sql<{ readonly total: number | null }>`
-      SELECT SUM(LENGTH(payload_json)) AS total FROM board_element
+      SELECT SUM(LENGTH(CAST(payload_json AS BLOB))) AS total FROM board_element
       WHERE board_id = ${board.board_id}
     `.pipe(storage("read"));
     const replacedBytes = rows.reduce(
-      (total, { element }) => total + (current.get(element.id)?.payload_json.length ?? 0),
+      (total, { element }) =>
+        total + Buffer.byteLength(current.get(element.id)?.payload_json ?? ""),
       0,
     );
-    const addedBytes = rows.reduce((total, { payloadJson }) => total + payloadJson.length, 0);
+    const addedBytes = rows.reduce(
+      (total, { payloadJson }) => total + Buffer.byteLength(payloadJson),
+      0,
+    );
     if (addedBytes > BOARD_BATCH_MAX_ELEMENT_BYTES) {
       return yield* new BoardInvalidBatchError({ reason: "batch-too-large" });
     }
@@ -711,8 +771,10 @@ const make = Effect.gen(function* () {
       // Always send at least one file; the client asks again for the ones left out.
       let budget = BOARD_GET_FILES_MAX_BYTES;
       const selected = sizes.flatMap((row, index) => {
-        if (index > 0 && row.size > budget) return [];
-        budget -= row.size;
+        // Bytes travel as base64 inside the response.
+        const encoded = Math.ceil(row.size / 3) * 4;
+        if (index > 0 && encoded > budget) return [];
+        budget -= encoded;
         return [row.file_id];
       });
       if (selected.length === 0) return [];
@@ -764,15 +826,19 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const board = yield* findBoard(ownerKey);
           if (board === null) return;
-          yield* sql.withTransaction(
-            Effect.gen(function* () {
-              yield* sql`DELETE FROM board_element WHERE board_id = ${board.board_id}`;
-              yield* sql`DELETE FROM board_file WHERE board_id = ${board.board_id}`;
-              yield* sql`DELETE FROM board_mutation WHERE board_id = ${board.board_id}`;
-              yield* sql`DELETE FROM board WHERE board_id = ${board.board_id}`;
-            }),
-          );
-          yield* PubSub.publish(channel.events, { type: "missing" });
+          yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* sql`DELETE FROM board_element WHERE board_id = ${board.board_id}`;
+                yield* sql`DELETE FROM board_file WHERE board_id = ${board.board_id}`;
+                yield* sql`DELETE FROM board_mutation WHERE board_id = ${board.board_id}`;
+                yield* sql`DELETE FROM board WHERE board_id = ${board.board_id}`;
+              }),
+            )
+            .pipe(
+              Effect.andThen(PubSub.publish(channel.events, { type: "missing" })),
+              Effect.uninterruptible,
+            );
         }).pipe(storage("write")),
       );
     },
