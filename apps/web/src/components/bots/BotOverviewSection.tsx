@@ -47,6 +47,7 @@ export function BotOverviewSection(props: {
       .map((candidate) => [candidate.id, candidate.title]),
   );
   const [busy, setBusy] = useState(false);
+  const canEdit = useAtomValue(serverEnvironment.updateBot.permissionAtom(props.environmentId));
   const archive = useAtomCommand(serverEnvironment.archiveBot, { label: "bot archive" });
   const restore = useAtomCommand(serverEnvironment.restoreBot, { label: "bot restore" });
   if (bot === null) return null;
@@ -87,6 +88,7 @@ export function BotOverviewSection(props: {
           <Button
             size="icon-xs"
             variant="ghost-muted"
+            disabled={!canEdit}
             aria-label={gt("Edit {name}", { name: bot.name })}
             onClick={() => openBotEditor({ mode: "edit", environmentId: props.environmentId, bot })}
           >
@@ -126,7 +128,7 @@ export function BotOverviewSection(props: {
             </span>
           </div>
         ) : null}
-        <ThreadDetailsControl disabled={busy} onClick={() => void toggleArchive()}>
+        <ThreadDetailsControl disabled={busy || !canEdit} onClick={() => void toggleArchive()}>
           {archived ? (
             <ArchiveRestoreIcon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
           ) : (

@@ -305,7 +305,20 @@ const make = Effect.gen(function* () {
       if (shell !== null && ACTIVE_STATUSES.has(shell.status)) {
         return yield* botError(`${row.name} is still working. Stop it first.`, input.botId);
       }
-      return yield* setArchivedAt(input.botId, DateTime.formatIso(yield* DateTime.now));
+      const archivedAt = DateTime.formatIso(yield* DateTime.now);
+      // The DM is archived with its bot, so nothing, including the composer, wakes it meanwhile.
+      yield* threads
+        .dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make(`bot-archive:${input.botId}:${archivedAt}`),
+          threadId: ThreadId.make(row.dm_thread_id ?? ""),
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            botError("Could not archive the bot's chat.", input.botId, cause),
+          ),
+        );
+      return yield* setArchivedAt(input.botId, archivedAt);
     },
   );
 
@@ -316,6 +329,17 @@ const make = Effect.gen(function* () {
           const row = yield* requireReadyBot(input.botId);
           if (row.archived_at === null) return yield* toResult(row);
           yield* assertNameFree(row.name, input.botId);
+          yield* threads
+            .dispatch({
+              type: "thread.unarchive",
+              commandId: CommandId.make(`bot-restore:${input.botId}:${row.archived_at}`),
+              threadId: ThreadId.make(row.dm_thread_id ?? ""),
+            })
+            .pipe(
+              Effect.mapError((cause) =>
+                botError("Could not restore the bot's chat.", input.botId, cause),
+              ),
+            );
           return yield* setArchivedAt(input.botId, null);
         }),
       );

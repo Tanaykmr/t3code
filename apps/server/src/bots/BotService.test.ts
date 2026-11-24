@@ -19,6 +19,7 @@ import * as BotTurnContext from "./BotTurnContext.ts";
 
 const launches: Array<string> = [];
 const threadStatus = { current: "idle" };
+const dispatched: Array<string> = [];
 
 const database = NodeSqliteClient.layer({ filename: ":memory:" });
 const launchMock = Layer.mock(ThreadLaunchService.ThreadLaunchService)({
@@ -35,6 +36,11 @@ const launchMock = Layer.mock(ThreadLaunchService.ThreadLaunchService)({
 });
 const threadsMock = Layer.mock(ThreadManagementService.ThreadManagementService)({
   getThreadShell: () => Effect.sync(() => ({ status: threadStatus.current }) as never),
+  dispatch: (command) =>
+    Effect.sync(() => {
+      dispatched.push(command.type);
+      return {} as never;
+    }),
 });
 const layer = it.layer(
   Layer.mergeAll(
@@ -110,6 +116,8 @@ layer("BotService", (it) => {
       const restored = yield* bots.restore({ botId: created.bot.id });
       assert.isNull(restored.bot.archivedAt);
       assert.strictEqual(restored.bot.dmThreadId, created.bot.dmThreadId);
+      // The DM is archived and restored with its bot.
+      assert.includeMembers(dispatched, ["thread.archive", "thread.unarchive"]);
 
       const directory = yield* bots.subscribeDirectory().pipe(
         Stream.tap(() => Ref.update(seen, (count) => count + 1)),

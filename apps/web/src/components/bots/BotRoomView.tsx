@@ -19,7 +19,6 @@ import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 
 import { isElectron } from "../../env";
-import { randomUUID } from "../../lib/utils";
 import { useEnvironmentBotRooms, useEnvironmentBots } from "../../state/bots";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -41,6 +40,26 @@ const DELIVERY_LABEL = {
   blocked: msg("Blocked", { $context: "bot delivery status" }),
   cancelled: msg("Stopped", { $context: "bot delivery status" }),
 } as const;
+
+const DELIVERY_REASON = {
+  "Bot deleted": msg("Bot deleted"),
+  "Bot archived": msg("Bot archived"),
+  "Message missing": msg("Message missing"),
+  "Room archived": msg("Room archived"),
+  "Removed from the room": msg("Removed from the room"),
+  "Chat deleted": msg("Chat deleted"),
+  "Needs more access than the sender has": msg("Needs more access than the sender has"),
+  "The run failed": msg("The run failed"),
+  Stopped: msg("Stopped", { $context: "bot delivery status" }),
+  "Could not deliver": msg("Could not deliver"),
+} as const;
+
+/** The server sends a fixed set of reasons; anything else shows as sent. */
+function deliveryReason(reason: string, m: ReturnType<typeof useMessages>): string {
+  return Object.hasOwn(DELIVERY_REASON, reason)
+    ? m(DELIVERY_REASON[reason as keyof typeof DELIVERY_REASON])
+    : reason;
+}
 
 export function BotRoomView(props: {
   readonly environmentId: EnvironmentId;
@@ -64,6 +83,10 @@ export function BotRoomView(props: {
   const send = useAtomCommand(serverEnvironment.sendBotRoomMessage, { label: "bot room send" });
   const update = useAtomCommand(serverEnvironment.updateBotRoom, { label: "bot room update" });
   const [busy, setBusy] = useState(false);
+  const canPost = useAtomValue(
+    serverEnvironment.sendBotRoomMessage.permissionAtom(props.environmentId),
+  );
+  const canEdit = useAtomValue(serverEnvironment.updateBotRoom.permissionAtom(props.environmentId));
   const room = entry?.room ?? null;
   const botById = new Map(bots.map(({ bot }) => [bot.id, bot]));
   const members = room?.memberBotIds.flatMap((botId) => botById.get(botId) ?? []) ?? [];
@@ -109,7 +132,7 @@ export function BotRoomView(props: {
               </p>
             )}
           </div>
-          {room === null ? null : (
+          {room === null || !canEdit ? null : (
             <>
               <Button
                 size="icon-sm"
@@ -168,15 +191,15 @@ export function BotRoomView(props: {
           ) : null}
           <BotMentionComposer
             bots={members}
-            disabled={room === null || archived}
+            disabled={room === null || archived || !canPost}
             placeholder={gt("Message {room}", { room: room?.name ?? "" })}
-            onSend={async ({ text, mentions }) => {
+            onSend={async ({ messageId, text, mentions }) => {
               if (room === null) return false;
               const result = await send({
                 environmentId: props.environmentId,
                 input: {
                   roomId: room.id,
-                  messageId: BotMessageId.make(randomUUID()),
+                  messageId: BotMessageId.make(messageId),
                   text,
                   mentions,
                 },
@@ -233,8 +256,9 @@ function RoomMessage(props: {
         <ul className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
           {props.deliveries.map((delivery) => {
             const threadId = delivery.threadId ?? props.seatThread(delivery.targetBotId);
+            const reason = delivery.reason === null ? null : deliveryReason(delivery.reason, m);
             const label = `${props.botName(delivery.targetBotId)} · ${m(DELIVERY_LABEL[delivery.status])}${
-              delivery.reason ? ` · ${delivery.reason}` : ""
+              reason ? ` · ${reason}` : ""
             }`;
             return (
               <li key={delivery.id} className="flex items-center gap-1">

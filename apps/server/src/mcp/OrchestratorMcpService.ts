@@ -3696,6 +3696,18 @@ const make = Effect.gen(function* () {
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId, ["runs"]);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* assertTargetWithinLimits(limits, target.thread);
+      // A bot's chat or room seat is reached through bot deliveries, which check membership,
+      // access and hop limits; a generic send would skip all of them.
+      if (
+        target.thread.id !== parent?.thread.id &&
+        Option.isSome(botTurnContext) &&
+        (yield* botTurnContext.value.workTargets(target.thread.id)) !== null
+      ) {
+        return yield* failure(
+          "invalid_request",
+          "That thread belongs to a bot. A bot can reach it with t3_bot_message; other agents cannot message it.",
+        );
+      }
 
       const mode = input.mode ?? "auto";
       const key = yield* requestKey(input.clientRequestId);
