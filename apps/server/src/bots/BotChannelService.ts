@@ -228,6 +228,12 @@ const make = Effect.gen(function* () {
   const updateRoom: BotChannelService["Service"]["updateRoom"] = Effect.fn(
     "BotChannelService.updateRoom",
   )(function* (input) {
+    return yield* deliveryLock.withPermits(1)(updateRoomLocked(input));
+  });
+
+  const updateRoomLocked = Effect.fn("BotChannelService.updateRoomLocked")(function* (
+    input: BotRoomUpdateInput,
+  ) {
     const room = yield* readRoom(input.roomId);
     const members =
       input.memberBotIds === undefined ? room.memberBotIds : [...new Set(input.memberBotIds)];
@@ -242,20 +248,19 @@ const make = Effect.gen(function* () {
     const removed = room.memberBotIds.filter((botId) => !members.includes(botId));
     const at = yield* now;
     const archivedAt = input.archived === undefined ? room.archivedAt : input.archived ? at : null;
-    yield* deliveryLock.withPermits(1)(
-      sql
-        .withTransaction(
-          Effect.gen(function* () {
-            yield* sql`
+    yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* sql`
             UPDATE bot_rooms SET name = ${input.name ?? room.name}, default_bot_id = ${defaultBotId},
               archived_at = ${archivedAt}, updated_at = ${at}
             WHERE room_id = ${input.roomId}
           `;
-            if (input.memberBotIds !== undefined) yield* writeMembers(input.roomId, members);
-            // Work that has not started stops here; a running turn keeps going until stopped.
-            const blockedBots = archivedAt === null ? removed : room.memberBotIds;
-            for (const botId of blockedBots) {
-              yield* sql`
+          if (input.memberBotIds !== undefined) yield* writeMembers(input.roomId, members);
+          // Work that has not started stops here; a running turn keeps going until stopped.
+          const blockedBots = archivedAt === null ? removed : room.memberBotIds;
+          for (const botId of blockedBots) {
+            yield* sql`
               UPDATE bot_deliveries SET status = 'blocked', updated_at = ${at},
                 reason = ${archivedAt === null ? "Removed from the room" : "Room archived"}
               WHERE status = 'queued' AND target_bot_id = ${botId}
@@ -263,11 +268,10 @@ const make = Effect.gen(function* () {
                   SELECT message_id FROM bot_messages WHERE channel_key = ${roomKey(input.roomId)}
                 )
             `;
-            }
-          }),
-        )
-        .pipe(Effect.mapError(fail("Could not save the room."))),
-    );
+          }
+        }),
+      )
+      .pipe(Effect.mapError(fail("Could not save the room.")));
     yield* bots.notifyDirectoryChanged;
     yield* notifyChannel(roomKey(input.roomId));
     return { room: yield* readRoom(input.roomId) };
@@ -346,6 +350,7 @@ const make = Effect.gen(function* () {
     const mentionsJson = yield* encodeMentions(input.mentions).pipe(
       Effect.mapError(fail("Could not send the message.")),
     );
+    let overBudget = false;
     yield* sql
       .withTransaction(
         Effect.gen(function* () {
@@ -357,7 +362,11 @@ const make = Effect.gen(function* () {
               SELECT COUNT(*) AS count FROM bot_deliveries WHERE root_message_id = ${input.rootMessageId}
             `;
             if ((used?.count ?? 0) + input.recipients.length > MAX_DELIVERIES_PER_ROOT) {
-              return yield* botError("This request has woken enough bots. Answer it yourself.");
+              // A reply is still shown; only the wake it would add is dropped.
+              if (input.replyToId === null) {
+                return yield* botError("This request has woken enough bots. Answer it yourself.");
+              }
+              overBudget = true;
             }
           }
           yield* sql`
@@ -370,7 +379,7 @@ const make = Effect.gen(function* () {
               ${input.replyToId}, ${input.originThreadId}, ${at}
             )
           `;
-          for (const target of input.recipients) {
+          for (const target of overBudget ? [] : input.recipients) {
             yield* sql`
               INSERT INTO bot_deliveries (
                 delivery_id, message_id, target_bot_id, root_message_id, hop, expects_reply,
@@ -428,6 +437,7 @@ const make = Effect.gen(function* () {
       if (owner === undefined || owner.dm_thread_id === null) {
         return yield* botError("That bot no longer exists.");
       }
+      if (owner.archived_at !== null) return yield* botError("This bot is archived.");
       const recipients = [...new Set(input.mentions.map((mention) => mention.botId))].filter(
         (botId) => botId !== input.botId,
       );
@@ -486,7 +496,7 @@ const make = Effect.gen(function* () {
       SELECT run_id, json_extract(payload_json, '$.userMessageId') AS user_message_id
       FROM orchestration_v2_projection_runs
       WHERE thread_id = ${input.threadId}
-        AND status IN ('preparing', 'queued', 'starting', 'running', 'waiting')
+        AND status IN ('starting', 'running', 'waiting')
       ORDER BY ordinal DESC LIMIT 1
     `.pipe(Effect.mapError(fail("Could not read the request.")));
     if (activeRun === undefined) return yield* botError("Message other bots from a running turn.");
@@ -507,32 +517,42 @@ const make = Effect.gen(function* () {
     }
     // Every send from one human-started turn shares that turn's budget.
     const rootMessageId = cause?.root_message_id ?? `run:${activeRun.run_id}`;
-    if (owner.roomId !== null) {
-      const room = yield* readRoom(owner.roomId);
+    const roomId = owner.roomId;
+    const checkRoom = Effect.gen(function* () {
+      if (roomId === null) return;
+      const room = yield* readRoom(roomId);
       if (room.archivedAt !== null || !room.memberBotIds.includes(BotId.make(owner.bot.bot_id))) {
         return yield* botError("You are no longer in this room.");
       }
       if (!room.memberBotIds.includes(BotId.make(target.bot_id))) {
         return yield* botError(`${target.name} is not in this room.`);
       }
-    }
+    });
     const nonce = yield* Random.nextIntBetween(0, 2 ** 31);
     const messageId = `bot:${owner.bot.bot_id}:${yield* now}:${nonce}`;
-    return yield* post({
-      messageId,
-      channelKey:
-        owner.roomId === null ? peerKey(owner.bot.bot_id, target.bot_id) : roomKey(owner.roomId),
-      senderBotId: owner.bot.bot_id,
-      text: input.text,
-      mentions: [{ botId: BotId.make(target.bot_id), label: target.name }],
-      replyToId: null,
-      originThreadId: input.threadId,
-      recipients: [target.bot_id],
-      rootMessageId,
-      hop,
-      expectsReply: owner.roomId === null,
-      senderRuntimeMode: callerShell.runtimeMode,
-    });
+    // Checked and committed under the lock room edits take, so a removal cannot slip between.
+    return yield* deliveryLock.withPermits(1)(
+      Effect.gen(function* () {
+        yield* checkRoom;
+        return yield* post({
+          messageId,
+          channelKey:
+            owner.roomId === null
+              ? peerKey(owner.bot.bot_id, target.bot_id)
+              : roomKey(owner.roomId),
+          senderBotId: owner.bot.bot_id,
+          text: input.text,
+          mentions: [{ botId: BotId.make(target.bot_id), label: target.name }],
+          replyToId: null,
+          originThreadId: input.threadId,
+          recipients: [target.bot_id],
+          rootMessageId,
+          hop,
+          expectsReply: owner.roomId === null,
+          senderRuntimeMode: callerShell.runtimeMode,
+        });
+      }),
+    );
   });
 
   /** Moves a delivery on only from the state the caller saw, so a concurrent block wins. */
@@ -665,7 +685,7 @@ const make = Effect.gen(function* () {
     if (delivery.thread_id === null || delivery.run_id === null) return;
     const threadId = ThreadId.make(delivery.thread_id);
     const shell = yield* threads.getThreadShell(threadId);
-    if (shell === null)
+    if (shell === null || (shell.deletedAt ?? null) !== null)
       return yield* setDelivery(delivery.delivery_id, {
         status: "cancelled",
         from: "accepted",
@@ -719,6 +739,7 @@ const make = Effect.gen(function* () {
           rootMessageId: delivery.root_message_id,
           hop: delivery.hop,
           expectsReply: false,
+          senderRuntimeMode: shell.runtimeMode,
         });
       }
     }
@@ -775,6 +796,31 @@ const make = Effect.gen(function* () {
       SELECT * FROM bot_messages WHERE message_id = ${delivery.message_id}
     `;
     if (message === undefined) return yield* block("Message missing");
+    // A send that committed before a restart is followed as it is, whatever changed since.
+    const [committedRun] = yield* sql<{ run_id: string; thread_id: string }>`
+      SELECT run_id, thread_id FROM orchestration_v2_projection_runs
+      WHERE json_extract(payload_json, '$.userMessageId') = ${`bot-delivery:${delivery.delivery_id}`}
+      LIMIT 1
+    `;
+    if (committedRun !== undefined) {
+      const accepted = yield* setDelivery(delivery.delivery_id, {
+        status: "accepted",
+        from: "queued",
+        threadId: committedRun.thread_id,
+        runId: committedRun.run_id,
+      });
+      if (accepted) {
+        yield* Effect.forkDetach(
+          follow({
+            ...delivery,
+            status: "accepted",
+            thread_id: committedRun.thread_id,
+            run_id: committedRun.run_id,
+          }),
+        );
+      }
+      return;
+    }
     const committed = yield* threads.hasReceipt(commandId);
     return yield* deliveryLock.withPermits(1)(
       Effect.gen(function* () {
@@ -844,9 +890,12 @@ const make = Effect.gen(function* () {
     const accepted = yield* sql<DeliveryRow>`
       SELECT * FROM bot_deliveries WHERE status = 'accepted' AND run_id IS NOT NULL
     `;
-    yield* Effect.forEach(accepted, (delivery) => Effect.forkDetach(follow(delivery)), {
-      discard: true,
-    });
+    const followed = yield* Ref.get(waiting);
+    yield* Effect.forEach(
+      accepted.filter((delivery) => !followed.has(delivery.delivery_id)),
+      (delivery) => Effect.forkDetach(follow(delivery)),
+      { discard: true },
+    );
     const queued = yield* sql<DeliveryRow>`
       SELECT * FROM bot_deliveries WHERE status = 'queued' ORDER BY created_at
     `;

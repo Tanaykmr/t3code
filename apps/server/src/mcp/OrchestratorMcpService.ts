@@ -2405,6 +2405,12 @@ const make = Effect.gen(function* () {
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
+      if (scope.bot === true && projectId !== parent?.thread.projectId) {
+        return yield* failure(
+          "invalid_request",
+          "A bot schedules routines in its own chat's project. Use delegate_task for work elsewhere.",
+        );
+      }
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
       const project = yield* requireProject(projectId);
       const bindToCurrentThread =
@@ -3264,6 +3270,11 @@ const make = Effect.gen(function* () {
     }),
     createThreads: Effect.fn("OrchestratorMcpService.createThreads")(
       function* (callerScope, input) {
+        if (callerScope.bot === true)
+          return yield* failure(
+            "invalid_request",
+            "A bot starts coding work with delegate_task, which keeps it to the projects the user allowed.",
+          );
         const { scope, parent } = yield* loadThreadCaller(callerScope, "create_threads");
         const parentRun = ThreadManagementService.latestActiveRun(parent);
         if (

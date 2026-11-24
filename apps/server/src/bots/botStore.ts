@@ -26,7 +26,10 @@ export const ensureBotSchema = Effect.gen(function* () {
   `;
   const botColumns = yield* sql<{ readonly name: string }>`PRAGMA table_info(bots)`;
   if (!botColumns.some((column) => column.name === "allowed_project_ids_json")) {
-    yield* sql`ALTER TABLE bots ADD COLUMN allowed_project_ids_json TEXT NOT NULL DEFAULT '[]'`;
+    // Several layers run this at start; another may have added the column first.
+    yield* sql`ALTER TABLE bots ADD COLUMN allowed_project_ids_json TEXT NOT NULL DEFAULT '[]'`.pipe(
+      Effect.ignore,
+    );
   }
   yield* sql`
     CREATE TABLE IF NOT EXISTS bot_rooms (
@@ -92,7 +95,7 @@ export const ensureBotSchema = Effect.gen(function* () {
   // A bot's message carries the sender's mode, so it never wakes a bot that runs with more access.
   const deliveryColumns = yield* sql<{ readonly name: string }>`PRAGMA table_info(bot_deliveries)`;
   if (!deliveryColumns.some((column) => column.name === "sender_runtime_mode")) {
-    yield* sql`ALTER TABLE bot_deliveries ADD COLUMN sender_runtime_mode TEXT`;
+    yield* sql`ALTER TABLE bot_deliveries ADD COLUMN sender_runtime_mode TEXT`.pipe(Effect.ignore);
   }
   yield* sql`CREATE INDEX IF NOT EXISTS bot_deliveries_thread ON bot_deliveries (thread_id, status)`;
   yield* sql`

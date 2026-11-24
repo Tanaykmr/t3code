@@ -197,12 +197,30 @@ const make = Effect.gen(function* () {
     if (bot === undefined) {
       return yield* new BotError({ message: "Only a bot can remember, from its own chat." });
     }
-    const woken = yield* sql`
-      SELECT delivery_id FROM bot_deliveries WHERE thread_id = ${threadId} AND status = 'accepted'
+    // The executing turn's own input decides: only a message the user wrote in this chat counts.
+    const [input] = yield* sql<{
+      message_id: string;
+      scheduled_task_id: string | null;
+      sender_thread_id: string | null;
+    }>`
+      SELECT message.message_id,
+        json_extract(message.payload_json, '$.scheduledTaskId') AS scheduled_task_id,
+        json_extract(message.payload_json, '$.senderThreadId') AS sender_thread_id
+      FROM orchestration_v2_projection_runs AS run
+      JOIN orchestration_v2_projection_messages AS message
+        ON message.message_id = json_extract(run.payload_json, '$.userMessageId')
+      WHERE run.thread_id = ${threadId} AND run.status IN ('starting', 'running', 'waiting')
+      ORDER BY run.ordinal DESC LIMIT 1
     `.pipe(Effect.mapError(botError("Could not read the bot.")));
-    if (woken.length > 0) {
+    if (
+      input === undefined ||
+      input.message_id.startsWith("bot-delivery:") ||
+      input.scheduled_task_id !== null ||
+      input.sender_thread_id !== null
+    ) {
       return yield* new BotError({
-        message: "Another bot woke this turn. Only the user can ask you to remember something.",
+        message:
+          "Only a message the user wrote in this chat can change your memory, not a routine, webhook or another bot.",
       });
     }
     return bot.bot_id;

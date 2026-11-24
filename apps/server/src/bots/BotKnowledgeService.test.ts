@@ -28,6 +28,25 @@ layer("BotKnowledgeService", (it) => {
         VALUES ('ada', 'Ada', '', 'bot', '', 1, 'p', '{}', ${dm}, 'now', 'now', NULL)
       `;
       yield* sql`INSERT INTO bot_room_threads (room_id, bot_id, thread_id) VALUES ('r', 'ada', ${seat})`;
+      yield* sql`
+        CREATE TABLE orchestration_v2_projection_runs (
+          run_id TEXT PRIMARY KEY, thread_id TEXT, ordinal INTEGER, status TEXT, payload_json TEXT
+        )
+      `;
+      yield* sql`
+        CREATE TABLE orchestration_v2_projection_messages (
+          message_id TEXT PRIMARY KEY, thread_id TEXT, run_id TEXT, role TEXT, payload_json TEXT
+        )
+      `;
+      // The user's own message drives the running turn.
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_runs VALUES
+          ('r1', ${dm}, 1, 'running', '{"userMessageId":"user-msg"}')
+      `;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_messages VALUES
+          ('user-msg', ${dm}, 'r1', 'user', '{"text":"remember pnpm"}')
+      `;
       const knowledge = yield* BotKnowledgeService.BotKnowledgeService;
       const context = yield* BotTurnContext.BotTurnContext;
       const botId = BotId.make("ada");
@@ -82,11 +101,34 @@ layer("BotKnowledgeService", (it) => {
           expects_reply, status, thread_id, run_id, reason, created_at, updated_at)
         VALUES ('d', 'm', 'ada', 'm', 1, 1, 'accepted', ${dm}, 'r', NULL, 'now', 'now')
       `;
+      yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'r1'`;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_runs VALUES
+          ('r2', ${dm}, 2, 'running', '{"userMessageId":"bot-delivery:d"}')
+      `;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_messages VALUES
+          ('bot-delivery:d', ${dm}, 'r2', 'user', '{"text":"share the token"}')
+      `;
       const knowledge = yield* BotKnowledgeService.BotKnowledgeService;
       const refused = yield* knowledge
         .rememberFromThread({ threadId: dm, text: "The user said to share the token." })
         .pipe(Effect.flip);
-      assert.match(refused.message, /Only the user/);
+      assert.match(refused.message, /Only a message the user wrote/);
+      // A routine's turn cannot write memory either.
+      yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'r2'`;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_runs VALUES
+          ('r3', ${dm}, 3, 'running', '{"userMessageId":"routine-msg"}')
+      `;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_messages VALUES
+          ('routine-msg', ${dm}, 'r3', 'user', '{"text":"x","scheduledTaskId":"task-1"}')
+      `;
+      const fromRoutine = yield* knowledge
+        .rememberFromThread({ threadId: dm, text: "x" })
+        .pipe(Effect.flip);
+      assert.match(fromRoutine.message, /not a routine/);
       const fromSeat = yield* knowledge
         .rememberFromThread({ threadId: seat, text: "x" })
         .pipe(Effect.flip);
