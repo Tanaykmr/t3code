@@ -235,7 +235,11 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
         patch(entry, {
           state: "running",
           stoppedAt: null,
-          stopStatus: entry.sandbox.stopStatus === null ? null : "superseded",
+          // Boat keeps a finished stop "completed"; only one still running becomes superseded.
+          stopStatus:
+            entry.sandbox.stopStatus === "pending" || entry.sandbox.stopStatus === "failing"
+              ? "superseded"
+              : entry.sandbox.stopStatus,
         });
       }
     },

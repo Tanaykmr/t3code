@@ -147,6 +147,13 @@ function failureCode(error: BoatApiError | BoatBootstrapError): BoatFailureCode 
   }
 }
 
+/** Live again although Boat's stop for it is no longer under way: started outside T3. */
+const startedAfterStop = (sandbox: BoatSandbox) =>
+  isLiveState(sandbox.state) &&
+  sandbox.stopStatus !== null &&
+  sandbox.stopStatus !== "pending" &&
+  sandbox.stopStatus !== "failing";
+
 const isTransient = (error: BoatApiError) =>
   error.category === "rate-limited" ||
   error.category === "unavailable" ||
@@ -543,15 +550,17 @@ export const make = Effect.gen(function* () {
       if (Option.isNone(current) && op.provider_operation_id === DISPATCHING) return false;
       if (Option.isNone(current) || current.value.state !== "archived") {
         yield* setStage(op.request_id, "stopping", { provider_operation_id: DISPATCHING });
-        yield* retryTransient(api.stop(key, sandboxId));
+        // Sent once per pass: a lost reply leaves the operation pending, and the next pass looks
+        // at the machine before sending again.
+        yield* api.stop(key, sandboxId);
         yield* setStage(op.request_id, "stopping", { provider_operation_id: ACKNOWLEDGED });
       }
     } else {
-      // Boat took this stop earlier. Only Boat's own word that a start superseded it counts as
-      // an external start; a stop still pending or retrying a snapshot keeps the row Stopping.
+      // Boat took this stop earlier. A live machine whose stop is no longer under way was
+      // started again outside T3; a stop still pending or retrying a snapshot keeps Stopping.
       const current = yield* retryTransient(api.get(key, sandboxId));
       yield* observe(server.managed_id, current);
-      if (isLiveState(current.state) && current.stopStatus === "superseded") {
+      if (startedAfterStop(current)) {
         return yield* new OperationRefused({ code: "provider-rejected" });
       }
     }
@@ -559,9 +568,14 @@ export const make = Effect.gen(function* () {
       key,
       server.managed_id,
       sandboxId,
-      (s) => s.state === "archived",
+      // A stop sent in this pass may not show in Boat's reads yet, so only one taken in an
+      // earlier pass can be judged superseded by an outside start.
+      (s) => s.state === "archived" || (acknowledged && startedAfterStop(s)),
     );
     if (Option.isNone(archived)) return false;
+    if (archived.value.state !== "archived") {
+      return yield* new OperationRefused({ code: "provider-rejected" });
+    }
     yield* setServer(server.managed_id, {
       lifecycle: "stopped",
       last_stopped_at: archived.value.stoppedAt ?? (yield* nowIso),
