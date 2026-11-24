@@ -328,16 +328,15 @@ export class BoardController {
   private send() {
     const { session, view } = this;
     if (view === null || this.sending) return;
+    let committed: Map<string, BoardElement> | undefined;
     const batch =
       session.pending ??
       takeBatch(session, {
         committedFileIds: new Set(view.files.map((file) => file.id)),
         editorFiles: { ...this.files, ...this.api?.getFiles() },
         mutationId: randomUUID(),
-        committedBytes: (id) => {
-          const record = view.elements.find((element) => element.id === id);
-          return record === undefined ? 0 : new TextEncoder().encode(JSON.stringify(record)).length;
-        },
+        committedRecord: (id) =>
+          (committed ??= new Map(view.elements.map((e) => [e.id, e]))).get(id),
       });
     if (batch === null) {
       // Drafts that cannot go yet, such as an image whose bytes are still loading, wait for

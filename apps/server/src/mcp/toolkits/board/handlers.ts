@@ -1,5 +1,5 @@
 import {
-  BOARD_MAX_OPERATIONS,
+  BOARD_MAX_ELEMENTS,
   type BoardApplyError,
   type BoardReadError,
   OrchestratorMcpFailure,
@@ -195,7 +195,7 @@ const make = Effect.gen(function* () {
         });
         if (compiled._tag === "Invalid") return yield* invalid(compiled.message);
         if (compiled._tag === "Stale") return yield* boardEditConflict(compiled.conflicts);
-        if (compiled.operations.length > BOARD_MAX_OPERATIONS) {
+        if (compiled.operations.length > BOARD_MAX_ELEMENTS) {
           return yield* invalid("This edit touches too many elements. Split it into smaller ones.");
         }
         // Dependents carry tokens from this snapshot, not the agent's read, so a label the user

@@ -7,7 +7,6 @@ import { IsoDateTime, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./
  * the fields below and stores the rest untouched. See docs/architecture/excalidraw.md.
  */
 export const BOARD_SCENE_FORMAT_VERSION = 1;
-export const BOARD_MAX_OPERATIONS = 500;
 export const BOARD_MAX_ELEMENTS = 5_000;
 const utf8 = new TextEncoder();
 const utf8Bytes = (text: string) => utf8.encode(text).length;
@@ -15,11 +14,10 @@ const BOARD_ELEMENT_MAX_BYTES = 256 * 1024;
 export const BOARD_FILE_MAX_BYTES = 4 * 1024 * 1024;
 export const BOARD_BATCH_MAX_FILES = 8;
 /** Serialized size of one edit batch, files included. */
-export const BOARD_BATCH_MAX_BYTES = 24 * 1024 * 1024;
+export const BOARD_BATCH_MAX_BYTES = 64 * 1024 * 1024;
 export const BOARD_GET_FILES_MAX = 64;
 /** Element JSON a board, or one edit batch, may hold; image bytes are counted separately. */
 export const BOARD_MAX_ELEMENT_BYTES = 16 * 1024 * 1024;
-export const BOARD_BATCH_MAX_ELEMENT_BYTES = 4 * 1024 * 1024;
 /** Image bytes and files one board may hold; the snapshot lists every file. */
 export const BOARD_MAX_FILE_BYTES = 64 * 1024 * 1024;
 export const BOARD_MAX_FILES = 512;
@@ -146,7 +144,8 @@ export const BoardEditBatch = Schema.Struct({
   boardId: BoardId,
   mutationId: BoardMutationId,
   expectedOrderRevision: Schema.optional(NonNegativeInt),
-  operations: Schema.Array(BoardOperation).check(Schema.isMaxLength(BOARD_MAX_OPERATIONS)),
+  // A batch may touch the whole board, so a related group never needs splitting.
+  operations: Schema.Array(BoardOperation).check(Schema.isMaxLength(BOARD_MAX_ELEMENTS)),
   settings: Schema.optional(BoardSettings),
   files: Schema.optional(
     Schema.Array(BoardFileData).check(Schema.isMaxLength(BOARD_BATCH_MAX_FILES)),

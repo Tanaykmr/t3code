@@ -1,8 +1,5 @@
 import {
-  BOARD_BATCH_MAX_BYTES,
-  BOARD_BATCH_MAX_ELEMENT_BYTES,
   BOARD_BATCH_MAX_FILES,
-  BOARD_MAX_OPERATIONS,
   type BoardApplyResult,
   type BoardElement,
   type BoardElementToken,
@@ -171,9 +168,65 @@ const base = (session: BoardSession, id: string, shown: ShownRecord) => ({
 const basis = (session: BoardSession, id: string): ShownRecord | undefined =>
   session.receipts.get(id) ?? session.shown.get(id);
 
-// Headroom under the server's caps for the batch envelope and JSON escaping.
-const ELEMENT_BUDGET = BOARD_BATCH_MAX_ELEMENT_BYTES - 64 * 1024;
-const TOTAL_BUDGET = BOARD_BATCH_MAX_BYTES - 256 * 1024;
+// Soft batch sizes that keep ordinary saves small; a related group may exceed them.
+const SOFT_OPERATIONS = 500;
+const SOFT_ELEMENT_BYTES = 4 * 1024 * 1024;
+const SOFT_TOTAL_BYTES = 20 * 1024 * 1024;
+
+/** Ids an element is linked to: its container, labels, frame, and bound shapes or arrows. */
+const linksOf = (element: BoardElement | undefined): ReadonlyArray<string> => {
+  if (element === undefined) return [];
+  const links: string[] = [];
+  for (const key of ["containerId", "frameId"]) {
+    const value = element[key];
+    if (typeof value === "string") links.push(value);
+  }
+  for (const key of ["startBinding", "endBinding"]) {
+    const binding = element[key];
+    if (binding !== null && typeof binding === "object" && "elementId" in binding) {
+      links.push(String(binding.elementId));
+    }
+  }
+  const bound = element["boundElements"];
+  if (Array.isArray(bound)) {
+    for (const entry of bound) {
+      if (entry !== null && typeof entry === "object" && "id" in entry)
+        links.push(String(entry.id));
+    }
+  }
+  return links;
+};
+
+/**
+ * Drafts grouped into connected components by links in the draft or its pre-edit record.
+ * Union-find makes cycles (from malformed records) one group instead of leaving them unsent.
+ * Groups are ordered by their first draft, so the result is deterministic.
+ */
+function connectedDrafts(
+  session: BoardSession,
+  committedRecord: ((id: string) => BoardElement | undefined) | undefined,
+): ReadonlyArray<ReadonlyArray<[string, BoardElement]>> {
+  const parent = new Map<string, string>();
+  const find = (id: string): string => {
+    let root = id;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    parent.set(id, root);
+    return root;
+  };
+  for (const id of session.drafts.keys()) parent.set(id, id);
+  for (const [id, draft] of session.drafts) {
+    const previous = session.receipts.get(id)?.record ?? committedRecord?.(id);
+    for (const linked of [...linksOf(draft), ...linksOf(previous)]) {
+      if (parent.has(linked)) parent.set(find(linked), find(id));
+    }
+  }
+  const groups = new Map<string, Array<[string, BoardElement]>>();
+  for (const entry of session.drafts) {
+    const root = find(entry[0]);
+    groups.set(root, [...(groups.get(root) ?? []), entry]);
+  }
+  return [...groups.values()];
+}
 const encoder = new TextEncoder();
 const utf8Bytes = (text: string) => encoder.encode(text).length;
 
@@ -189,8 +242,8 @@ export function takeBatch(
       Record<string, { readonly mimeType: string; readonly dataURL: string } | undefined>
     >;
     readonly mutationId: string;
-    /** Serialized size of a committed record, which the server stores again as a tombstone. */
-    readonly committedBytes?: (id: string) => number;
+    /** The committed record, for tombstone sizes and links the drafts no longer carry. */
+    readonly committedRecord?: (id: string) => BoardElement | undefined;
   },
 ): PendingBatch | null {
   if (session.pending !== null) return null;
@@ -200,53 +253,39 @@ export function takeBatch(
   let fence: number | undefined;
   let elementBytes = 0;
   let totalBytes = 0;
-  // New frames go first and deleted frames last, so a frame and its children split across
-  // batches never arrive child-first and children are deleted before the server releases them.
-  const isFrame = (element: BoardElement) =>
-    element.type === "frame" || element.type === "magicframe";
-  const rank = (element: BoardElement) => (isFrame(element) ? (element.isDeleted ? 2 : 0) : 1);
-  const sorted = [...session.drafts].sort(([, left], [, right]) => rank(left) - rank(right));
-  // A container and its bound label drafts travel in one batch, never split by its limits.
-  const labelOf = (element: BoardElement) => {
-    const container = element["containerId"];
-    return typeof container === "string" && session.drafts.has(container) ? container : null;
-  };
-  const labels = new Map<string, Array<[string, BoardElement]>>();
-  for (const entry of sorted) {
-    const container = labelOf(entry[1]);
-    if (container !== null) labels.set(container, [...(labels.get(container) ?? []), entry]);
-  }
-  const units = sorted
-    .filter(([, element]) => labelOf(element) === null)
-    .map((entry) => [entry, ...(labels.get(entry[0]) ?? [])]);
+  // Related records — a container and its label, a frame and its children, an arrow and the
+  // shapes it binds — go in one batch, which the server commits atomically, so no batch
+  // boundary can split them. Links count from the draft and from the pre-edit record, so an
+  // edit that just removed one (unbinding, clearing) still keeps the pair together.
+  const groups = connectedDrafts(session, input.committedRecord);
   const sizeOf = (id: string, element: BoardElement) => {
     const receipt = session.receipts.get(id);
+    const committed = input.committedRecord?.(id);
     return element.isDeleted && basis(session, id) !== undefined
-      ? receipt !== undefined
-        ? utf8Bytes(JSON.stringify(receipt.record))
-        : (input.committedBytes?.(id) ?? utf8Bytes(JSON.stringify(element)))
+      ? utf8Bytes(JSON.stringify(receipt?.record ?? committed ?? element))
       : utf8Bytes(JSON.stringify(element));
   };
-  for (const unit of units) {
-    // Larger edits go out over several batches; the rest stay drafts for the next one.
-    if (operations.length > 0 && operations.length + unit.length > BOARD_MAX_OPERATIONS) break;
-    const unitBytes = unit.reduce((total, [id, element]) => total + sizeOf(id, element), 0);
+  for (const group of groups) {
+    // The soft limits only split unrelated groups across batches; a group always goes whole,
+    // and the server's hard caps are the board's own, so it always fits.
+    const groupBytes = group.reduce((total, [id, element]) => total + sizeOf(id, element), 0);
     if (
       operations.length > 0 &&
-      (elementBytes + unitBytes > ELEMENT_BUDGET || totalBytes + unitBytes > TOTAL_BUDGET)
+      (operations.length + group.length > SOFT_OPERATIONS ||
+        elementBytes + groupBytes > SOFT_ELEMENT_BYTES ||
+        totalBytes + groupBytes > SOFT_TOTAL_BYTES)
     ) {
-      continue;
+      break;
     }
-    for (const [id, element] of unit) {
+    for (const [id, element] of group) {
       const size = sizeOf(id, element);
       // An image travels with its bytes, or waits until they are loaded and the batch has room.
       if (isImage(element) && !element.isDeleted && !input.committedFileIds.has(element.fileId)) {
         if (!files.some((entry) => entry.id === element.fileId)) {
           const file = input.editorFiles[element.fileId];
+          // A new image waits for its bytes, or for a batch with room for them. Only creates
+          // wait, and a create arriving after its frame or container is always safe.
           if (file === undefined || files.length >= BOARD_BATCH_MAX_FILES) continue;
-          if (operations.length > 0 && totalBytes + size + file.dataURL.length > TOTAL_BUDGET) {
-            continue;
-          }
           totalBytes += file.dataURL.length;
           files.push({
             id: element.fileId,

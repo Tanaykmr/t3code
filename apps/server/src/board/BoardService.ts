@@ -3,7 +3,6 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   BOARD_BATCH_MAX_BYTES,
-  BOARD_BATCH_MAX_ELEMENT_BYTES,
   BOARD_FILE_MAX_BYTES,
   BOARD_GET_FILES_MAX_BYTES,
   BOARD_MAX_ELEMENT_BYTES,
@@ -786,7 +785,7 @@ const make = Effect.gen(function* () {
         repairedIds.has(element.id) ? total : total + Buffer.byteLength(payloadJson),
       0,
     );
-    if (callerBytes > BOARD_BATCH_MAX_ELEMENT_BYTES) {
+    if (callerBytes > BOARD_MAX_ELEMENT_BYTES) {
       return yield* new BoardInvalidBatchError({ reason: "batch-too-large" });
     }
     if ((storedElements?.total ?? 0) - replacedBytes + addedBytes > BOARD_MAX_ELEMENT_BYTES) {

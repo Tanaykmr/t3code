@@ -288,7 +288,7 @@ describe("board sync", () => {
       committedFileIds: new Set(),
       editorFiles: {},
       mutationId: "m1",
-      committedBytes: () => 200 * 1024,
+      committedRecord: (id) => element(id, { text: "x".repeat(200 * 1024) }),
     });
     expect(batch!.operations.length).toBeLessThan(25);
   });
@@ -465,8 +465,8 @@ describe("board sync", () => {
     expect(new Set(session.rejected?.map((record) => record.id))).toEqual(new Set(["x", "y"]));
   });
 
-  it("deletes a cleared frame after its children and keeps boxes with their labels", () => {
-    const children = Array.from({ length: 499 }, (_, index) =>
+  it("never splits a related group across batches, even past the soft limits", () => {
+    const children = Array.from({ length: 520 }, (_, index) =>
       element(`c${index}`, { frameId: "frame" }),
     );
     const box = element("box", {
@@ -475,11 +475,12 @@ describe("board sync", () => {
     });
     const label = element("label", { type: "text", containerId: "box" });
     const frame = element("frame", { type: "frame" });
-    const session = synced([frame, ...children, box, label]);
+    const loose = element("loose");
+    const session = synced([frame, ...children, box, label, loose]);
     // Clear canvas marks every record deleted, keeping it in the scene.
     observeEditor(
       session,
-      [frame, ...children, box, label].map((record) => ({
+      [frame, ...children, box, label, loose].map((record) => ({
         ...record,
         version: record.version + 1,
         isDeleted: true,
@@ -487,11 +488,41 @@ describe("board sync", () => {
       "#ffffff",
     );
     const first = take(session)!;
-    const ids = first.operations.map((operation) =>
-      operation.type === "delete" ? operation.id : operation.element.id,
+    const ids = new Set(
+      first.operations.map((operation) =>
+        operation.type === "delete" ? operation.id : operation.element.id,
+      ),
     );
-    expect(ids).not.toContain("frame");
-    expect(ids.includes("box")).toBe(ids.includes("label"));
+    // The frame, all its children, and the box with its label go together in one batch.
+    expect(ids.has("frame") && ids.has("box") && ids.has("label")).toBe(true);
+    expect(children.every((child) => ids.has(child.id))).toBe(true);
+    // The unrelated record follows in a later batch once the soft limit is passed.
+    expect(ids.has("loose")).toBe(false);
+  });
+
+  it("groups records linked only through their pre-edit state, and cycles", () => {
+    const session = synced([]);
+    observeEditor(
+      session,
+      [
+        element("a", { containerId: "b" }),
+        element("b", { containerId: "a" }),
+        element("x"),
+        element("y"),
+      ],
+      "#ffffff",
+    );
+    const committed = new Map([
+      ["x", element("x", { boundElements: [{ id: "y", type: "text" }] })],
+    ]);
+    const batch = takeBatch(session, {
+      committedFileIds: new Set(),
+      editorFiles: {},
+      mutationId: "m1",
+      committedRecord: (id) => committed.get(id),
+    });
+    // Nothing stays queued: the cycle and the unbound pair are both sent.
+    expect(batch?.operations).toHaveLength(4);
   });
 
   it("keeps one rejected draft per record across repeated conflicts", () => {
@@ -503,6 +534,33 @@ describe("board sync", () => {
     take(session, "m2");
     rejectPending(session);
     expect(session.rejected).toEqual([element("a", { version: 3, x: 2 })]);
+  });
+
+  it("keeps an unbound box and label together and never lets a later unit overtake", () => {
+    const box = element("box", { boundElements: [{ id: "label", type: "text" }] });
+    const label = element("label", { type: "text", containerId: "box" });
+    const fillers = Array.from({ length: 499 }, (_, index) => element(`f${index}`));
+    const session = synced([...fillers, box, label]);
+    observeEditor(
+      session,
+      [
+        ...fillers.map((record) => ({ ...record, version: 2, x: 1 })),
+        { ...box, version: 2, boundElements: null },
+        { ...label, version: 2, containerId: null },
+      ],
+      "#ffffff",
+    );
+    const committed = new Map([...fillers, box, label].map((record) => [record.id, record]));
+    const batch = takeBatch(session, {
+      committedFileIds: new Set(),
+      editorFiles: {},
+      mutationId: "m1",
+      committedRecord: (id) => committed.get(id),
+    })!;
+    const ids = batch.operations.map((operation) =>
+      operation.type === "delete" ? operation.id : operation.element.id,
+    );
+    expect(ids.includes("box")).toBe(ids.includes("label"));
   });
 
   it("holds remote records under local drafts and gestures, and applies the rest", () => {
