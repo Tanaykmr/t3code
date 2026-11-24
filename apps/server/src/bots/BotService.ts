@@ -11,7 +11,9 @@ import {
   CommandId,
   ModelSelection,
   ProjectId,
+  type ProviderInstanceId,
   ThreadId,
+  isBotProvider,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
 } from "@t3tools/contracts";
@@ -19,6 +21,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -27,6 +30,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { type BotRow, ensureBotSchema, readRooms } from "./botStore.ts";
 
 export class BotService extends Context.Service<
@@ -65,7 +69,21 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  const settings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
   yield* ensureBotSchema;
+
+  // Built-in instances are named after their driver; configured ones say which driver they use.
+  const assertBotProvider = Effect.fn("BotService.assertBotProvider")(function* (
+    instanceId: string,
+  ) {
+    const configured = Option.isSome(settings)
+      ? (yield* settings.value.getSettings.pipe(Effect.orElseSucceed(() => null)))
+          ?.providerInstances?.[instanceId as ProviderInstanceId]
+      : undefined;
+    if (!isBotProvider({ driverKind: configured?.driver ?? instanceId, instanceId })) {
+      return yield* botError("Bots run on Codex or Claude for now. Pick one of those agents.");
+    }
+  });
 
   // Directory reads are small; subscribers re-read on the newest change signal.
   const changes = yield* PubSub.sliding<void>(1);
@@ -196,6 +214,7 @@ const make = Effect.gen(function* () {
   const create: BotService["Service"]["create"] = Effect.fn("BotService.create")(function* (input) {
     const existing = yield* readRow(input.botId);
     if (existing === undefined) {
+      yield* assertBotProvider(input.modelSelection.instanceId);
       const now = DateTime.formatIso(yield* DateTime.now);
       const modelSelectionJson = yield* encodeModelSelection(input.modelSelection).pipe(
         Effect.mapError((cause) => botError("That model is not valid.", input.botId, cause)),

@@ -72,6 +72,14 @@ layer("BotService", (it) => {
       assert.match(adaContext[0]?.text ?? "", /Terse\. Prefers tests\./);
       assert.deepEqual(yield* context.forThread(ThreadId.make("ordinary-thread")), []);
 
+      const unqualified = yield* bots
+        .create({
+          ...createInput("bot-cursor", "Cursory", ""),
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "auto" },
+        })
+        .pipe(Effect.flip);
+      assert.match(unqualified.message, /Codex or Claude/);
+
       const duplicate = yield* bots.create(createInput("bot-other", "ada", "")).pipe(Effect.flip);
       assert.match(duplicate.message, /already named ada/);
 
