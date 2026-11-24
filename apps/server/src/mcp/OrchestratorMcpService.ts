@@ -3698,7 +3698,9 @@ const make = Effect.gen(function* () {
       yield* assertTargetWithinLimits(limits, target.thread);
       // A bot's chat or room seat is reached through bot deliveries, which check membership,
       // access and hop limits; a generic send would skip all of them.
+      const agentCaller = scope.thread !== undefined || scope.client?.linked === true;
       if (
+        agentCaller &&
         target.thread.id !== parent?.thread.id &&
         Option.isSome(botTurnContext) &&
         (yield* botTurnContext.value.workTargets(target.thread.id)) !== null
