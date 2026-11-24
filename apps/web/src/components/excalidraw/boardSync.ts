@@ -200,7 +200,13 @@ export function takeBatch(
   let fence: number | undefined;
   let elementBytes = 0;
   let totalBytes = 0;
-  for (const [id, element] of session.drafts) {
+  // Frames go first, so a frame and its children split across batches never arrive child-first.
+  const isFrame = (element: BoardElement) =>
+    element.type === "frame" || element.type === "magicframe";
+  const ordered = [...session.drafts].sort(
+    ([, left], [, right]) => Number(isFrame(right)) - Number(isFrame(left)),
+  );
+  for (const [id, element] of ordered) {
     // Larger edits go out over several batches; the rest stay drafts for the next one.
     if (operations.length >= BOARD_MAX_OPERATIONS) break;
     const receipt = session.receipts.get(id);
@@ -339,7 +345,9 @@ export function rejectPending(session: BoardSession): void {
     session.draftBackground = null;
     session.shownBackground = null;
   }
-  session.rejected = rejected.length > 0 ? rejected : null;
+  // An earlier rejection still waiting for Keep as copy or Discard is kept, not replaced.
+  const unresolved = [...(session.rejected ?? []), ...rejected];
+  session.rejected = unresolved.length > 0 ? unresolved : null;
   session.pending = null;
 }
 
@@ -473,6 +481,16 @@ export function copyWithFreshIds(
     elements.filter((element) => !element.isDeleted).map((element) => [element.id, freshId()]),
   );
   const remap = (id: unknown) => (typeof id === "string" ? (ids.get(id) ?? id) : id);
+  // Copies form their own groups, so selecting them never reaches the originals.
+  const groups = new Map<string, string>();
+  const remapGroup = (group: string) => {
+    let fresh = groups.get(group);
+    if (fresh === undefined) {
+      fresh = freshId();
+      groups.set(group, fresh);
+    }
+    return fresh;
+  };
   // A binding to a shape outside the copy is dropped; that shape would not bind back to it.
   const remapBinding = (binding: unknown) =>
     binding !== null && typeof binding === "object" && "elementId" in binding
@@ -488,6 +506,9 @@ export function copyWithFreshIds(
       return {
         ...copy,
         id: ids.get(element.id)!,
+        ...(Array.isArray(copy["groupIds"])
+          ? { groupIds: copy["groupIds"].map((group: unknown) => remapGroup(String(group))) }
+          : {}),
         ...(typeof copy["frameId"] === "string" && ids.has(copy["frameId"])
           ? { frameId: remap(copy["frameId"]) }
           : {}),

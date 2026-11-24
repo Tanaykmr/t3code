@@ -388,7 +388,7 @@ export class BoardController {
         rejectPending(session);
         this.showCanonical();
         const kind = tag === "BoardConflictError" ? "conflict" : "rejected";
-        this.setRejection(session.rejected === null ? null : kind);
+        if (session.rejected !== null) this.setRejection(kind);
         this.setSaveState(kind);
         return;
       }

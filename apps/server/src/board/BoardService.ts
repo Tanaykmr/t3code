@@ -668,18 +668,24 @@ const make = Effect.gen(function* () {
             SELECT element_id FROM board_element
             WHERE board_id = ${board.board_id} AND element_id IN ${sql.in(joinedFrames)}
               AND is_deleted = 0
+              AND json_extract(payload_json, '$.type') IN ('frame', 'magicframe')
           `.pipe(storage("read"))).map((row) => row.element_id),
     );
     const frameIsLive = (id: string) => {
       const inBatch = stampedById.get(id);
-      return inBatch !== undefined ? !inBatch.isDeleted : liveFrameIds.has(id);
+      return inBatch !== undefined ? !inBatch.isDeleted && isFrame(inBatch) : liveFrameIds.has(id);
     };
     for (const [position, element] of stamped.entries()) {
       const frameId = element["frameId"];
-      if (!element.isDeleted && typeof frameId === "string" && !frameIsLive(frameId)) {
+      if (
+        !element.isDeleted &&
+        typeof frameId === "string" &&
+        (frameId === element.id || !frameIsLive(frameId))
+      ) {
         stamped[position] = { ...element, frameId: null };
       }
     }
+    const repairedIds = new Set<string>();
     if (deletedFrames.length > 0) {
       const orphans = yield* sql<ElementRow>`
         SELECT element_id, version, version_nonce, idx, is_deleted, payload_json FROM board_element
@@ -690,6 +696,7 @@ const make = Effect.gen(function* () {
       `.pipe(storage("read"));
       for (const row of orphans) {
         if (stampedById.has(row.element_id)) continue;
+        repairedIds.add(row.element_id);
         // Known to the rest of the commit as an existing record, so its index is not "new".
         current.set(row.element_id, row);
         const versionNonce = yield* random.intBetween(0, MAX_VERSION_NONCE, { halfOpen: true });
@@ -766,7 +773,13 @@ const make = Effect.gen(function* () {
       (total, { payloadJson }) => total + Buffer.byteLength(payloadJson),
       0,
     );
-    if (addedBytes > BOARD_BATCH_MAX_ELEMENT_BYTES) {
+    // Children the server released are its own repair, not part of what the caller sized.
+    const callerBytes = rows.reduce(
+      (total, { element, payloadJson }) =>
+        repairedIds.has(element.id) ? total : total + Buffer.byteLength(payloadJson),
+      0,
+    );
+    if (callerBytes > BOARD_BATCH_MAX_ELEMENT_BYTES) {
       return yield* new BoardInvalidBatchError({ reason: "batch-too-large" });
     }
     if ((storedElements?.total ?? 0) - replacedBytes + addedBytes > BOARD_MAX_ELEMENT_BYTES) {

@@ -432,6 +432,39 @@ describe("board sync", () => {
     expect(copies[1]?.["frameId"]).toBe("fresh1");
   });
 
+  it("sends a new frame in the first batch when its children span several", () => {
+    const session = synced([]);
+    const children = Array.from({ length: 510 }, (_, index) =>
+      element(`c${index}`, { frameId: "frame" }),
+    );
+    observeEditor(session, [...children, element("frame", { type: "frame" })], "#ffffff");
+    const first = take(session);
+    expect(
+      first?.operations.some(
+        (operation) => operation.type === "create" && operation.element.id === "frame",
+      ),
+    ).toBe(true);
+  });
+
+  it("gives copies their own groups and keeps every unresolved rejection", () => {
+    let counter = 0;
+    const copies = copyWithFreshIds(
+      [element("a", { groupIds: ["g1"] }), element("b", { groupIds: ["g1"] })],
+      () => `fresh${++counter}`,
+    );
+    expect(copies[0]?.["groupIds"]).toEqual(copies[1]?.["groupIds"]);
+    expect(copies[0]?.["groupIds"]).not.toEqual(["g1"]);
+
+    const session = synced([element("x"), element("y")]);
+    observeEditor(session, [element("x", { version: 2 }), element("y")], "#ffffff");
+    take(session);
+    rejectPending(session);
+    observeEditor(session, [element("x"), element("y", { version: 2 })], "#ffffff");
+    take(session, "m2");
+    rejectPending(session);
+    expect(new Set(session.rejected?.map((record) => record.id))).toEqual(new Set(["x", "y"]));
+  });
+
   it("holds remote records under local drafts and gestures, and applies the rest", () => {
     const session = synced([element("a"), element("b"), element("c")]);
     observeEditor(
