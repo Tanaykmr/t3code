@@ -145,7 +145,9 @@ function SidebarRooms(props: { readonly environmentId: EnvironmentBot["environme
                 <span className="shrink-0 text-xs text-sidebar-muted-foreground">
                   {entry.room.archivedAt !== null
                     ? gt("Archived")
-                    : gt("{count} bots", { count: String(entry.room.memberBotIds.length) })}
+                    : gt("{count, plural, one {{count} bot} other {{count} bots}}", {
+                        count: entry.room.memberBotIds.length,
+                      })}
                 </span>
               </Link>
             </li>

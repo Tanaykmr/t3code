@@ -3359,7 +3359,7 @@
   "7e2199d0f5ebf85d": "Arkiverade · {count}",
   "628b02b61cbbad34": "Nytt rum",
   "90585f4150afc7b3": "Arkiverad",
-  "5fb9ed6b49d790a6": "{count} botar",
+  "20acbc4015c89be2": "{count, plural, one {{count} bot} other {{count} botar}}",
   "e430a19d2a330c23": "Ny bot",
   "c9ce8569d4fa1dca": ", oläst svar",
   "b09180503a4712b5": ", arbetar",

@@ -1,12 +1,16 @@
 import { createMemoryHistory } from "@tanstack/react-router";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
+  BotId,
+  BotRoomId,
   EnvironmentId,
   IssueTrackerKind,
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
   ThreadId,
   WS_METHODS,
+  type Bot,
+  type BotRoom,
   type IssueDetail,
   type IssueRef,
   type ThreadIssueLink,
@@ -618,6 +622,86 @@ it("opens the thread actions menu for an older settled thread the shell leaves o
   await expect
     .element(page.getByRole("menuitem", { name: "Rename thread" }), { timeout: 5_000 })
     .toBeVisible();
+});
+
+it("shows singular and plural room counts and opens archived bots for restore", async () => {
+  appAtomRegistry.reset();
+  const style = document.createElement("style");
+  style.textContent = stylesheet;
+  document.head.append(style);
+  using _style = { [Symbol.dispose]: () => style.remove() };
+  await page.viewport(1400, 900);
+  const thread = threadWithHistory("ArchiveBot", 1);
+  const archivedAt = "2026-03-17T19:12:28.000Z";
+  const bot = {
+    id: BotId.make("archive-bot"),
+    name: "ArchiveBot",
+    title: "",
+    avatar: "bot",
+    persona: "",
+    personaRevision: 1,
+    dmThreadId: thread.id,
+    peerThreadId: null,
+    projectId: PROJECT_ID,
+    allowedProjectIds: [],
+    createdAt: archivedAt,
+    updatedAt: archivedAt,
+    archivedAt,
+  } satisfies Bot;
+  const memberBotId = BotId.make("room-bot");
+  const room = {
+    id: BotRoomId.make("single-bot-room"),
+    name: "Single",
+    memberBotIds: [memberBotId],
+    defaultBotId: memberBotId,
+    participants: [],
+    createdAt: archivedAt,
+    updatedAt: archivedAt,
+    archivedAt: null,
+  } satisfies BotRoom;
+  const start = threadWithHistory("archive-bot-start", 1);
+  using _environment = installFakeEnvironment([start, { ...thread, archivedAt }], {
+    botDirectory: {
+      bots: [bot],
+      rooms: [
+        room,
+        {
+          ...room,
+          id: BotRoomId.make("two-bot-room"),
+          name: "Pair",
+          memberBotIds: [memberBotId, BotId.make("second-bot")],
+        },
+      ],
+    },
+  });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${start.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+
+  const bots = page.getByRole("region", { name: "Bots", exact: true });
+  await expect.element(bots.getByRole("link", { name: "Pair 2 bots", exact: true })).toBeVisible();
+  const single = bots.getByRole("link", { name: /^Single / });
+  expect.soft(single.element()).toHaveAccessibleName("Single 1 bot");
+  const archived = bots.getByRole("button", { name: "Archived · 1" });
+  await userEvent.click(archived);
+  await userEvent.click(bots.getByRole("link", { name: bot.name }));
+  await expect.element(page.getByText("ArchiveBot: question 0"), { timeout: 5_000 }).toBeVisible();
+  expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${thread.id}`);
+  const restore = page.getByRole("button", { name: "Restore bot" });
+  if (!restore.query()) {
+    await userEvent.click(page.getByRole("button", { name: "Toggle thread details panel" }));
+  }
+  await expect.element(restore).toBeVisible();
+  await expect.element(restore).toBeEnabled();
 });
 
 it("retains each thread's diff selection when returning from another thread or Settings", async () => {

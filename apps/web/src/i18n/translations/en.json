@@ -3359,7 +3359,7 @@
   "7e2199d0f5ebf85d": "Archived · {count}",
   "628b02b61cbbad34": "New room",
   "90585f4150afc7b3": "Archived",
-  "5fb9ed6b49d790a6": "{count} bots",
+  "20acbc4015c89be2": "{count, plural, one {{count} bot} other {{count} bots}}",
   "e430a19d2a330c23": "New bot",
   "c9ce8569d4fa1dca": ", unread reply",
   "b09180503a4712b5": ", working",
