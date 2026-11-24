@@ -24,6 +24,10 @@ export const ensureBotSchema = Effect.gen(function* () {
       archived_at TEXT
     )
   `;
+  const botColumns = yield* sql<{ readonly name: string }>`PRAGMA table_info(bots)`;
+  if (!botColumns.some((column) => column.name === "allowed_project_ids_json")) {
+    yield* sql`ALTER TABLE bots ADD COLUMN allowed_project_ids_json TEXT NOT NULL DEFAULT '[]'`;
+  }
   yield* sql`
     CREATE TABLE IF NOT EXISTS bot_rooms (
       room_id TEXT PRIMARY KEY,
@@ -153,6 +157,7 @@ export interface BotRow {
   readonly project_id: string;
   readonly model_selection_json: string;
   readonly dm_thread_id: string | null;
+  readonly allowed_project_ids_json: string;
   readonly created_at: string;
   readonly updated_at: string;
   readonly archived_at: string | null;

@@ -67,6 +67,7 @@ import {
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -1328,6 +1329,7 @@ const make = Effect.gen(function* () {
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
+  const botTurnContext = yield* BotTurnContext.optional;
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -2870,14 +2872,33 @@ const make = Effect.gen(function* () {
           : readTask(scope, taskId, false, true);
       }
       const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
-      if (
-        input.target?.projectId !== undefined &&
-        input.target.projectId !== parent.thread.projectId
-      ) {
-        return yield* failure(
-          "invalid_request",
-          "A local task runs in this thread's project. Omit target.projectId, or pass target.environmentId to run it in that environment's project.",
-        );
+      // A bot may start work in another local project the user allowed it; others stay put.
+      const destinationProjectId =
+        input.target?.projectId !== undefined && input.target.projectId !== parent.thread.projectId
+          ? input.target.projectId
+          : undefined;
+      if (destinationProjectId !== undefined) {
+        const allowed = Option.isSome(botTurnContext)
+          ? yield* botTurnContext.value.workTargets(parent.thread.id)
+          : null;
+        if (allowed === null) {
+          return yield* failure(
+            "invalid_request",
+            "A local task runs in this thread's project. Omit target.projectId, or pass target.environmentId to run it in that environment's project.",
+          );
+        }
+        if (!allowed.includes(destinationProjectId)) {
+          return yield* failure(
+            "invalid_request",
+            "The user has not allowed this bot to work in that project. Ask them to add it to your work targets.",
+          );
+        }
+        if (input.isolation !== "worktree") {
+          return yield* failure(
+            "invalid_request",
+            'A task in another project needs isolation "worktree".',
+          );
+        }
       }
       const parentRun =
         ThreadManagementService.latestActiveRun(parent) ??
@@ -2918,10 +2939,15 @@ const make = Effect.gen(function* () {
       );
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
       if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
-        const project = yield* requireProject(parent.thread.projectId);
+        const project = yield* requireProject(destinationProjectId ?? parent.thread.projectId);
+        // Another project's worktree starts from that project's own checkout.
+        const baseCheckout =
+          destinationProjectId === undefined
+            ? (parent.thread.worktreePath ?? project.workspaceRoot)
+            : project.workspaceRoot;
         const base = yield* gitDriver
           .resolveCommit({
-            cwd: parent.thread.worktreePath ?? project.workspaceRoot,
+            cwd: baseCheckout,
             revision: "HEAD",
           })
           .pipe(
@@ -2932,7 +2958,7 @@ const make = Effect.gen(function* () {
         // Launch preparation creates the worktree from the project root, so a
         // parent checkout in another repository (such as a Git folder inside
         // Scratch) would hand it a commit it cannot find.
-        if (parent.thread.worktreePath !== null) {
+        if (destinationProjectId === undefined && parent.thread.worktreePath !== null) {
           yield* gitDriver
             .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
             .pipe(
@@ -2969,6 +2995,7 @@ const make = Effect.gen(function* () {
               runtimeMode,
               interactionMode,
               ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+              ...(destinationProjectId === undefined ? {} : { projectId: destinationProjectId }),
               // Async delegations wake the parent on every child terminal; wait
               // delegations deliver through the blocking tool call until `awaitTask`
               // gives up the wait (timeout, cancelled call) and upgrades the wake.

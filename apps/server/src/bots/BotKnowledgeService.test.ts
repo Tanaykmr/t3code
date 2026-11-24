@@ -93,4 +93,21 @@ layer("BotKnowledgeService", (it) => {
       assert.match(fromSeat.message, /own chat/);
     }),
   );
+
+  it.effect("lists allowed work targets and reports them for delegation", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE projection_projects (project_id TEXT, title TEXT, deleted_at TEXT)`;
+      yield* sql`INSERT INTO projection_projects VALUES ('p', 'server', NULL), ('q', 'api', NULL)`;
+      const context = yield* BotTurnContext.BotTurnContext;
+      assert.deepEqual(yield* context.workTargets(dm), ["p"]);
+      yield* sql`UPDATE bots SET allowed_project_ids_json = '["q", "gone"]' WHERE bot_id = 'ada'`;
+      // A project deleted since it was granted is no longer a target.
+      assert.deepEqual(yield* context.workTargets(dm), ["p", "q"]);
+      assert.deepEqual(yield* context.workTargets(seat), ["p", "q"]);
+      assert.isNull(yield* context.workTargets(ThreadId.make("ordinary")));
+      const entry = (yield* context.forThread(dm)).find((e) => e.key === "t3_bot_work_targets");
+      assert.match(entry?.text ?? "", /- api: q/);
+    }),
+  );
 });

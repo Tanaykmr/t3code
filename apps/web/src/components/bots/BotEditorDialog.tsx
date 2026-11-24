@@ -44,6 +44,7 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
+import { Checkbox } from "../ui/checkbox";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -96,6 +97,9 @@ function BotEditorDialog({ request }: { readonly request: EditorRequest }) {
   const [title, setTitle] = useState(editing?.title ?? "");
   const [avatar, setAvatar] = useState<BotAvatar>(editing?.avatar ?? "bot");
   const [persona, setPersona] = useState(editing?.persona ?? "");
+  const [allowedProjectIds, setAllowedProjectIds] = useState<ReadonlyArray<ProjectId>>(
+    editing?.allowedProjectIds ?? [],
+  );
   const [projectId, setProjectId] = useState<ProjectId | null>(
     editing?.projectId ?? projects[0]?.id ?? null,
   );
@@ -137,7 +141,10 @@ function BotEditorDialog({ request }: { readonly request: EditorRequest }) {
     const fields = { name: trimmedName, title: title.trim(), avatar, persona };
     const result =
       editing !== null
-        ? await updateBot({ environmentId, input: { botId: editing.id, ...fields } })
+        ? await updateBot({
+            environmentId,
+            input: { botId: editing.id, ...fields, allowedProjectIds },
+          })
         : await createBot({
             environmentId,
             input: {
@@ -251,6 +258,33 @@ function BotEditorDialog({ request }: { readonly request: EditorRequest }) {
                   onChange={(event) => setPersona(event.target.value)}
                 />
               </Label>
+              {editing === null ? null : (
+                <fieldset className="flex flex-col gap-1">
+                  <legend className="mb-1 text-sm font-medium">
+                    <T>Work targets</T>
+                  </legend>
+                  <p className="mb-1 text-xs text-muted-foreground">
+                    <T>Projects this bot may start coding work in, besides its home project.</T>
+                  </p>
+                  {projects
+                    .filter((project) => project.id !== editing.projectId)
+                    .map((project) => (
+                      <Label key={project.id}>
+                        <Checkbox
+                          checked={allowedProjectIds.includes(project.id)}
+                          onCheckedChange={(checked) =>
+                            setAllowedProjectIds(
+                              checked === true
+                                ? [...allowedProjectIds, project.id]
+                                : allowedProjectIds.filter((id) => id !== project.id),
+                            )
+                          }
+                        />
+                        {project.title}
+                      </Label>
+                    ))}
+                </fieldset>
+              )}
               {editing === null ? (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <Label className="flex min-w-0 flex-col items-stretch" htmlFor={`${id}-project`}>

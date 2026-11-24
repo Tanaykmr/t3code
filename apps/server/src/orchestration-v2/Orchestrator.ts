@@ -9962,6 +9962,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             (cause) => new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
           ),
         );
+      if (
+        command.projectId !== undefined &&
+        command.projectId !== parentProjection.thread.projectId &&
+        command.workspaceStrategy?.type !== "worktree"
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "A task in another project needs its own worktree.",
+        });
+      }
       const parentRun = parentProjection.runs.find(
         (candidate) => candidate.id === command.parentRunId,
       );
@@ -10043,6 +10054,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
         ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
+        ...(command.projectId === undefined ? {} : { projectId: command.projectId }),
       };
       const task: OrchestrationV2Subagent = {
         id: taskNodeId,
