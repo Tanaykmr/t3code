@@ -519,6 +519,51 @@ describe("BoatService", () => {
     },
   );
 
+  it.effect("does not stop again a machine started outside T3 after Boat took our stop", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+      // As if the confirmation reads failed after Boat took the stop, then someone started it.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE boat_operations SET stage = 'stopping' WHERE kind = 'stop'`;
+      fake.resumeExternally(sandboxId);
+      yield* settle;
+      expect(fake.calls.filter((name) => name === "stop")).toHaveLength(1);
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "running",
+        operation: { kind: "stop", failure: "provider-rejected" },
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("settles as Stopped a resume Boat took whose machine its deadline archived", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      yield* boat.resume({ requestId: requestId(), managedId });
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+      // As if the confirmation reads failed after Boat took the resume, then the TTL archived it.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE boat_operations SET stage = 'resuming' WHERE kind = 'resume'`;
+      fake.archiveExternally(sandboxId, 0);
+      yield* settle;
+      expect(fake.calls.filter((name) => name === "resume")).toHaveLength(1);
+      expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("keeps the key while it still manages machines", () => {
     const { layer } = setup();
     return Effect.gen(function* () {

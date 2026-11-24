@@ -108,6 +108,8 @@ interface AccountRow {
 }
 
 const decodeServer = Schema.decodeUnknownOption(BoatServer);
+/** Marks a stop or resume Boat acknowledged, so later passes only confirm it. */
+const ACKNOWLEDGED = "acknowledged";
 const isBoatError = Schema.is(BoatError);
 const UsageJson = Schema.fromJsonString(BoatUsageSample);
 const decodeUsage = Schema.decodeUnknownOption(UsageJson);
@@ -527,11 +529,27 @@ export const make = Effect.gen(function* () {
       yield* setServer(server.managed_id, { lifecycle: "failed" });
       return true;
     }
+    const acknowledged = op.provider_operation_id === ACKNOWLEDGED;
     yield* setStage(op.request_id, "stopping");
     yield* setServer(server.managed_id, { lifecycle: "stopping" });
-    // After a restart the earlier stop may have finished; do not send another.
-    const current = yield* retryTransient(api.get(key, sandboxId));
-    if (current.state !== "archived") yield* retryTransient(api.stop(key, sandboxId));
+    if (!acknowledged) {
+      // A graceful stop is safe to send unseen; only skip it when Boat already reports archived.
+      const current = yield* retryTransient(api.get(key, sandboxId)).pipe(
+        Effect.asSome,
+        Effect.catchIf(isTransient, () => Effect.succeedNone),
+      );
+      if (Option.isNone(current) || current.value.state !== "archived") {
+        yield* retryTransient(api.stop(key, sandboxId));
+        yield* setStage(op.request_id, "stopping", { provider_operation_id: ACKNOWLEDGED });
+      }
+    } else {
+      // Boat took this stop earlier. A live machine now was started again outside T3: report
+      // that rather than stopping it a second time.
+      const current = yield* retryTransient(api.get(key, sandboxId));
+      yield* observe(server.managed_id, current);
+      if (isLiveState(current.state))
+        return yield* new OperationRefused({ code: "provider-rejected" });
+    }
     const archived = yield* pollUntil(
       key,
       server.managed_id,
@@ -571,6 +589,15 @@ export const make = Effect.gen(function* () {
     if (!isLiveState(current.state) && (yield* hasPendingStop(server.managed_id))) {
       return yield* new OperationRefused({ code: "provider-unavailable" });
     }
+    // Boat took this resume earlier; archived now means it woke and its deadline passed.
+    // Settle as stopped rather than waking it again with a fresh deadline.
+    if (op.provider_operation_id === ACKNOWLEDGED && current.state === "archived") {
+      yield* setServer(server.managed_id, {
+        lifecycle: "stopped",
+        last_stopped_at: current.stoppedAt ?? (yield* nowIso),
+      });
+      return true;
+    }
     // This build cannot verify a guest: never wake one; one already woken is failed below.
     if (!bootstrap.available && current.state === "archived") {
       return yield* new OperationRefused({ code: "bootstrap-unavailable" });
@@ -582,6 +609,9 @@ export const make = Effect.gen(function* () {
       }
       // Sent once per pass: a later pass looks at the machine again before any resend.
       const sent = yield* api.resume(key, sandboxId, server.ttl_seconds).pipe(
+        Effect.tap(() =>
+          setStage(op.request_id, "resuming", { provider_operation_id: ACKNOWLEDGED }),
+        ),
         Effect.as("sent" as const),
         Effect.catchIf(isTransient, () => Effect.succeed("unknown" as const)),
         Effect.catchIf(
@@ -727,11 +757,11 @@ export const make = Effect.gen(function* () {
     op: OperationRow,
     failure: OperationRefused["code"],
   ) {
-    // No cleanup stop. A refused resume shows what Boat last reported, or Stopping while an
-    // accepted stop waits, so no other action is accepted against a stale Stopped.
+    // No cleanup stop. The row shows what Boat last reported (a create that never allocated is
+    // Failed), or Stopping while another accepted stop waits, so nothing acts on a stale state.
     const server = yield* readServer(op.managed_id);
     const lifecycle: BoatLifecycle =
-      op.kind !== "resume"
+      op.kind === "create" && server?.sandbox_id == null
         ? "failed"
         : server?.observed_power === "running"
           ? "running"
@@ -740,9 +770,9 @@ export const make = Effect.gen(function* () {
     yield* sql`
       UPDATE boat_servers SET lifecycle = CASE WHEN EXISTS (
         SELECT 1 FROM boat_operations
-        WHERE managed_id = ${op.managed_id} AND kind = 'stop'
+        WHERE managed_id = ${op.managed_id} AND kind = 'stop' AND request_id != ${op.request_id}
           AND stage NOT IN ('completed', 'failed')
-      ) AND ${op.kind} = 'resume' THEN 'stopping' ELSE ${lifecycle} END
+      ) THEN 'stopping' ELSE ${lifecycle} END
       WHERE managed_id = ${op.managed_id}
     `;
     yield* publish;
@@ -779,10 +809,11 @@ export const make = Effect.gen(function* () {
             isTransient(error)
               ? // Boat did not answer: keep the operation for the next pass rather than fail it.
                 // A resume with a stop waiting hands off instead, so the stop is not held up.
-                op.kind === "resume"
-                ? hasPendingStop(op.managed_id).pipe(
-                    Effect.flatMap((stopWaiting) =>
-                      stopWaiting
+                op.kind === "resume" || op.kind === "create"
+                ? Effect.all([hasPendingStop(op.managed_id), readServer(op.managed_id)]).pipe(
+                    Effect.flatMap(([stopWaiting, row]) =>
+                      // A create hands off only once its machine is known, so the stop can act.
+                      stopWaiting && (op.kind === "resume" || row?.sandbox_id != null)
                         ? settleRefusal(op, "provider-unavailable")
                         : Effect.succeed(false),
                     ),
