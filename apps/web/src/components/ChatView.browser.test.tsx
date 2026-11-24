@@ -26,7 +26,11 @@ import { AppRoot } from "~/AppRoot";
 // The route loads ChatView lazily, and its first transform (React Compiler over ~4k lines)
 // takes 6-11s; importing it here keeps that out of the test's timeout.
 import "~/components/ChatView";
-import { DraftId, useComposerDraftStore } from "~/composerDraftStore";
+import {
+  clearComposerDraftsEnvironment,
+  DraftId,
+  useComposerDraftStore,
+} from "~/composerDraftStore";
 import { selectThreadDiffPanelSelection, useDiffPanelStore } from "~/diffPanelStore";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import stylesheet from "~/index.css?inline";
@@ -46,7 +50,7 @@ import {
   dispatchedCommands,
   emitThreadEvent,
   hasPendingAssetUrl,
-  installFakeEnvironment,
+  installFakeEnvironment as installFakeEnvironmentFixture,
   rejectPendingCommand,
   threadWithHistory,
   threadWithQuestion,
@@ -60,6 +64,13 @@ const PNG = Uint8Array.from(
   ),
   (char) => char.charCodeAt(0),
 );
+
+function installFakeEnvironment(...args: Parameters<typeof installFakeEnvironmentFixture>) {
+  const cleanup = new DisposableStack();
+  cleanup.use(installFakeEnvironmentFixture(...args));
+  cleanup.defer(() => clearComposerDraftsEnvironment(ENVIRONMENT_ID));
+  return cleanup;
+}
 
 /** Accepts every attachment upload without sending its bytes, until disposed. */
 function acceptAttachmentUploads(): Disposable {
