@@ -510,6 +510,9 @@ const make = Effect.gen(function* () {
         : yield* sql<DeliveryRow>`SELECT * FROM bot_deliveries WHERE delivery_id = ${causeId}`.pipe(
             Effect.mapError(fail("Could not read the request.")),
           );
+    if (causeId !== undefined && cause === undefined) {
+      return yield* botError("Message other bots from a running turn.");
+    }
     const hop = cause === undefined ? 1 : cause.hop + 1;
     if (hop > MAX_HOPS) {
       return yield* botError(

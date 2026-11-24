@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { ensureBotSchema, executingTurnOrigin } from "./botStore.ts";
+import { ensureBotSchema, executingTurnOrigin, isOperatorOrigin } from "./botStore.ts";
 
 export interface BotTurnContextEntry {
   readonly key: string;
@@ -23,6 +23,8 @@ export class BotTurnContext extends Context.Service<
     readonly workTargets: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<string> | null>;
     /** Whether the thread is a bot's private chat, not a room or peer seat. */
     readonly isDm: (threadId: ThreadId) => Effect.Effect<boolean>;
+    /** Whether the executing turn answers the user directly, not a bot, routine or webhook. */
+    readonly isOperatorTurn: (threadId: ThreadId) => Effect.Effect<boolean>;
   }
 >()("t3/bots/BotTurnContext") {}
 
@@ -153,7 +155,10 @@ export const layer = Layer.effect(
               WHERE delivery.delivery_id = ${deliveryId}
             `.pipe(Effect.orElseSucceed(() => null));
         const peerTurn =
-          origin === "unresolved" || woken === null || woken[0]?.sender_bot_id != null;
+          origin === "unresolved" ||
+          woken === null ||
+          (deliveryId !== null && woken[0] === undefined) ||
+          woken[0]?.sender_bot_id != null;
         const memories =
           bot.is_dm === 1
             ? yield* sql<{ memory_id: string; text: string }>`
@@ -216,7 +221,13 @@ export const layer = Layer.effect(
       },
       (effect) => effect.pipe(Effect.orElseSucceed(() => false)),
     );
-    return BotTurnContext.of({ forThread, workTargets, isDm });
+    const isOperatorTurn = Effect.fn("BotTurnContext.isOperatorTurn")(
+      function* (threadId: ThreadId) {
+        return isOperatorOrigin(yield* executingTurnOrigin(sql, threadId));
+      },
+      (effect) => effect.pipe(Effect.orElseSucceed(() => false)),
+    );
+    return BotTurnContext.of({ forThread, workTargets, isDm, isOperatorTurn });
   }),
 );
 

@@ -251,3 +251,12 @@ export const executingTurnOrigin = Effect.fnUntraced(function* (
   if (origin !== undefined && origin.depth >= MAX_ORIGIN_LINKS) return "unresolved" as const;
   return origin;
 });
+
+/** Only a message the user wrote in the chat, not a bot delivery, routine or webhook. */
+export const isOperatorOrigin = (origin: TurnOrigin | "unresolved" | undefined) =>
+  origin !== undefined &&
+  origin !== "unresolved" &&
+  origin.message_id !== null &&
+  !origin.message_id.startsWith("bot-delivery:") &&
+  origin.scheduled_task_id === null &&
+  origin.sender_thread_id === null;

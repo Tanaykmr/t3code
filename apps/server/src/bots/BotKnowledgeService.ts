@@ -17,7 +17,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { ensureBotSchema, executingTurnOrigin } from "./botStore.ts";
+import { ensureBotSchema, executingTurnOrigin, isOperatorOrigin } from "./botStore.ts";
 
 /** Memories and skills a bot keeps across sessions; the persona context reads them. */
 export class BotKnowledgeService extends Context.Service<
@@ -201,14 +201,7 @@ const make = Effect.gen(function* () {
     const input = yield* executingTurnOrigin(sql, threadId).pipe(
       Effect.mapError(botError("Could not read the bot.")),
     );
-    if (
-      input === undefined ||
-      input === "unresolved" ||
-      input.message_id === null ||
-      input.message_id.startsWith("bot-delivery:") ||
-      input.scheduled_task_id !== null ||
-      input.sender_thread_id !== null
-    ) {
+    if (!isOperatorOrigin(input)) {
       return yield* new BotError({
         message:
           "Only a message the user wrote in this chat can change your memory, not a routine, webhook or another bot.",

@@ -2434,6 +2434,18 @@ const make = Effect.gen(function* () {
           "A bot's routine runs in its own chat: schedule it from there with bindToCurrentThread true.",
         );
       }
+      // A routine starts fresh bot-message budgets, so only the user's own request makes one.
+      if (
+        scope.bot === true &&
+        parent !== undefined &&
+        Option.isSome(botTurnContext) &&
+        !(yield* botTurnContext.value.isOperatorTurn(parent.thread.id))
+      ) {
+        return yield* failure(
+          "invalid_request",
+          "A bot schedules routines only when the user asks in its chat, not for another bot or a routine.",
+        );
+      }
       if (bindToCurrentThread && (parent === undefined || parent.thread.projectId !== projectId)) {
         return yield* failure(
           "invalid_request",
@@ -3790,6 +3802,19 @@ const make = Effect.gen(function* () {
           "That thread belongs to a bot. Bots reach each other with t3_bot_message; agents cannot send into a bot's chat directly.",
         );
       }
+      if (
+        scope.bot === true &&
+        Option.isSome(botTurnContext) &&
+        scope.thread !== undefined &&
+        !((yield* botTurnContext.value.workTargets(scope.thread.threadId)) ?? []).includes(
+          target.thread.projectId,
+        )
+      ) {
+        return yield* failure(
+          "invalid_request",
+          "A bot works only in its work targets. Use delegate_task with one of them.",
+        );
+      }
 
       const mode = input.mode ?? "auto";
       const key = yield* requestKey(input.clientRequestId);
@@ -3842,6 +3867,12 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadSendResult;
     }),
     waitForThread: Effect.fn("OrchestratorMcpService.waitForThread")(function* (scope, input) {
+      if (
+        scope.bot === true &&
+        (yield* isForeignBotThread(threadManagement, scope, input.threadId))
+      ) {
+        return yield* privateBotThread();
+      }
       const { parent, target } = yield* loadScopedThread(scope, input.threadId, []);
       const result = yield* threadManagement
         .waitForThread({

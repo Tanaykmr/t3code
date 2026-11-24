@@ -192,7 +192,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       (input) =>
         Effect.gen(function* () {
           const sourcePoint = input.sourcePoint ?? { type: "latest_stable" as const };
-          const { threads, projection } = yield* readThread(input.threadId);
+          const { threads, projection, scope } = yield* readThread(input.threadId);
           const commandId = yield* newCommandId();
           if (input.action === "merge_back") {
             const targetThreadId = yield* required(input.targetThreadId, "targetThreadId");
@@ -209,6 +209,13 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
               })
               .pipe(Effect.mapError(dispatchFailure));
             return { sequence: result.sequence, targetThreadId };
+          }
+          // A fork of a bot's chat would run outside the bot's work targets and limits.
+          if (scope.bot === true) {
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "A bot cannot fork threads. Use delegate_task for side work.",
+            });
           }
           const targetThreadId = ThreadId.make(`${commandId}:fork`);
           const result = yield* threads

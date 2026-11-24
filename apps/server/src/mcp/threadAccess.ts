@@ -264,8 +264,11 @@ export const isForeignBotThread = Effect.fn("mcp.isForeignBotThread")(function* 
       return true;
     }
     seen.add(current);
-    const shell = yield* threads.getThreadShell(current).pipe(Effect.orElseSucceed(() => null));
-    // A missing ancestor cannot be checked, so the fork stays closed.
+    const shell = yield* threads
+      .getThreadShell(current)
+      .pipe(Effect.orElseSucceed(() => "unreadable" as const));
+    // An ancestor that cannot be checked keeps the fork closed.
+    if (shell === "unreadable") return true;
     if (shell === null) return current !== threadId;
     if (shell.forkedFrom?.type !== "run") return false;
     current = shell.forkedFrom.threadId;
