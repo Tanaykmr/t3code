@@ -31,6 +31,7 @@ import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import { McpAttachmentInput } from "./attachment/input.ts";
 import { McpSchema, McpServer } from "effect/ai";
 import { FetchHttpClient } from "effect/http";
@@ -45,6 +46,7 @@ import {
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as BotTurnContext from "../../bots/BotTurnContext.ts";
 import * as ServerConfig from "../../config.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
@@ -1366,25 +1368,20 @@ const botIsolationLayer = Layer.mergeAll(
   Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
   Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
   Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
-  Layer.provideMerge(
-    Layer.succeed(
-      BotTurnContext.BotTurnContext,
-      BotTurnContext.BotTurnContext.of({
-        workTargets: (id) =>
-          Effect.succeed(id === foreignBotThread || id === threadId ? [botProjectId] : null),
-        privateThreadIds: Effect.succeed(new Set([foreignBotThread, threadId])),
-        forThread: () => Effect.succeed([]),
-        isDm: () => Effect.succeed(true),
-        isOperatorTurn: () => Effect.succeed(true),
-      }),
-    ),
-  ),
 );
 
-const asBot = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+const asBot = <A, E, R>(effect: Effect.Effect<A, E, R>, operatorTurn = Effect.succeed(true)) =>
   effect.pipe(
     Effect.provideService(McpInvocationContext.McpInvocationContext, { ...scope, bot: true }),
     Effect.provideService(McpSchema.McpServerClient, client),
+    Effect.provideService(BotTurnContext.BotTurnContext, {
+      workTargets: (id) =>
+        Effect.succeed(id === foreignBotThread || id === threadId ? [botProjectId] : null),
+      privateThreadIds: Effect.succeed(new Set([foreignBotThread, threadId])),
+      forThread: () => Effect.succeed([]),
+      isDm: (id) => Effect.succeed(id === threadId),
+      isOperatorTurn: () => operatorTurn,
+    }),
     Effect.provide(botIsolationLayer),
   );
 
@@ -1485,6 +1482,89 @@ it.effect("runs only routines bound to the calling bot DM", () =>
     expect((yield* run("bot-routine")).structuredContent).toMatchObject({ taskId: "bot-routine" });
     expect(declaredFailure(yield* run("unbound-routine"))).toMatchObject({
       code: "invalid_request",
+    });
+  }).pipe(asBot),
+);
+
+it.effect("a running bot routine cannot enqueue itself", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const bots = yield* BotTurnContext.BotTurnContext;
+    const taskId = "bot-routine";
+    yield* sql`
+      INSERT INTO orchestration_v2_projection_runs
+        (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+      VALUES ('routine-run', ${threadId}, 1, 'codex', 'running', 'now', '{"userMessageId":"routine-input"}')
+    `;
+    yield* sql`
+      INSERT INTO orchestration_v2_projection_messages
+        (message_id, thread_id, run_id, role, streaming, created_at, updated_at, payload_json)
+      VALUES ('routine-input', ${threadId}, 'routine-run', 'user', 0, 'now', 'now',
+        ${JSON.stringify({ scheduledTaskId: taskId, createdBy: "user" })})
+    `;
+    const run = asBot(
+      McpServer.McpServer.pipe(
+        Effect.flatMap((server) =>
+          server.callTool({ name: "run_scheduled_task_now", arguments: { taskId } }),
+        ),
+      ),
+      bots.isOperatorTurn(threadId),
+    );
+    const expectDenied = (result: McpSchema.CallToolResult) =>
+      expect(declaredFailure(result)).toMatchObject({
+        code: "invalid_request",
+        message: expect.stringContaining("only when the user asks"),
+      });
+    expectDenied(yield* run);
+    yield* sql`UPDATE orchestration_v2_projection_messages
+      SET payload_json = '{"createdBy":"agent"}' WHERE message_id = 'routine-input'`;
+    expectDenied(yield* run);
+    yield* sql`UPDATE orchestration_v2_projection_messages
+      SET payload_json = '{"createdBy":"user"}' WHERE message_id = 'routine-input'`;
+    expect((yield* run).structuredContent).toMatchObject({ taskId });
+  }).pipe(Effect.provide(BotTurnContext.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+it.effect.each([
+  {
+    name: "schedule_task",
+    args: { prompt: "Review", schedule: { type: "interval", everyMs: 60_000 } },
+  },
+  { name: "schedule_task", args: { scheduledTaskId: "bot-routine", enabled: false } },
+  { name: "delete_scheduled_task", args: { scheduledTaskId: "bot-routine" } },
+  { name: "t3_thread_interrupt", args: { threadId, stop: true } },
+  { name: "t3_thread_organize", args: { action: "settle" } },
+  { name: "t3_thread_configure", args: { modelSelection: { instanceId: "codex", model: "test" } } },
+])("requires a direct operator turn for $name", ({ name, args }) =>
+  asBot(
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const result = yield* server.callTool({ name, arguments: args });
+      expect(declaredFailure(result)).toMatchObject({
+        code: "invalid_request",
+        message: expect.stringContaining("only when the user asks"),
+      });
+    }),
+    Effect.succeed(false),
+  ),
+);
+
+it.effect.each([
+  {
+    target: { environmentId: "linked", projectId: botProjectId },
+    message: "configured local work targets",
+  },
+  { target: { projectId: "other-project" }, message: "has not allowed this bot" },
+])("keeps bot delegation within configured work targets ($message)", ({ target, message }) =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const result = yield* server.callTool({
+      name: "delegate_task",
+      arguments: { task: "Review", mode: "async", isolation: "worktree", target },
+    });
+    expect(declaredFailure(result)).toMatchObject({
+      code: "invalid_request",
+      message: expect.stringContaining(message),
     });
   }).pipe(asBot),
 );

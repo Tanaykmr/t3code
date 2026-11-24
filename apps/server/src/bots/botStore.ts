@@ -205,6 +205,7 @@ export interface BotRow {
 export interface TurnOrigin {
   readonly origin_run_id: string;
   readonly message_id: string | null;
+  readonly created_by: string | null;
   readonly scheduled_task_id: string | null;
   readonly sender_thread_id: string | null;
   readonly depth: number;
@@ -244,12 +245,14 @@ export const executingTurnOrigin = Effect.fnUntraced(function* (
       WHERE chain.depth < ${MAX_ORIGIN_LINKS}
     )
     SELECT chain.run_id AS origin_run_id, message.message_id,
+      json_extract(message.payload_json, '$.createdBy') AS created_by,
       json_extract(message.payload_json, '$.scheduledTaskId') AS scheduled_task_id,
       json_extract(message.payload_json, '$.senderThreadId') AS sender_thread_id,
       chain.depth AS depth
     FROM chain
     LEFT JOIN orchestration_v2_projection_messages AS message
       ON message.message_id = json_extract(chain.payload_json, '$.userMessageId')
+      AND message.thread_id = ${threadId} AND message.role = 'user'
     ORDER BY chain.depth DESC LIMIT 1
   `;
   // A chain this long is unresolved: no memory, memory writes or fresh budgets.
@@ -262,6 +265,7 @@ export const isOperatorOrigin = (origin: TurnOrigin | "unresolved" | undefined) 
   origin !== undefined &&
   origin !== "unresolved" &&
   origin.message_id !== null &&
+  origin.created_by === "user" &&
   !origin.message_id.startsWith("bot-delivery:") &&
   origin.scheduled_task_id === null &&
   origin.sender_thread_id === null;

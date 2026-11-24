@@ -268,13 +268,13 @@ export class ScheduledTaskService extends Context.Service<
     readonly list: () => Effect.Effect<ScheduledTaskListResult, ScheduledTaskError>;
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
     readonly upsert: (
-      input: ScheduledTaskUpsertInput,
+      input: ScheduledTaskUpsertInput & { readonly requiredThreadId?: ThreadId },
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     readonly setEnabled: (
       input: ScheduledTaskSetEnabledInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     readonly delete: (
-      input: ScheduledTaskDeleteInput,
+      input: ScheduledTaskDeleteInput & { readonly requiredThreadId?: ThreadId },
     ) => Effect.Effect<ScheduledTaskDeleteResult, ScheduledTaskError>;
     /** Deletes only tasks that still target this thread, including their webhook deliveries. */
     readonly deleteForThread: (threadId: ThreadId) => Effect.Effect<void, ScheduledTaskError>;
@@ -644,6 +644,7 @@ export const layer = Layer.effect(
     const saveTask = (
       task: ScheduledTask,
       requireExisting: boolean,
+      requiredThreadId: ThreadId | undefined,
       /** The schedule this save read, when it left the schedule unchanged. */
       keptSchedule: ScheduledTask["schedule"] | null,
       /** The thread this save unbinds; any other stored thread is kept. */
@@ -749,6 +750,7 @@ export const layer = Layer.effect(
             WHEN ${webhook.secretChanged ? 1 : 0} = 1 THEN excluded.webhook_secret
             ELSE scheduled_tasks.webhook_secret
           END
+        WHERE ${requiredThreadId ?? null} IS NULL OR scheduled_tasks.thread_id = ${requiredThreadId ?? null}
         RETURNING task_id
       `.pipe(
         Effect.mapError((cause) =>
@@ -760,19 +762,6 @@ export const layer = Layer.effect(
             : taskError("Schedule task not found.", { taskId: task.id }),
         ),
       );
-
-    const deleteRow = (id: ScheduledTaskId) =>
-      sql
-        .withTransaction(
-          sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${id}`.pipe(
-            Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
-          ),
-        )
-        .pipe(
-          Effect.mapError((cause) =>
-            taskError("Could not delete schedule task.", { taskId: id, cause }),
-          ),
-        );
 
     const markRunning = (id: ScheduledTaskId, startedAtIso: string, webhookDeliveryId?: string) =>
       sql<{ task_id: string }>`
@@ -1502,6 +1491,11 @@ export const layer = Layer.effect(
         existingTask.projectId !== input.projectId &&
         keptThreadId === existingTask.threadId;
       const threadId = threadMode === "new_thread" || movedOffThread ? null : keptThreadId;
+      if (input.requiredThreadId !== undefined && threadId !== input.requiredThreadId) {
+        return yield* taskError("Schedule task is no longer bound to the required thread.", {
+          taskId: id,
+        });
+      }
       // An unchanged destination is not rechecked, so a task on an archived thread stays editable.
       if (threadId !== null && threadId !== existingTask?.threadId) {
         yield* requireDestinationThread(threadId, input.projectId, id);
@@ -1626,6 +1620,7 @@ export const layer = Layer.effect(
       yield* saveTask(
         task,
         input.requireExisting === true,
+        input.requiredThreadId,
         scheduleUnchanged ? existingTask.schedule : null,
         threadId === null && input.unbindThread === true ? (existingTask?.threadId ?? null) : null,
         webhook,
@@ -1715,12 +1710,37 @@ export const layer = Layer.effect(
         { discard: true },
       );
 
-    const deleteTask: ScheduledTaskService["Service"]["delete"] = (input) =>
-      deleteRow(input.id).pipe(
-        Effect.andThen(forgetWebhookTask(input.id)),
-        Effect.andThen(notifyChanged),
-        Effect.as({ id: input.id }),
-      );
+    const deleteTask: ScheduledTaskService["Service"]["delete"] = Effect.fn(
+      "ScheduledTaskService.delete",
+    )(function* ({ id, requiredThreadId }) {
+      const removed = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{ task_id: string }>`
+              DELETE FROM scheduled_tasks
+              WHERE task_id = ${id} AND (${requiredThreadId ?? null} IS NULL OR thread_id = ${requiredThreadId ?? null})
+              RETURNING task_id
+            `;
+            if (rows.length > 0 || requiredThreadId === undefined) {
+              yield* sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${id}`;
+            }
+            return rows.length > 0;
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not delete schedule task.", { taskId: id, cause }),
+          ),
+        );
+      if (!removed && requiredThreadId !== undefined) {
+        return yield* taskError("Schedule task is no longer bound to the required thread.", {
+          taskId: id,
+        });
+      }
+      yield* forgetWebhookTask(id);
+      yield* notifyChanged;
+      return { id };
+    });
 
     const deleteForThread = Effect.fn("ScheduledTaskService.deleteForThread")(function* (
       threadId: ThreadId,

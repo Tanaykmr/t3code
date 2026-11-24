@@ -67,7 +67,7 @@ import {
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
-import * as BotTurnContext from "../bots/BotTurnContext.ts";
+
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -92,6 +92,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as BotMcpPolicy from "./BotMcpPolicy.ts";
 import {
   SUBAGENT_RESULT_TURN_ITEM_TYPES,
   subagentResultForRun,
@@ -138,15 +139,7 @@ import {
   runtimeModeRank,
   taskPrompt,
 } from "./delegatedTaskModes.ts";
-import {
-  assertBotThreadAccess,
-  assertBotThreadWrite,
-  botRoutineAccess,
-  assertTargetWithinLimits,
-  foreignBotThreads,
-  isLiveCallerShell,
-  threadNotFound,
-} from "./threadAccess.ts";
+import { assertTargetWithinLimits, isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
@@ -1337,7 +1330,6 @@ const make = Effect.gen(function* () {
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
-  const botTurnContext = yield* BotTurnContext.optional;
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -1478,7 +1470,7 @@ const make = Effect.gen(function* () {
     K extends "runs",
   >(scope: McpInvocationScope, threadId: ThreadId, callerFields: ReadonlyArray<K>) {
     const caller = yield* loadCaller(scope, callerFields);
-    yield* assertBotThreadAccess(threadManagement, scope, threadId);
+    yield* BotMcpPolicy.assertThreadRead(threadManagement, scope, threadId);
     // Only the thread row: the caller's own record holds just its active runs.
     const target: Pick<OrchestrationV2ThreadProjection, "thread"> =
       caller.parent !== undefined && threadId === caller.parent.thread.id
@@ -1868,7 +1860,7 @@ const make = Effect.gen(function* () {
     if (task.childThreadId === null) {
       return yield* readRemoteTask(scope, task, waitTimedOut, acknowledgeTerminal);
     }
-    yield* assertBotThreadAccess(threadManagement, scope, task.childThreadId);
+    yield* BotMcpPolicy.assertThreadRead(threadManagement, scope, task.childThreadId);
     const childControls = yield* threadManagement
       .getThreadRecords(
         task.childThreadId,
@@ -2374,7 +2366,8 @@ const make = Effect.gen(function* () {
       const modes = yield* scheduledTaskRunModes(task).pipe(Effect.option);
       return scheduledTaskSummary(
         task,
-        live &&
+        scope.bot !== true &&
+          live &&
           Option.isSome(modes) &&
           modes.value.every((mode) => withinLimits(caller.limits, mode)),
       );
@@ -2406,7 +2399,7 @@ const make = Effect.gen(function* () {
       return yield* failure("task_not_found", `Scheduled task ${scheduledTaskId} was not found.`);
     }
     if (task.threadId !== null) {
-      yield* assertBotThreadAccess(threadManagement, scope, task.threadId);
+      yield* BotMcpPolicy.assertThreadRead(threadManagement, scope, task.threadId);
     }
     for (const modes of yield* scheduledTaskRunModes(task)) {
       yield* resolveRuntimeMode(limits.runtimeMode, modes.runtimeMode);
@@ -2419,41 +2412,16 @@ const make = Effect.gen(function* () {
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
-      if (scope.bot === true && projectId !== parent?.thread.projectId) {
-        return yield* failure(
-          "invalid_request",
-          "A bot schedules routines in its own chat's project. Use delegate_task for work elsewhere.",
-        );
-      }
-      yield* assertLiveCallerForOtherProject(scope, parent, projectId);
-      const project = yield* requireProject(projectId);
       const bindToCurrentThread =
         input.bindToCurrentThread ??
         (parent !== undefined && parent.thread.projectId === projectId);
-      // A bot's routine runs in its own chat, where its limits and persona apply.
-      if (
-        scope.bot === true &&
-        (!bindToCurrentThread ||
-          parent === undefined ||
-          !(Option.isSome(botTurnContext) && (yield* botTurnContext.value.isDm(parent.thread.id))))
-      ) {
-        return yield* failure(
-          "invalid_request",
-          "A bot's routine runs in its own chat: schedule it from there with bindToCurrentThread true.",
-        );
-      }
-      // A routine starts fresh bot-message budgets, so only the user's own request makes one.
-      if (
-        scope.bot === true &&
-        parent !== undefined &&
-        Option.isSome(botTurnContext) &&
-        !(yield* botTurnContext.value.isOperatorTurn(parent.thread.id))
-      ) {
-        return yield* failure(
-          "invalid_request",
-          "A bot schedules routines only when the user asks in its chat, not for another bot or a routine.",
-        );
-      }
+      const threadId = bindToCurrentThread ? (parent?.thread.id ?? null) : null;
+      const binding = yield* BotMcpPolicy.authorizeRoutine(scope, parent?.thread.projectId, {
+        projectId,
+        threadId,
+      });
+      yield* assertLiveCallerForOtherProject(scope, parent, projectId);
+      const project = yield* requireProject(projectId);
       if (bindToCurrentThread && (parent === undefined || parent.thread.projectId !== projectId)) {
         return yield* failure(
           "invalid_request",
@@ -2475,7 +2443,7 @@ const make = Effect.gen(function* () {
         enabled: input.enabled ?? true,
         schedule: input.schedule,
         projectId,
-        threadId: bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
+        threadId,
         threadMode: input.freshSession
           ? "fresh_session"
           : bindToCurrentThread
@@ -2500,7 +2468,7 @@ const make = Effect.gen(function* () {
             }),
       };
       const { task } = yield* scheduledTasks
-        .upsert(upsertInput)
+        .upsert({ ...upsertInput, ...binding })
         .pipe(
           Effect.mapError((error) =>
             failure("orchestration_error", `Could not schedule task: ${error.message}`),
@@ -2524,7 +2492,7 @@ const make = Effect.gen(function* () {
             (projectId === undefined || task.projectId === projectId) &&
             (input.scheduledTaskId === undefined || task.id === input.scheduledTaskId),
         );
-        const canAccess = yield* botRoutineAccess(scope);
+        const canAccess = yield* BotMcpPolicy.routineVisibility(scope);
         return {
           tasks: candidates
             .filter((task) => canAccess(task.threadId))
@@ -2537,28 +2505,10 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
         const existing = yield* loadScheduledTask(scope, input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
-        if (
-          scope.bot === true &&
-          (existing.projectId !== parent?.thread.projectId ||
-            existing.threadId !== parent.thread.id ||
-            input.bindToCurrentThread === false)
-        ) {
-          return yield* failure(
-            "invalid_request",
-            "A bot edits only the routines bound to its own chat.",
-          );
-        }
-        if (
-          scope.bot === true &&
-          parent !== undefined &&
-          Option.isSome(botTurnContext) &&
-          !(yield* botTurnContext.value.isOperatorTurn(parent.thread.id))
-        ) {
-          return yield* failure(
-            "invalid_request",
-            "A bot changes routines only when the user asks in its chat, not for another bot or a routine.",
-          );
-        }
+        const binding = yield* BotMcpPolicy.authorizeRoutine(scope, parent?.thread.projectId, {
+          ...existing,
+          threadId: input.bindToCurrentThread === false ? null : existing.threadId,
+        });
         if (
           input.bindToCurrentThread === true &&
           (parent === undefined || parent.thread.projectId !== existing.projectId)
@@ -2622,7 +2572,7 @@ const make = Effect.gen(function* () {
           creationSource: existing.creationSource,
         };
         const { task } = yield* scheduledTasks
-          .upsert(upsertInput)
+          .upsert({ ...upsertInput, ...binding })
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
@@ -2636,25 +2586,13 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
         const existing = yield* loadScheduledTask(scope, input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
-        if (scope.bot === true && existing.threadId !== parent?.thread.id) {
-          return yield* failure(
-            "invalid_request",
-            "A bot deletes only the routines bound to its own chat.",
-          );
-        }
-        if (
-          scope.bot === true &&
-          parent !== undefined &&
-          Option.isSome(botTurnContext) &&
-          !(yield* botTurnContext.value.isOperatorTurn(parent.thread.id))
-        ) {
-          return yield* failure(
-            "invalid_request",
-            "A bot deletes routines only when the user asks in its chat, not for another bot or a routine.",
-          );
-        }
+        const binding = yield* BotMcpPolicy.authorizeRoutine(
+          scope,
+          parent?.thread.projectId,
+          existing,
+        );
         yield* scheduledTasks
-          .delete({ id: existing.id })
+          .delete({ id: existing.id, ...binding })
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not delete scheduled task: ${error.message}`),
@@ -2945,6 +2883,7 @@ const make = Effect.gen(function* () {
           ? undefined
           : PeerForwarding.remoteTarget(callerScope, input.target.environmentId);
       if (input.target !== undefined && environmentId !== undefined) {
+        yield* BotMcpPolicy.assertNonBot(callerScope, "remote");
         yield* requireCapability(callerScope);
         const scope = yield* requireThreadScope(callerScope, "delegate_task");
         // The task's child runs as an ordinary thread there; this thread keeps the task.
@@ -2962,29 +2901,12 @@ const make = Effect.gen(function* () {
         input.target?.projectId !== undefined && input.target.projectId !== parent.thread.projectId
           ? input.target.projectId
           : undefined;
-      if (destinationProjectId !== undefined) {
-        const allowed = Option.isSome(botTurnContext)
-          ? yield* botTurnContext.value.workTargets(parent.thread.id)
-          : null;
-        if (allowed === null) {
-          return yield* failure(
-            "invalid_request",
-            "A local task runs in this thread's project. Omit target.projectId, or pass target.environmentId to run it in that environment's project.",
-          );
-        }
-        if (!allowed.includes(destinationProjectId)) {
-          return yield* failure(
-            "invalid_request",
-            "The user has not allowed this bot to work in that project. Ask them to add it to your work targets.",
-          );
-        }
-        if (input.isolation !== "worktree") {
-          return yield* failure(
-            "invalid_request",
-            'A task in another project needs isolation "worktree".',
-          );
-        }
-      }
+      yield* BotMcpPolicy.assertDelegationTarget(
+        scope,
+        parent.thread.projectId,
+        destinationProjectId ?? parent.thread.projectId,
+        input.isolation,
+      );
       const parentRun =
         ThreadManagementService.latestActiveRun(parent) ??
         (yield* backgroundSubagentRun(scope, parent.thread.id));
@@ -3071,16 +2993,12 @@ const make = Effect.gen(function* () {
         workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
       }
       // The grant is checked again here: the user may have revoked it while the work was prepared.
-      if (
-        destinationProjectId !== undefined &&
-        Option.isSome(botTurnContext) &&
-        !((yield* botTurnContext.value.workTargets(parent.thread.id)) ?? []).includes(
-          destinationProjectId,
-        )
-      ) {
-        return yield* failure(
-          "invalid_request",
-          "The user has not allowed this bot to work in that project. Ask them to add it to your work targets.",
+      if (scope.bot === true) {
+        yield* BotMcpPolicy.assertDelegationTarget(
+          scope,
+          parent.thread.projectId,
+          destinationProjectId ?? parent.thread.projectId,
+          input.isolation,
         );
       }
       const parentNodeId = parentRun.rootNodeId;
@@ -3189,7 +3107,7 @@ const make = Effect.gen(function* () {
         const shell = yield* threadManagement
           .getThreadShell(threadId)
           .pipe(Effect.mapError(threadManagementFailure));
-        yield* assertBotThreadAccess(threadManagement, scope, threadId, shell);
+        yield* BotMcpPolicy.assertThreadRead(threadManagement, scope, threadId, shell);
         if (shell !== null && shell.deletedAt === null) {
           yield* resolveRuntimeMode(parentProjection.thread.runtimeMode, shell.runtimeMode);
           yield* resolveInteractionMode(
@@ -3376,11 +3294,7 @@ const make = Effect.gen(function* () {
     }),
     createThreads: Effect.fn("OrchestratorMcpService.createThreads")(
       function* (callerScope, input) {
-        if (callerScope.bot === true)
-          return yield* failure(
-            "invalid_request",
-            "A bot starts coding work with delegate_task, which keeps it to the projects the user allowed.",
-          );
+        yield* BotMcpPolicy.assertNonBot(callerScope, "launch");
         const { scope, parent } = yield* loadThreadCaller(callerScope, "create_threads");
         const parentRun = ThreadManagementService.latestActiveRun(parent);
         if (
@@ -3646,7 +3560,7 @@ const make = Effect.gen(function* () {
             input.snoozed !== true ||
             (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs),
         );
-      const isForeign = yield* foreignBotThreads(threadManagement, scope);
+      const isForeign = yield* BotMcpPolicy.foreignBotThreads(threadManagement, scope);
       const candidates =
         scope.bot === true
           ? yield* Effect.filter(matching, (thread) =>
@@ -3704,7 +3618,7 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadListResult;
     }),
     readThread: Effect.fn("OrchestratorMcpService.readThread")(function* (scope, input) {
-      yield* assertBotThreadAccess(threadManagement, scope, input.threadId);
+      yield* BotMcpPolicy.assertThreadRead(threadManagement, scope, input.threadId);
       const runLimit = input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT;
       const { parent, target, shell, runCount } = yield* loadReadableThread(
         scope,
@@ -3754,7 +3668,7 @@ const make = Effect.gen(function* () {
           input.itemId === undefined &&
           (input.beforePosition === undefined || input.beforePosition >= timeline.totalItems),
       );
-      const isForeign = yield* foreignBotThreads(threadManagement, scope);
+      const isForeign = yield* BotMcpPolicy.foreignBotThreads(threadManagement, scope);
       const thread =
         detail.parentThreadId !== null && (yield* isForeign(detail.parentThreadId))
           ? { ...detail, parentThreadId: null, relationshipToParent: null }
@@ -3834,28 +3748,11 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadReadResult;
     }),
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {
-      if (scope.bot === true) {
-        return yield* failure(
-          "invalid_request",
-          "Use delegate_task to start coding work or t3_bot_message to message another bot.",
-        );
-      }
+      yield* BotMcpPolicy.assertNonBot(scope, "send");
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId, ["runs"]);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* assertTargetWithinLimits(limits, target.thread);
-      // A bot's chat or room seat is reached through bot deliveries, which check membership,
-      // access and hop limits; a generic send would skip all of them.
-      const agentCaller = scope.thread !== undefined || scope.client?.linked === true;
-      if (
-        agentCaller &&
-        Option.isSome(botTurnContext) &&
-        (yield* botTurnContext.value.workTargets(target.thread.id)) !== null
-      ) {
-        return yield* failure(
-          "invalid_request",
-          "That thread belongs to a bot. Bots reach each other with t3_bot_message; agents cannot send into a bot's chat directly.",
-        );
-      }
+      yield* BotMcpPolicy.assertNoAgentInput(target.thread.id, "send");
       const mode = input.mode ?? "auto";
       const key = yield* requestKey(input.clientRequestId);
       const messageId = stableOperationMessageId({
@@ -3968,7 +3865,7 @@ const make = Effect.gen(function* () {
     }),
     interruptThread: Effect.fn("OrchestratorMcpService.interruptThread")(function* (scope, input) {
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId, ["runs"]);
-      yield* assertBotThreadWrite(scope, input.threadId);
+      yield* BotMcpPolicy.assertThreadWrite(scope, input.threadId);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* assertTargetWithinLimits(limits, target.thread);
       const key = yield* requestKey(input.clientRequestId);

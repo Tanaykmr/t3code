@@ -45,7 +45,7 @@ layer("BotKnowledgeService", (it) => {
       `;
       yield* sql`
         INSERT INTO orchestration_v2_projection_messages VALUES
-          ('user-msg', ${dm}, 'r1', 'user', '{"text":"remember pnpm"}')
+          ('user-msg', ${dm}, 'r1', 'user', '{"text":"remember pnpm","createdBy":"user"}')
       `;
       const knowledge = yield* BotKnowledgeService.BotKnowledgeService;
       const context = yield* BotTurnContext.BotTurnContext;

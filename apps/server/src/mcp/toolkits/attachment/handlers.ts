@@ -6,9 +6,9 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as AssetSigner from "../../../assets/AssetSigner.ts";
-import * as BotTurnContext from "../../../bots/BotTurnContext.ts";
+
+import * as BotMcpPolicy from "../../BotMcpPolicy.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Upload from "../../../assets/AttachmentUpload.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
@@ -92,25 +92,9 @@ export const layer = McpToolAccess.toLayer(
         (input) =>
           Effect.gen(function* () {
             const scope = yield* McpInvocationContext.McpInvocationContext;
-            if (scope.bot === true) {
-              return yield* new OrchestratorMcpFailure({
-                code: "invalid_request",
-                message: "Use delegate_task to start coding work in another thread.",
-              });
-            }
+            yield* BotMcpPolicy.assertNonBot(scope, "send");
             const { caller, projection } = yield* readThread(input.threadId, ["messages"]);
-            // As with plain sends: bot chats are reached through bot deliveries, not here.
-            const bots = yield* BotTurnContext.optional;
-            if (
-              (scope.thread !== undefined || scope.client?.linked === true) &&
-              Option.isSome(bots) &&
-              (yield* bots.value.workTargets(projection.thread.id)) !== null
-            ) {
-              return yield* new OrchestratorMcpFailure({
-                code: "invalid_request",
-                message: "That thread belongs to a bot. Agents cannot message it directly.",
-              });
-            }
+            yield* BotMcpPolicy.assertNoAgentInput(projection.thread.id, "send");
             if (projection.thread.archivedAt !== null)
               return yield* new OrchestratorMcpFailure({
                 code: "invalid_request",

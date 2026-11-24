@@ -22,9 +22,8 @@ import {
 import { hasPendingBackgroundSubagent } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 
-import * as BotTurnContext from "../bots/BotTurnContext.ts";
+import * as BotMcpPolicy from "./BotMcpPolicy.ts";
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
@@ -70,7 +69,8 @@ export const threadNotFound = Effect.fn("OrchestratorMcpService.threadNotFound")
 ) {
   let suggested: ThreadId | null = null;
   const candidates = candidateThreadIds(threadId, scope.environmentId);
-  const isForeign = candidates.length === 0 ? undefined : yield* foreignBotThreads(threads, scope);
+  const isForeign =
+    candidates.length === 0 ? undefined : yield* BotMcpPolicy.foreignBotThreads(threads, scope);
   for (const candidate of candidates) {
     const shell = yield* threads.getThreadShell(candidate).pipe(Effect.orElseSucceed(() => null));
     if (
@@ -252,94 +252,12 @@ const resolveThreadId = (context: Caller, threadId: ThreadId | undefined) =>
           }),
         );
 
-type ThreadAncestry = Pick<OrchestrationV2ThreadShell, "lineage"> &
-  Partial<Pick<OrchestrationV2ThreadShell, "forkedFrom">>;
-
-// Snapshot ownership once for a list or search, before collecting any results.
-export const foreignBotThreads = Effect.fn("mcp.foreignBotThreads")(function* (
-  threads: Pick<ThreadManagement.ThreadManagementService["Service"], "getThreadShell">,
-  scope: McpInvocationContext.McpInvocationScope,
-) {
-  if (scope.bot !== true) {
-    return (_threadId: ThreadId, _known?: ThreadAncestry | null) => Effect.succeed(false);
-  }
-  const bots = yield* BotTurnContext.optional;
-  const privateIds = Option.isNone(bots) ? null : yield* bots.value.privateThreadIds;
-  return Effect.fnUntraced(function* (threadId: ThreadId, known?: ThreadAncestry | null) {
-    if (privateIds === null) return true;
-    const seen = new Set<ThreadId>();
-    let current = threadId;
-    while (seen.size < 32) {
-      if (current !== scope.thread?.threadId && privateIds.has(current)) return true;
-      seen.add(current);
-      const thread =
-        current === threadId && known !== undefined
-          ? known
-          : yield* threads
-              .getThreadShell(current)
-              .pipe(Effect.orElseSucceed(() => "unreadable" as const));
-      // An ancestor that cannot be checked keeps the fork closed.
-      if (thread === "unreadable") return true;
-      if (thread === null) return current !== threadId;
-      const source =
-        thread.forkedFrom?.type === "run"
-          ? thread.forkedFrom.threadId
-          : thread.lineage.relationshipToParent === "fork"
-            ? thread.lineage.parentThreadId
-            : null;
-      if (source === null) return false;
-      if (seen.has(source)) return true;
-      current = source;
-    }
-    return true;
-  });
-});
-
-export const assertBotThreadAccess = Effect.fn("mcp.assertBotThreadAccess")(function* (
-  threads: Pick<ThreadManagement.ThreadManagementService["Service"], "getThreadShell">,
-  scope: McpInvocationContext.McpInvocationScope,
-  threadId: ThreadId,
-  known?: ThreadAncestry | null,
-) {
-  if (scope.bot !== true) return;
-  const isForeign = yield* foreignBotThreads(threads, scope);
-  if (yield* isForeign(threadId, known)) {
-    return yield* new OrchestratorMcpFailure({
-      code: "invalid_request",
-      message: "That thread belongs to a bot and is private.",
-    });
-  }
-});
-
-export const assertBotThreadWrite = (
-  scope: McpInvocationContext.McpInvocationScope,
-  threadId: ThreadId,
-) =>
-  scope.bot === true && threadId !== scope.thread?.threadId
-    ? Effect.fail(
-        new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "A bot can only control its own chat. Use delegate_task to start coding work.",
-        }),
-      )
-    : Effect.void;
-
-export const botRoutineAccess = Effect.fn("mcp.botRoutineAccess")(function* (
-  scope: McpInvocationContext.McpInvocationScope,
-) {
-  if (scope.bot !== true) return (_threadId: ThreadId | null) => true;
-  const bots = yield* BotTurnContext.optional;
-  const callerId = scope.thread?.threadId;
-  const isDm = callerId !== undefined && Option.isSome(bots) && (yield* bots.value.isDm(callerId));
-  return (threadId: ThreadId | null) => isDm && threadId === callerId;
-});
-
 export const readThread = Effect.fn("mcp.readThread")(function* <
   K extends ProjectionRecordField = never,
 >(threadId?: ThreadId, fields: ReadonlyArray<K> = [], filter?: ProjectionRecordFilter) {
   const context = yield* readCaller();
   const targetId = yield* resolveThreadId(context, threadId);
-  yield* assertBotThreadAccess(context.threads, context.scope, targetId);
+  yield* BotMcpPolicy.assertThreadRead(context.threads, context.scope, targetId);
   const shell = yield* context.threads.getThreadShell(targetId).pipe(Effect.mapError(unavailable));
   if (shell === null || shell.deletedAt !== null) {
     return yield* threadNotFound(
