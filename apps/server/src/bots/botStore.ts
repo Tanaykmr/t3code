@@ -247,6 +247,7 @@ export const executingTurnOrigin = Effect.fnUntraced(function* (
       ON message.message_id = json_extract(chain.payload_json, '$.userMessageId')
     ORDER BY chain.depth DESC LIMIT 1
   `;
-  // A chain this long is unresolved: no origin, so no memory writes or fresh budgets.
-  return origin === undefined || origin.depth >= MAX_ORIGIN_LINKS ? undefined : origin;
+  // A chain this long is unresolved: no memory, memory writes or fresh budgets.
+  if (origin !== undefined && origin.depth >= MAX_ORIGIN_LINKS) return "unresolved" as const;
+  return origin;
 });

@@ -17,6 +17,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
   dispatchFailure,
+  isForeignBotThread,
   newCommandId,
   readCaller,
   readThread,
@@ -145,22 +146,19 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   ),
   t3_thread_search: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
-      const { caller } = yield* readCaller();
+      const { caller, threads } = yield* readCaller();
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
       const { matches: found } = yield* threadSearch
         .searchThreads({ ...input, projectId: input.projectId ?? caller?.projectId })
         .pipe(Effect.mapError(unavailable));
-      // A bot's chat is private from other bots, snippets included.
-      const botContext = yield* BotTurnContext.optional;
+      // A bot's chat and forks of it are private from other bots, snippets included.
       const matches =
-        scope.bot === true && Option.isSome(botContext)
+        scope.bot === true
           ? yield* Effect.filter(found, (match) =>
-              match.threadId === scope.thread?.threadId
-                ? Effect.succeed(true)
-                : botContext.value
-                    .workTargets(match.threadId)
-                    .pipe(Effect.map((targets) => targets === null)),
+              isForeignBotThread(threads, scope, match.threadId).pipe(
+                Effect.map((foreign) => !foreign),
+              ),
             )
           : found;
       return {
@@ -365,7 +363,20 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         switch (input.action) {
           case "edit": {
             const text = yield* required(input.text, "text");
-            const { threads, projection } = yield* readThread(input.threadId);
+            const { threads, projection, scope } = yield* readThread(input.threadId);
+            // A queued message keeps its author, so an agent's edit in a bot chat would pass as
+            // the user's own words (and could write the bot's memory).
+            const bots = yield* BotTurnContext.optional;
+            if (
+              (scope.thread !== undefined || scope.client?.linked === true) &&
+              Option.isSome(bots) &&
+              (yield* bots.value.workTargets(projection.thread.id)) !== null
+            ) {
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "Queued messages in a bot's chat cannot be edited by an agent.",
+              });
+            }
             // An agent must not turn a person's queued message into a provider sign-out.
             const command = yield* ThreadMessageIntake.withQueuedAttachmentsOnSignOutText({
               type: "queued-run.edit",

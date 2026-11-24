@@ -133,19 +133,27 @@ export const layer = Layer.effect(
         SELECT name, instructions FROM bot_skills
         WHERE bot_id = ${bot.bot_id} AND enabled = 1 ORDER BY created_at LIMIT ${SKILL_ENTRIES}
       `;
-        // A turn another bot woke, or a continuation of one, sees no private memory.
+        // A turn another bot woke, or a continuation of one, sees no private memory; nor does
+        // a turn whose origin cannot be read.
         const origin = yield* executingTurnOrigin(sql, threadId).pipe(
-          Effect.orElseSucceed(() => undefined),
+          Effect.orElseSucceed(() => "unresolved" as const),
         );
-        const [woken] =
-          origin?.message_id?.startsWith("bot-delivery:") === true
-            ? yield* sql<{ sender_bot_id: string | null }>`
+        const deliveryId =
+          origin !== undefined &&
+          origin !== "unresolved" &&
+          origin.message_id?.startsWith("bot-delivery:") === true
+            ? origin.message_id.slice("bot-delivery:".length)
+            : null;
+        const woken =
+          deliveryId === null
+            ? []
+            : yield* sql<{ sender_bot_id: string | null }>`
               SELECT message.sender_bot_id FROM bot_deliveries AS delivery
               JOIN bot_messages AS message ON message.message_id = delivery.message_id
-              WHERE delivery.delivery_id = ${origin.message_id.slice("bot-delivery:".length)}
-            `.pipe(Effect.orElseSucceed(() => []))
-            : [];
-        const peerTurn = woken?.sender_bot_id != null;
+              WHERE delivery.delivery_id = ${deliveryId}
+            `.pipe(Effect.orElseSucceed(() => null));
+        const peerTurn =
+          origin === "unresolved" || woken === null || woken[0]?.sender_bot_id != null;
         const memories =
           bot.is_dm === 1
             ? yield* sql<{ memory_id: string; text: string }>`

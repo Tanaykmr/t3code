@@ -203,6 +203,7 @@ const make = Effect.gen(function* () {
     );
     if (
       input === undefined ||
+      input === "unresolved" ||
       input.message_id === null ||
       input.message_id.startsWith("bot-delivery:") ||
       input.scheduled_task_id !== null ||

@@ -3778,15 +3778,16 @@ const make = Effect.gen(function* () {
       // A bot's chat or room seat is reached through bot deliveries, which check membership,
       // access and hop limits; a generic send would skip all of them.
       const agentCaller = scope.thread !== undefined || scope.client?.linked === true;
+      // Including the bot itself: a send to its own chat would start a turn with no delivery
+      // provenance and a fresh message budget.
       if (
         agentCaller &&
-        target.thread.id !== parent?.thread.id &&
         Option.isSome(botTurnContext) &&
         (yield* botTurnContext.value.workTargets(target.thread.id)) !== null
       ) {
         return yield* failure(
           "invalid_request",
-          "That thread belongs to a bot. A bot can reach it with t3_bot_message; other agents cannot message it.",
+          "That thread belongs to a bot. Bots reach each other with t3_bot_message; agents cannot send into a bot's chat directly.",
         );
       }
 

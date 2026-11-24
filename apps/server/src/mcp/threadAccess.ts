@@ -257,15 +257,21 @@ export const isForeignBotThread = Effect.fn("mcp.isForeignBotThread")(function* 
 ) {
   const bots = yield* BotTurnContext.optional;
   if (Option.isNone(bots)) return false;
-  let current: ThreadId | null = threadId;
-  for (let depth = 0; current !== null && depth < 10; depth += 1) {
+  const seen = new Set<ThreadId>();
+  let current: ThreadId = threadId;
+  while (seen.size < 32) {
     if (current !== scope.thread?.threadId && (yield* bots.value.workTargets(current)) !== null) {
       return true;
     }
+    seen.add(current);
     const shell = yield* threads.getThreadShell(current).pipe(Effect.orElseSucceed(() => null));
-    current = shell?.forkedFrom?.type === "run" ? shell.forkedFrom.threadId : null;
+    // A missing ancestor cannot be checked, so the fork stays closed.
+    if (shell === null) return current !== threadId;
+    if (shell.forkedFrom?.type !== "run") return false;
+    current = shell.forkedFrom.threadId;
+    if (seen.has(current)) return true;
   }
-  return false;
+  return true;
 });
 
 export const privateBotThread = () =>

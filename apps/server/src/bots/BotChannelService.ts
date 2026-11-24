@@ -19,6 +19,7 @@ import {
   type RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -497,7 +498,9 @@ const make = Effect.gen(function* () {
     const origin = yield* executingTurnOrigin(sql, input.threadId).pipe(
       Effect.mapError(fail("Could not read the request.")),
     );
-    if (origin === undefined) return yield* botError("Message other bots from a running turn.");
+    if (origin === undefined || origin === "unresolved") {
+      return yield* botError("Message other bots from a running turn.");
+    }
     const causeId = origin.message_id?.startsWith("bot-delivery:")
       ? origin.message_id.slice("bot-delivery:".length)
       : undefined;
@@ -919,15 +922,20 @@ const make = Effect.gen(function* () {
           // A busy bot keeps the delivery here, where membership and archive still apply.
           if (ACTIVE_STATUSES.has(shell.status)) return "deferred" as const;
           if (destination !== target.dm_thread_id) {
+            // Background work refuses a mode change for now (Claude's native subagents never
+            // reach the shell, so the refusal is the signal); anything else is lasting.
             const synced = yield* syncSeatModes(destination, target).pipe(
-              Effect.as(true),
-              Effect.orElseSucceed(() => false),
+              Effect.as("synced" as const),
+              Effect.catchCause((cause) =>
+                Effect.succeed(
+                  Cause.pretty(cause).includes("running background agents")
+                    ? ("busy" as const)
+                    : ("refused" as const),
+                ),
+              ),
             );
-            if (!synced) {
-              // Background work refuses a mode change for now; anything else is lasting.
-              if ((shell.pendingBackgroundTasks?.length ?? 0) > 0) return "deferred" as const;
-              return yield* block("Could not deliver");
-            }
+            if (synced === "busy") return "deferred" as const;
+            if (synced === "refused") return yield* block("Could not deliver");
             shell = yield* threads.getThreadShell(destination);
             if (shell === null) return yield* block("Chat deleted");
           }

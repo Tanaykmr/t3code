@@ -96,7 +96,6 @@ export const layer = McpToolAccess.toLayer(
             const bots = yield* BotTurnContext.optional;
             if (
               (scope.thread !== undefined || scope.client?.linked === true) &&
-              projection.thread.id !== caller?.id &&
               Option.isSome(bots) &&
               (yield* bots.value.workTargets(projection.thread.id)) !== null
             ) {
