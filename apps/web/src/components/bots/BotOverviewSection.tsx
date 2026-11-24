@@ -141,7 +141,6 @@ export function BotOverviewSection(props: {
 }
 
 const PEER_ACTIVITY_ROWS = 5;
-
 /** Messages this bot exchanged with other bots, and hand-offs out of its DM, newest first. */
 function BotPeerActivity(props: { readonly environmentId: EnvironmentId; readonly botId: BotId }) {
   const gt = useGT();
