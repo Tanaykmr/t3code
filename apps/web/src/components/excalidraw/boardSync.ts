@@ -200,68 +200,87 @@ export function takeBatch(
   let fence: number | undefined;
   let elementBytes = 0;
   let totalBytes = 0;
-  // Frames go first, so a frame and its children split across batches never arrive child-first.
+  // New frames go first and deleted frames last, so a frame and its children split across
+  // batches never arrive child-first and children are deleted before the server releases them.
   const isFrame = (element: BoardElement) =>
     element.type === "frame" || element.type === "magicframe";
-  const ordered = [...session.drafts].sort(
-    ([, left], [, right]) => Number(isFrame(right)) - Number(isFrame(left)),
-  );
-  for (const [id, element] of ordered) {
-    // Larger edits go out over several batches; the rest stay drafts for the next one.
-    if (operations.length >= BOARD_MAX_OPERATIONS) break;
+  const rank = (element: BoardElement) => (isFrame(element) ? (element.isDeleted ? 2 : 0) : 1);
+  const sorted = [...session.drafts].sort(([, left], [, right]) => rank(left) - rank(right));
+  // A container and its bound label drafts travel in one batch, never split by its limits.
+  const labelOf = (element: BoardElement) => {
+    const container = element["containerId"];
+    return typeof container === "string" && session.drafts.has(container) ? container : null;
+  };
+  const labels = new Map<string, Array<[string, BoardElement]>>();
+  for (const entry of sorted) {
+    const container = labelOf(entry[1]);
+    if (container !== null) labels.set(container, [...(labels.get(container) ?? []), entry]);
+  }
+  const units = sorted
+    .filter(([, element]) => labelOf(element) === null)
+    .map((entry) => [entry, ...(labels.get(entry[0]) ?? [])]);
+  const sizeOf = (id: string, element: BoardElement) => {
     const receipt = session.receipts.get(id);
-    const size =
-      element.isDeleted && basis(session, id) !== undefined
-        ? receipt !== undefined
-          ? utf8Bytes(JSON.stringify(receipt.record))
-          : (input.committedBytes?.(id) ?? utf8Bytes(JSON.stringify(element)))
-        : utf8Bytes(JSON.stringify(element));
+    return element.isDeleted && basis(session, id) !== undefined
+      ? receipt !== undefined
+        ? utf8Bytes(JSON.stringify(receipt.record))
+        : (input.committedBytes?.(id) ?? utf8Bytes(JSON.stringify(element)))
+      : utf8Bytes(JSON.stringify(element));
+  };
+  for (const unit of units) {
+    // Larger edits go out over several batches; the rest stay drafts for the next one.
+    if (operations.length > 0 && operations.length + unit.length > BOARD_MAX_OPERATIONS) break;
+    const unitBytes = unit.reduce((total, [id, element]) => total + sizeOf(id, element), 0);
     if (
       operations.length > 0 &&
-      (elementBytes + size > ELEMENT_BUDGET || totalBytes + size > TOTAL_BUDGET)
+      (elementBytes + unitBytes > ELEMENT_BUDGET || totalBytes + unitBytes > TOTAL_BUDGET)
     ) {
       continue;
     }
-    // An image travels with its bytes, or waits until they are loaded and the batch has room.
-    if (isImage(element) && !element.isDeleted && !input.committedFileIds.has(element.fileId)) {
-      if (!files.some((entry) => entry.id === element.fileId)) {
-        const file = input.editorFiles[element.fileId];
-        if (file === undefined || files.length >= BOARD_BATCH_MAX_FILES) continue;
-        if (operations.length > 0 && totalBytes + size + file.dataURL.length > TOTAL_BUDGET) {
+    for (const [id, element] of unit) {
+      const size = sizeOf(id, element);
+      // An image travels with its bytes, or waits until they are loaded and the batch has room.
+      if (isImage(element) && !element.isDeleted && !input.committedFileIds.has(element.fileId)) {
+        if (!files.some((entry) => entry.id === element.fileId)) {
+          const file = input.editorFiles[element.fileId];
+          if (file === undefined || files.length >= BOARD_BATCH_MAX_FILES) continue;
+          if (operations.length > 0 && totalBytes + size + file.dataURL.length > TOTAL_BUDGET) {
+            continue;
+          }
+          totalBytes += file.dataURL.length;
+          files.push({
+            id: element.fileId,
+            mimeType: file.mimeType as BoardFileMimeType,
+            dataURL: file.dataURL,
+          });
+        }
+      }
+      const shown = basis(session, id);
+      const settled = element.type === TOMBSTONE && (shown === undefined || shown.isDeleted);
+      if (shown === undefined || settled) {
+        if (element.isDeleted) {
+          session.drafts.delete(id);
+          session.draftOrderRevision.delete(id);
+          session.baseline.set(id, editorStamp(element));
           continue;
         }
-        totalBytes += file.dataURL.length;
-        files.push({
-          id: element.fileId,
-          mimeType: file.mimeType as BoardFileMimeType,
-          dataURL: file.dataURL,
-        });
+        operations.push({ type: "create", element });
+      } else {
+        const expected = { version: shown.version, versionNonce: shown.versionNonce };
+        if (element.isDeleted && !shown.isDeleted)
+          operations.push({ type: "delete", id, expected });
+        else if (!element.isDeleted && shown.isDeleted)
+          operations.push({ type: "restore", element, expected });
+        else operations.push({ type: "replace", element, expected });
+        if (!element.isDeleted && element.index !== shown.index) {
+          const started = session.draftOrderRevision.get(id) ?? session.shownOrderRevision;
+          fence = fence === undefined ? started : Math.min(fence, started);
+        }
       }
+      sent.set(id, { draft: element, isDeleted: element.isDeleted });
+      elementBytes += size;
+      totalBytes += size;
     }
-    const shown = basis(session, id);
-    const settled = element.type === TOMBSTONE && (shown === undefined || shown.isDeleted);
-    if (shown === undefined || settled) {
-      if (element.isDeleted) {
-        session.drafts.delete(id);
-        session.draftOrderRevision.delete(id);
-        session.baseline.set(id, editorStamp(element));
-        continue;
-      }
-      operations.push({ type: "create", element });
-    } else {
-      const expected = { version: shown.version, versionNonce: shown.versionNonce };
-      if (element.isDeleted && !shown.isDeleted) operations.push({ type: "delete", id, expected });
-      else if (!element.isDeleted && shown.isDeleted)
-        operations.push({ type: "restore", element, expected });
-      else operations.push({ type: "replace", element, expected });
-      if (!element.isDeleted && element.index !== shown.index) {
-        const started = session.draftOrderRevision.get(id) ?? session.shownOrderRevision;
-        fence = fence === undefined ? started : Math.min(fence, started);
-      }
-    }
-    sent.set(id, { draft: element, isDeleted: element.isDeleted });
-    elementBytes += size;
-    totalBytes += size;
   }
   const settings =
     session.draftBackground === null ? undefined : { viewBackgroundColor: session.draftBackground };
@@ -325,9 +344,9 @@ export function acknowledge(session: BoardSession, result: BoardApplyResult): vo
  * A conflicting batch is set aside whole, because its records may depend on each other. The
  * editor goes back to the committed scene and the draft stays available as a copy.
  */
-export function rejectPending(session: BoardSession): void {
+export function rejectPending(session: BoardSession): boolean {
   const pending = session.pending;
-  if (pending === null) return;
+  if (pending === null) return false;
   const rejected: BoardElement[] = [];
   for (const id of pending.sent.keys()) {
     const draft = session.drafts.get(id);
@@ -345,10 +364,13 @@ export function rejectPending(session: BoardSession): void {
     session.draftBackground = null;
     session.shownBackground = null;
   }
-  // An earlier rejection still waiting for Keep as copy or Discard is kept, not replaced.
-  const unresolved = [...(session.rejected ?? []), ...rejected];
-  session.rejected = unresolved.length > 0 ? unresolved : null;
+  // An earlier rejection still waiting for Keep as copy or Discard is kept; a newer draft of
+  // the same record supersedes it, so a copy never gets two records with one id.
+  const unresolved = new Map((session.rejected ?? []).map((record) => [record.id, record]));
+  for (const record of rejected) unresolved.set(record.id, record);
+  session.rejected = unresolved.size > 0 ? [...unresolved.values()] : null;
   session.pending = null;
+  return rejected.length > 0;
 }
 
 export interface CanonicalScene {

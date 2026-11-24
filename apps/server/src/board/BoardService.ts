@@ -652,7 +652,14 @@ const make = Effect.gen(function* () {
     // editor added meanwhile, and joining a frame deleted meanwhile is undone, in this commit.
     const isFrame = (element: BoardElement) =>
       element.type === "frame" || element.type === "magicframe";
-    const deletedFrames = stamped.filter((element) => isFrame(element) && element.isDeleted);
+    // A frame deleted, or retyped into something else, releases its children.
+    const wasFrame = (id: string) => {
+      const row = current.get(id);
+      return row !== undefined && isFrame(decodeElementJson(row.payload_json));
+    };
+    const deletedFrames = stamped.filter(
+      (element) => wasFrame(element.id) && (element.isDeleted || !isFrame(element)),
+    );
     const joinedFrames = [
       ...new Set(
         stamped.flatMap((element) =>

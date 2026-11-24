@@ -385,10 +385,10 @@ export class BoardController {
         tag === "EnvironmentAuthorizationError" ||
         Cause.hasDies(outcome.cause);
       if (permanent) {
-        rejectPending(session);
+        const contributed = rejectPending(session);
         this.showCanonical();
         const kind = tag === "BoardConflictError" ? "conflict" : "rejected";
-        if (session.rejected !== null) this.setRejection(kind);
+        if (contributed) this.setRejection(kind);
         this.setSaveState(kind);
         return;
       }

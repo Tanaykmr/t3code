@@ -465,6 +465,46 @@ describe("board sync", () => {
     expect(new Set(session.rejected?.map((record) => record.id))).toEqual(new Set(["x", "y"]));
   });
 
+  it("deletes a cleared frame after its children and keeps boxes with their labels", () => {
+    const children = Array.from({ length: 499 }, (_, index) =>
+      element(`c${index}`, { frameId: "frame" }),
+    );
+    const box = element("box", {
+      frameId: "frame",
+      boundElements: [{ id: "label", type: "text" }],
+    });
+    const label = element("label", { type: "text", containerId: "box" });
+    const frame = element("frame", { type: "frame" });
+    const session = synced([frame, ...children, box, label]);
+    // Clear canvas marks every record deleted, keeping it in the scene.
+    observeEditor(
+      session,
+      [frame, ...children, box, label].map((record) => ({
+        ...record,
+        version: record.version + 1,
+        isDeleted: true,
+      })),
+      "#ffffff",
+    );
+    const first = take(session)!;
+    const ids = first.operations.map((operation) =>
+      operation.type === "delete" ? operation.id : operation.element.id,
+    );
+    expect(ids).not.toContain("frame");
+    expect(ids.includes("box")).toBe(ids.includes("label"));
+  });
+
+  it("keeps one rejected draft per record across repeated conflicts", () => {
+    const session = synced([element("a")]);
+    observeEditor(session, [element("a", { version: 2, x: 1 })], "#ffffff");
+    take(session);
+    expect(rejectPending(session)).toBe(true);
+    observeEditor(session, [element("a", { version: 3, x: 2 })], "#ffffff");
+    take(session, "m2");
+    rejectPending(session);
+    expect(session.rejected).toEqual([element("a", { version: 3, x: 2 })]);
+  });
+
   it("holds remote records under local drafts and gestures, and applies the rest", () => {
     const session = synced([element("a"), element("b"), element("c")]);
     observeEditor(
