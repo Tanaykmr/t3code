@@ -54,11 +54,25 @@ async function load(): Promise<ReadonlyArray<SavedCreate> | null> {
     await whenProtectedDataAvailable();
     const raw = await SecureStore.getItemAsync(storageKey);
     const value: unknown = raw === null ? [] : JSON.parse(raw);
-    return Array.isArray(value) ? (value as ReadonlyArray<SavedCreate>) : [];
+    // Only dated creates replay; anything else (such as an older build's Delete) is dropped.
+    return Array.isArray(value) ? value.filter(isSavedCreate) : [];
   } catch {
     return null;
   }
 }
+
+function isSavedCreate(value: unknown): value is SavedCreate {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "create" &&
+    "savedAt" in value &&
+    typeof value.savedAt === "number"
+  );
+}
+
+const isFresh = (entry: SavedCreate, now: number) => now - entry.savedAt <= PENDING_CREATE_TTL_MS;
 
 const update = (change: (saved: ReadonlyArray<SavedCreate>) => SavedCreate[]) =>
   serialized(async () => {
@@ -142,15 +156,13 @@ export async function sendBoatRequest(request: BoatPendingRequest): Promise<Outc
 
 /** Sends again every saved create for the controllers now connected, and drops stale ones. */
 export async function resendPendingBoatRequests(connected: ReadonlySet<EnvironmentId>) {
+  const now = Date.now();
+  // Rewriting also drops what the loader refused, such as stale or undated entries.
+  await update((entries) => entries.filter((entry) => isFresh(entry, now)));
   const saved = await serialized(load);
   if (saved === null) return;
-  const now = Date.now();
-  const stale = saved.filter((entry) => now - entry.savedAt > PENDING_CREATE_TTL_MS);
-  if (stale.length > 0) {
-    await update((entries) => entries.filter((entry) => !stale.includes(entry)));
-  }
   for (const entry of saved) {
-    if (stale.includes(entry) || !connected.has(entry.environmentId)) continue;
+    if (!isFresh(entry, now) || !connected.has(entry.environmentId)) continue;
     const { savedAt: _savedAt, ...request } = entry;
     await send(request);
   }

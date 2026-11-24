@@ -34,7 +34,7 @@ import { cn } from "../../lib/cn";
 import { uuidv4 } from "../../lib/uuid";
 import { useEnvironments } from "../../state/environments";
 import { serverEnvironment } from "../../state/server";
-import { useEnvironmentsWithScope } from "../../state/session";
+import { environmentSession, useEnvironmentsWithScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { sendBoatRequest } from "./boatPendingRequests";
@@ -208,7 +208,6 @@ function BoatMachineRow({ row, nowMs }: { readonly row: BoatRow; readonly nowMs:
 function BoatKeyRow(props: {
   readonly environmentId: EnvironmentId;
   readonly label: string;
-  readonly displayUrl: string | null;
   readonly snapshot: BoatSnapshot;
   readonly canManage: boolean;
 }) {
@@ -220,6 +219,10 @@ function BoatKeyRow(props: {
     reportFailure: false,
   });
   const { account } = props.snapshot;
+  const prepared = useAtomValue(
+    environmentSession.preparedConnectionValueAtom(props.environmentId),
+  );
+  const privateRoute = boatKeyRouteIsPrivate(Option.getOrNull(prepared)?.socketUrl ?? null);
   const save = async (apiKey: string) => {
     if (apiKey.trim() === "") return;
     setSaving(true);
@@ -250,9 +253,7 @@ function BoatKeyRow(props: {
             ? gt("Boat rejected the saved key. Enter a new one.")
             : gt("Add a scoped Boat API key to create machines from this server.")}
       </Text>
-      {props.canManage &&
-      account.status !== "configured" &&
-      !boatKeyRouteIsPrivate(props.displayUrl) ? (
+      {props.canManage && account.status !== "configured" && !privateRoute ? (
         <Text className="text-sm text-foreground-muted">
           {gt(
             "This connection is plain HTTP over the network. Enter the key over HTTPS, T3 Connect, or on that machine.",
@@ -296,7 +297,6 @@ export function BoatMachinesSection() {
             key={`key:${environment.environmentId}`}
             environmentId={environment.environmentId}
             label={environment.label}
-            displayUrl={environment.displayUrl}
             snapshot={snapshot}
             canManage={manageable.has(environment.environmentId)}
           />

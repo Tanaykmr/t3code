@@ -361,7 +361,7 @@ describe("BoatService", () => {
         VALUES ('00000000-0000-4000-8000-0000000000ff', 'boat_queued', 'create', '', 'queued', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z')
       `;
         yield* settle;
-        expect((yield* server("boat_queued"))?.operation?.failure).toBe("bootstrap-failed");
+        expect((yield* server("boat_queued"))?.operation?.failure).toBe("bootstrap-unavailable");
         expect(fake.calls).not.toContain("create");
       }).pipe(Effect.provide(layer));
     },
@@ -380,6 +380,61 @@ describe("BoatService", () => {
       expect(fake.calls.filter((name) => name === "stop")).toHaveLength(2);
       expect(fake.sandboxes.get(sandboxId)?.sandbox.state).toBe("archived");
       expect((yield* server(managedId))?.lifecycle).toBe("failed");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refuses a queued resume it cannot finish without stopping the machine", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+      // Accepted by the old build, then the controller restarts on one that cannot install T3,
+      // while someone resumes the machine from Boat's dashboard.
+      const sql = yield* SqlClient.SqlClient;
+      const resumeId = requestId();
+      yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+        VALUES (${resumeId}, ${managedId}, 'resume', ${managedId}, 'queued', '1970-01-01T00:00:01.000Z', '1970-01-01T00:00:01.000Z')
+      `;
+      fake.setBootstrapAvailable(false);
+      fake.resumeExternally(sandboxId);
+      const stopsBefore = fake.calls.filter((name) => name === "stop").length;
+      yield* settle;
+      expect((yield* server(managedId))?.operation).toMatchObject({
+        kind: "resume",
+        failure: "bootstrap-unavailable",
+      });
+      expect(fake.calls.filter((name) => name === "stop")).toHaveLength(stopsBefore);
+      expect(fake.calls).not.toContain("resume");
+      expect(fake.sandboxes.get(sandboxId)?.sandbox.state).toBe("running");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("settles a resume Boat refuses while the machine stays archived", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      fake.failNext("resume", new BoatApiError({ category: "conflict", code: "busy" }));
+      yield* boat.resume({ requestId: requestId(), managedId });
+      yield* settle;
+      expect((yield* server(managedId))?.operation).toMatchObject({
+        kind: "resume",
+        failure: "provider-rejected",
+      });
+      // The queue is clear, so the next request runs.
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toBeUndefined();
     }).pipe(Effect.provide(layer));
   });
 

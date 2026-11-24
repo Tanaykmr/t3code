@@ -168,11 +168,11 @@ describe("boatRows on a controller that cannot install T3", () => {
 });
 
 describe("boatKeyRouteIsPrivate", () => {
-  it("allows TLS, this machine and relays, and refuses plain HTTP to another machine", () => {
-    expect(boatKeyRouteIsPrivate("https://box.tailnet.ts.net")).toBe(true);
-    expect(boatKeyRouteIsPrivate("http://localhost:3773")).toBe(true);
-    expect(boatKeyRouteIsPrivate(null)).toBe(true);
-    expect(boatKeyRouteIsPrivate("http://192.168.1.20:3773")).toBe(false);
+  it("allows TLS and this machine, and refuses plain HTTP to another machine", () => {
+    expect(boatKeyRouteIsPrivate("wss://box.tailnet.ts.net/ws")).toBe(true);
+    expect(boatKeyRouteIsPrivate("ws://127.0.0.1:41234/ws")).toBe(true);
+    expect(boatKeyRouteIsPrivate("ws://192.168.1.20:3773/ws")).toBe(false);
+    expect(boatKeyRouteIsPrivate(null)).toBe(false);
   });
 });
 

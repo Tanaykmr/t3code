@@ -31,7 +31,7 @@ import { cn, randomUUID } from "../../lib/utils";
 import { environmentAtomList, environmentIdsKey } from "../../state/environmentAtomList";
 import { type EnvironmentPresentation, useEnvironments } from "../../state/environments";
 import { serverEnvironment } from "../../state/server";
-import { useEnvironmentsWithScope } from "../../state/session";
+import { environmentSession, useEnvironmentsWithScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -113,6 +113,7 @@ function useBoatLabels() {
     "not-found": gt("Boat no longer has this machine."),
     "unresolved-create": gt("Could not tell which machine Boat made. Check the Boat dashboard."),
     "machine-running": gt("Boat reports it running again. Stop it before deleting."),
+    "bootstrap-unavailable": gt("This server cannot set up T3 Code on a Boat machine yet."),
   };
   const action: Record<BoatAction, string> = {
     stop: gt("Stop"),
@@ -307,7 +308,10 @@ function BoatKeyRow({
             environment: environment.label,
           });
   const showForm = canManage && (editing || account.status !== "configured");
-  const privateRoute = boatKeyRouteIsPrivate(environment.displayUrl);
+  const prepared = useAtomValue(
+    environmentSession.preparedConnectionValueAtom(environment.environmentId),
+  );
+  const privateRoute = boatKeyRouteIsPrivate(Option.getOrNull(prepared)?.socketUrl ?? null);
   return (
     <SettingsRow
       title={gt("Boat account on {environment}", { environment: environment.label })}

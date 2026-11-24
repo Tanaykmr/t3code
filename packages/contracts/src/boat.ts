@@ -65,6 +65,8 @@ export const BoatFailureCode = Schema.Literals([
   "unresolved-create",
   /** Delete refused: Boat still reports the machine running. */
   "machine-running",
+  /** Refused before reaching Boat: this server cannot install T3 on a machine. */
+  "bootstrap-unavailable",
 ]);
 export type BoatFailureCode = typeof BoatFailureCode.Type;
 

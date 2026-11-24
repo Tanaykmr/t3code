@@ -7728,6 +7728,7 @@
   "78c9775401b1e9ff": "Boat no longer has this machine.",
   "df2968d8b088b77c": "Could not tell which machine Boat made. Check the Boat dashboard.",
   "9a4d299be00f604c": "Boat reports it running again. Stop it before deleting.",
+  "bfb6ed4cfd0d2599": "This server cannot set up T3 Code on a Boat machine yet.",
   "614e5ad58a795fb5": "Stop",
   "4cbc7c43dd33c363": "Resume",
   "da49b8271b9dffa0": "Delete",

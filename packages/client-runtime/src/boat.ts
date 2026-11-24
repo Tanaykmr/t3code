@@ -101,13 +101,13 @@ export function boatRows(input: {
 }
 
 /**
- * Whether a Boat key may be entered over this route: TLS, this machine, or a relay (no direct
- * URL). A plain-HTTP LAN address would carry the reusable key in clear text.
+ * Whether a Boat key may be sent over the active connection's socket: TLS or this machine (an
+ * SSH tunnel's local forward counts). A plain-HTTP LAN route would carry the key in clear text.
  */
-export function boatKeyRouteIsPrivate(displayUrl: string | null): boolean {
-  if (displayUrl === null) return true;
+export function boatKeyRouteIsPrivate(socketUrl: string | null): boolean {
+  if (socketUrl === null) return false;
   try {
-    const url = new URL(displayUrl);
+    const url = new URL(socketUrl);
     if (url.protocol === "https:" || url.protocol === "wss:") return true;
     return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
   } catch {

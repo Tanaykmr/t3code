@@ -194,8 +194,11 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
     }),
   });
 
+  let bootstrapAvailable = options.bootstrapAvailable ?? true;
   const bootstrap = BoatGuestBootstrap.of({
-    available: options.bootstrapAvailable ?? true,
+    get available() {
+      return bootstrapAvailable;
+    },
     ensure: Effect.fn("FakeBoat.bootstrap")(function* ({ key, sandboxId, expected }) {
       yield* enter("bootstrap", key);
       const entry = yield* find(sandboxId);
@@ -218,6 +221,10 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
     archiveExternally: (sandboxId: string, now: number) => {
       const entry = sandboxes.get(sandboxId);
       if (entry !== undefined) archive(entry, now);
+    },
+    /** As if the server were replaced by a build that cannot install T3. */
+    setBootstrapAvailable: (available: boolean) => {
+      bootstrapAvailable = available;
     },
     /** As if someone resumed the sandbox from Boat's dashboard. */
     resumeExternally: (sandboxId: string) => {
