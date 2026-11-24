@@ -20,6 +20,7 @@ import { useBotForThread, useEnvironmentBots } from "../../state/bots";
 import { useProject, useProjects } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { ThreadAutomationsPanel } from "../chat/ThreadAutomationsPanel";
 import { ThreadDetailsSection } from "../chat/ThreadDetailsSection";
 import { ThreadDetailsControl } from "../chat/ThreadDetailsControl";
 import { THREAD_DETAILS_PANEL_ICON_CLASS } from "../chat/threadDetailsPanelStyles";
@@ -134,6 +135,8 @@ export function BotOverviewSection(props: {
           {archived ? <T>Restore bot</T> : <T>Archive bot</T>}
         </ThreadDetailsControl>
       </div>
+      {/* Routines are scheduled tasks bound to the DM; the same panel pauses and runs them. */}
+      <ThreadAutomationsPanel environmentId={props.environmentId} threadId={props.threadId} />
       <BotKnowledgeSections environmentId={props.environmentId} botId={bot.id} />
       <BotPeerActivity environmentId={props.environmentId} botId={bot.id} />
     </ThreadDetailsSection>
