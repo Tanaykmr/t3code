@@ -1,15 +1,17 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { type BoardElement, EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as SecureRandom from "effect/crypto/SecureRandom";
-import type { Tool } from "effect/ai";
+import { McpSchema, McpServer, type Tool } from "effect/ai";
 
 import * as BoardService from "../../../board/BoardService.ts";
 import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
+import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
@@ -71,14 +73,15 @@ const callAs = <Name extends keyof typeof BoardToolkit.tools>(
     const toolkit = yield* BoardToolkit.pipe(
       Effect.provide(McpToolAccess.HandlersLayer.layer(BoardHandlers.layer)),
     );
-    return yield* toolkit.handle(name, params as never).pipe(
+    const last = yield* toolkit.handle(name, params as never).pipe(
       Stream.unwrap,
       Stream.runCollect,
-      Effect.map(
-        (chunk) => chunk.at(-1)!.result as Tool.Success<(typeof BoardToolkit.tools)[Name]>,
-      ),
+      Effect.map((chunk) => chunk.at(-1)!),
       Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
     );
+    // The tools return failures, as the MCP server sends them; tests flip them back.
+    if (last.isFailure) return yield* Effect.fail(last.result as Tool.Failure<(typeof BoardToolkit.tools)[Name]>);
+    return last.result as Tool.Success<(typeof BoardToolkit.tools)[Name]>;
   });
 
 const call = <Name extends keyof typeof BoardToolkit.tools>(
@@ -102,6 +105,29 @@ const boundIds = (element: BoardElement | undefined, type: string) =>
 
 const box = (id: string, x: number, label: string) =>
   ({ op: "create", type: "rectangle", id, x, y: 0, width: 100, height: 60, label }) as const;
+
+const token = (element: { readonly version: number; readonly versionNonce: number }) => ({
+  version: element.version,
+  versionNonce: element.versionNonce,
+});
+
+/** An edit from the user's editor, which bumps only the records it changes. */
+const userEdit = (threadId: ThreadId, id: string, changes: Record<string, unknown>) =>
+  Effect.gen(function* () {
+    const boards = yield* BoardService.BoardService;
+    const snapshot = yield* boards.get(threadId);
+    assert(snapshot !== null);
+    const element = snapshot.elements.find((candidate) => candidate.id === id)!;
+    yield* boards.apply({
+      actor: "user",
+      batch: {
+        threadId,
+        boardId: snapshot.board.boardId,
+        mutationId: `user-${snapshot.board.revision}`,
+        operations: [{ type: "replace", element: { ...element, ...changes }, expected: token(element) }],
+      },
+    });
+  });
 
 layer("board toolkit", (it) => {
   describe("drawing a connected diagram", () => {
@@ -192,19 +218,24 @@ layer("board toolkit", (it) => {
         const found = yield* call("board_get", { text: "datab" });
         expect(found.elements.map((element) => element.id)).toEqual([db.id]);
         const firstPage = yield* call("board_get", { limit: 2 });
-        expect(firstPage.nextCursor).toBe("1:2");
-        const secondPage = yield* call("board_get", { limit: 2, cursor: "1:2" });
+        expect(firstPage.nextCursor).toMatch(/^1:2:/);
+        const secondPage = yield* call("board_get", { limit: 2, cursor: firstPage.nextCursor! });
         expect(secondPage.elements.map((element) => element.id)).toEqual([cache.id, reads.id]);
+        expect(
+          yield* call("board_get", { text: "a", cursor: firstPage.nextCursor! }).pipe(Effect.flip),
+          "a cursor only continues the read it came from",
+        ).toMatchObject({ code: "invalid_request", message: expect.stringContaining("cursor") });
       }),
     );
 
     it.effect("moves a shape's label and arrows with it, and rejects a stale token", () =>
       Effect.gen(function* () {
-        const board = (yield* call("board_get", {})).elements;
+        const { elements: board, revision } = yield* call("board_get", {});
         const cache = board.find((element) => element.label === "Cache")!;
         const stale = { version: cache.version - 1, versionNonce: cache.versionNonce };
 
         const conflict = yield* call("board_apply", {
+          revision,
           edits: [{ op: "patch", id: cache.id, expected: stale, y: 300 }],
         }).pipe(Effect.flip);
         expect(conflict).toMatchObject({
@@ -216,6 +247,7 @@ layer("board toolkit", (it) => {
         expect((yield* call("board_get", {})).revision).toBe(1);
 
         const moved = yield* call("board_apply", {
+          revision,
           edits: [
             {
               op: "patch",
@@ -243,10 +275,11 @@ layer("board toolkit", (it) => {
 
     it.effect("deletes a shape with its label and lets go of its arrows", () =>
       Effect.gen(function* () {
-        const board = (yield* call("board_get", {})).elements;
+        const { elements: board, revision } = yield* call("board_get", {});
         const api = board.find((element) => element.label === "API")!;
         const reads = board.find((element) => element.label === "reads")!;
         yield* call("board_apply", {
+          revision,
           edits: [
             {
               op: "delete",
@@ -266,6 +299,179 @@ layer("board toolkit", (it) => {
       }),
     );
   });
+
+  it.effect("refuses a patch or delete that would overwrite a label the user changed", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-dependents");
+      const as = threadCaller(threadId);
+      yield* callAs(as, "board_create", {});
+      yield* callAs(as, "board_apply", {
+        edits: [
+          box("api", 0, "API"),
+          box("db", 300, "DB"),
+          { op: "create", type: "arrow", start: "api", end: "db" },
+        ],
+      });
+      const read = yield* callAs(as, "board_get", {});
+      const api = read.elements.find((element) => element.label === "API")!;
+      const db = read.elements.find((element) => element.label === "DB")!;
+      const [labelId] = boundIds((yield* storedElements(threadId)).get(api.id), "text");
+      yield* userEdit(threadId, labelId!, { text: "Gateway", originalText: "Gateway" });
+      expect(
+        (yield* callAs(as, "board_get", { ids: [api.id] })).elements[0],
+        "only the label's token moved",
+      ).toMatchObject({ ...token(api), label: "Gateway" });
+
+      for (const edit of [
+        { op: "patch", id: api.id, expected: token(api), label: "Edge" },
+        { op: "patch", id: api.id, expected: token(api), x: 40 },
+        { op: "delete", id: api.id, expected: token(api) },
+      ] as const) {
+        expect(
+          yield* callAs(as, "board_apply", { revision: read.revision, edits: [edit] }).pipe(
+            Effect.flip,
+          ),
+        ).toMatchObject({
+          _tag: "BoardEditConflictError",
+          conflicts: expect.arrayContaining([{ id: api.id, current: token(api) }]),
+        });
+      }
+      expect(
+        yield* callAs(as, "board_apply", {
+          edits: [{ op: "delete", id: api.id, expected: token(api) }],
+        }).pipe(Effect.flip),
+      ).toMatchObject({ code: "invalid_request", message: expect.stringContaining("revision") });
+      const [label] = boundIds((yield* storedElements(threadId)).get(api.id), "text");
+      expect((yield* storedElements(threadId)).get(label!)).toMatchObject({
+        originalText: "Gateway",
+        isDeleted: false,
+      });
+
+      // Writing only the element the agent holds a token for needs no fresh read.
+      yield* callAs(as, "board_apply", {
+        revision: read.revision,
+        edits: [{ op: "patch", id: db.id, expected: token(db), backgroundColor: "#ffc9c9" }],
+      });
+      const fresh = yield* callAs(as, "board_get", { ids: [api.id] });
+      yield* callAs(as, "board_apply", {
+        revision: fresh.revision,
+        edits: [{ op: "patch", id: api.id, expected: token(fresh.elements[0]!), label: "Edge" }],
+      });
+      expect((yield* callAs(as, "board_get", { ids: [api.id] })).elements[0]?.label).toBe("Edge");
+    }),
+  );
+
+  it.effect("reroutes arrows when a label grows its box, and refuses to bend elbow arrows", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-routing");
+      const as = threadCaller(threadId);
+      yield* callAs(as, "board_create", {});
+      const { ids } = yield* callAs(as, "board_apply", {
+        edits: [
+          box("a", 0, "A"),
+          box("b", 300, "B"),
+          { op: "create", type: "arrow", id: "link", start: "a", end: "b" },
+        ],
+      });
+      const before = (yield* storedElements(threadId)).get(ids.link!)!;
+      expect(before.y).toBe(30);
+      let read = yield* callAs(as, "board_get", { ids: [ids.a!] });
+      const relabeled = yield* callAs(as, "board_apply", {
+        revision: read.revision,
+        edits: [
+          {
+            op: "patch",
+            id: ids.a!,
+            expected: token(read.elements[0]!),
+            label: "A label long enough to wrap onto several lines inside this box",
+          },
+        ],
+      });
+      const stored = yield* storedElements(threadId);
+      expect(stored.get(ids.a!)!.height).toBeGreaterThan(60);
+      expect(relabeled.elements.map((element) => element.id)).toContain(ids.link);
+      expect(stored.get(ids.link!)!.y).not.toBe(30);
+
+      yield* userEdit(threadId, ids.link!, { elbowed: true });
+      read = yield* callAs(as, "board_get", {});
+      const b = read.elements.find((element) => element.id === ids.b)!;
+      for (const edit of [
+        { op: "patch", id: b.id, expected: token(b), x: 500 },
+        { op: "patch", id: b.id, expected: token(b), label: "B, now long enough to grow its box" },
+      ] as const) {
+        expect(
+          yield* callAs(as, "board_apply", { revision: read.revision, edits: [edit] }).pipe(
+            Effect.flip,
+          ),
+        ).toMatchObject({ code: "invalid_request", message: expect.stringContaining("elbow") });
+      }
+      yield* callAs(as, "board_apply", {
+        revision: read.revision,
+        edits: [{ op: "patch", id: b.id, expected: token(b), strokeColor: "#e03131" }],
+      });
+    }),
+  );
+
+  it.effect("pages board_get by size and searches text past the preview", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-pages");
+      const as = threadCaller(threadId);
+      yield* callAs(as, "board_create", {});
+      yield* callAs(as, "board_apply", {
+        edits: Array.from({ length: 60 }, (_, i) => ({
+          op: "create" as const,
+          type: "text" as const,
+          x: 0,
+          y: i * 40,
+          text: `${"x".repeat(1_900)} note-${i}`,
+        })),
+      });
+      const first = yield* callAs(as, "board_get", {});
+      expect(first.total).toBe(60);
+      expect(first.elements.length).toBeGreaterThan(1);
+      expect(first.elements.length).toBeLessThan(60);
+      expect(JSON.stringify(first.elements).length).toBeLessThanOrEqual(32_000);
+      expect(first.elements[0]!.text).toMatch(/^x{500}…$/);
+
+      const seen = new Set(first.elements.map((element) => element.id));
+      let cursor = first.nextCursor;
+      while (cursor !== undefined) {
+        const next = yield* callAs(as, "board_get", { cursor });
+        for (const element of next.elements) seen.add(element.id);
+        cursor = next.nextCursor;
+      }
+      expect(seen.size).toBe(60);
+
+      const found = yield* callAs(as, "board_get", { text: "NOTE-7" });
+      expect(found.elements).toHaveLength(1);
+      expect(found.elements[0]!.text).toMatch(/…$/);
+    }),
+  );
+
+  it.effect("treats a whitespace-only label as no label", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-blank-labels");
+      const as = threadCaller(threadId);
+      yield* callAs(as, "board_create", {});
+      const { ids } = yield* callAs(as, "board_apply", {
+        edits: [box("blank", 0, "  \n "), box("named", 300, "Named")],
+      });
+      let stored = yield* storedElements(threadId);
+      expect(boundIds(stored.get(ids.blank!), "text")).toEqual([]);
+      expect([...stored.values()].filter((element) => element.type === "text")).toHaveLength(1);
+
+      const read = yield* callAs(as, "board_get", { ids: [ids.named!] });
+      yield* callAs(as, "board_apply", {
+        revision: read.revision,
+        edits: [{ op: "patch", id: ids.named!, expected: token(read.elements[0]!), label: " \t" }],
+      });
+      stored = yield* storedElements(threadId);
+      expect(boundIds(stored.get(ids.named!), "text")).toEqual([]);
+      expect(
+        [...stored.values()].filter((element) => element.type === "text" && !element.isDeleted),
+      ).toEqual([]);
+    }),
+  );
 
   it.effect("acts only on the calling thread's own board", () =>
     Effect.gen(function* () {
@@ -311,3 +517,55 @@ layer("board toolkit", (it) => {
     }),
   );
 });
+
+const mcpClient = McpSchema.McpServerClient.of({
+  clientId: 1,
+  protocolVersion: "2025-06-18",
+  clientCapabilities: {},
+  clientInfo: { name: "board-test", version: "1" },
+  initializePayload: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "board-test", version: "1" },
+  },
+  getClient: Effect.die("unused"),
+});
+
+it.effect("sends a conflict's ids and current tokens to the agent over MCP", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const callTool = (name: string, args: object) =>
+      server.callTool({ name, arguments: args }).pipe(
+        Effect.provideService(
+          McpInvocationContext.McpInvocationContext,
+          threadCaller(ThreadId.make("thread-mcp")),
+        ),
+        Effect.provideService(McpSchema.McpServerClient, mcpClient),
+      );
+    yield* callTool("board_create", {});
+    const created = yield* callTool("board_apply", { edits: [box("a", 0, "A")] });
+    const id = (created.structuredContent as { ids: Record<string, string> }).ids.a!;
+    const stale = yield* callTool("board_apply", {
+      revision: 1,
+      edits: [{ op: "patch", id, expected: { version: 0, versionNonce: 0 }, x: 10 }],
+    });
+    expect(stale.isError).toBe(true);
+    const [content] = stale.content;
+    assert(content?.type === "text");
+    expect(JSON.parse(content.text)).toEqual({
+      _tag: "BoardEditConflictError",
+      message: expect.stringContaining("board_get"),
+      conflicts: [
+        { id, current: { version: expect.any(Number), versionNonce: expect.any(Number) } },
+      ],
+    });
+  }).pipe(
+    Effect.provide(
+      McpHttpServer.toolkitRegistration(BoardToolkit, BoardHandlers.layer).pipe(
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(layerDependencies),
+      ),
+    ),
+  ),
+);

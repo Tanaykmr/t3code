@@ -89,6 +89,7 @@ import {
 import { proxyConfig } from "../shared/proxy.ts";
 import { changeRequestsCreatedBy } from "../../apps/server/src/orchestration-v2/PullRequestSyncReactor.ts";
 import { type BackgroundWait, makeBackgroundWait } from "./backgroundWait.ts";
+import { BoardExpect, gradeBoard } from "./board-grading.ts";
 import { DeviceExpect, gradeDevice } from "./device-grading.ts";
 import { FileLinksExpect, gradeFileLinks } from "./file-link-grading.ts";
 import {
@@ -271,6 +272,8 @@ const McpToolUseExpect = Schema.Struct({
   secret: Schema.optional(SecretExpect),
   /** File pills in the final answer resolve against the thread cwd to `world.files` entries. */
   fileLinks: Schema.optional(FileLinksExpect),
+  /** One successful board_apply draws these labeled shapes and the arrows between them. */
+  board: Schema.optional(BoardExpect),
 });
 
 /**
@@ -2635,6 +2638,7 @@ export const gradeSample = (
     add("linkedNumbers", exact === valueText(expect.linkedNumbers.toSorted((a, b) => a - b)));
   }
   checks.push(...gradeDevice(expect.device, run));
+  checks.push(...gradeBoard(expect.board, calls));
   checks.push(
     ...gradeFileLinks(
       expect.fileLinks,

@@ -18,8 +18,9 @@ export const BOARD_GET_FILES_MAX = 64;
 /** Element JSON a board, or one edit batch, may hold; image bytes are counted separately. */
 export const BOARD_MAX_ELEMENT_BYTES = 16 * 1024 * 1024;
 export const BOARD_BATCH_MAX_ELEMENT_BYTES = 4 * 1024 * 1024;
-/** Image bytes one board may hold. */
+/** Image bytes and files one board may hold; the snapshot lists every file. */
 export const BOARD_MAX_FILE_BYTES = 64 * 1024 * 1024;
+export const BOARD_MAX_FILES = 512;
 /** Image bytes one `getFiles` response may carry; the client asks again for the rest. */
 export const BOARD_GET_FILES_MAX_BYTES = 12 * 1024 * 1024;
 

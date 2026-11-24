@@ -463,4 +463,60 @@ describe("BoardService subscriptions", () => {
       ),
     ),
   );
+  it.effect("keeps a patched element's slot and fences a restore that moves it", () =>
+    Effect.gen(function* () {
+      const boards = yield* BoardService.BoardService;
+      const board = yield* boards.create(threadId);
+      const created = yield* boards.apply({
+        actor: "session-a",
+        batch: batch(board, "k1", [
+          { type: "create", element: element("zz-old", { index: "a5" }) },
+        ]),
+      });
+      const old = created.elements[0];
+      assert(old !== undefined);
+      // A create that sorts first claims the same index as an element patched in place.
+      const second = yield* boards.apply({
+        actor: "session-a",
+        batch: batch(board, "k2", [
+          {
+            type: "replace",
+            element: element("zz-old", { index: "a5", x: 9, version: old.version }),
+            expected: token(old),
+          },
+          { type: "create", element: element("aa-new", { index: "a5" }) },
+        ]),
+      });
+      const kept = second.elements.find((entry) => entry.id === "zz-old");
+      expect(kept?.index).toBe("a5");
+      assert(kept !== undefined);
+      const deleted = yield* boards.apply({
+        actor: "session-a",
+        batch: batch(board, "k3", [{ type: "delete", id: "zz-old", expected: token(kept) }]),
+      });
+      const tomb = deleted.elements[0];
+      assert(tomb !== undefined);
+      const unfenced = yield* boards
+        .apply({
+          actor: "session-a",
+          batch: batch(board, "k4", [
+            {
+              type: "restore",
+              element: element("zz-old", { index: "b0", isDeleted: true, version: tomb.version }),
+              expected: token(tomb),
+            },
+          ]),
+        })
+        .pipe(Effect.flip);
+      expect(unfenced).toMatchObject({ _tag: "BoardConflictError" });
+    }).pipe(
+      Effect.provide(
+        BoardService.layer.pipe(
+          Layer.provide(SqlitePersistence.layerMemory),
+          Layer.provide(layerThreads),
+          Layer.provide(SecureRandom.layerWebCrypto),
+        ),
+      ),
+    ),
+  );
 });

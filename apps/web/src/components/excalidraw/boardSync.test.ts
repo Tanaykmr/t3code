@@ -5,6 +5,7 @@ import {
   acknowledge,
   copyWithFreshIds,
   createBoardSession,
+  editorStamp,
   markApplied,
   observeEditor,
   reconcile,
@@ -37,7 +38,12 @@ const scene = (elements: ReadonlyArray<BoardElement>, orderRevision = 1, revisio
 const synced = (records: ReadonlyArray<BoardElement>) => {
   const session = createBoardSession();
   session.shownBackground = "#ffffff";
-  markApplied(session, records, new Map(records.map((r) => [r.id, r.version])), scene(records));
+  markApplied(
+    session,
+    records,
+    new Map(records.map((r) => [r.id, editorStamp(r)])),
+    scene(records),
+  );
   return session;
 };
 
@@ -59,7 +65,12 @@ describe("board sync", () => {
     const canonical = element("a", { version: 2, versionNonce: 99, index: "aa" });
     const next = reconcile(session, scene([canonical]), [element("a")], new Set());
     expect(next?.applied).toEqual([canonical]);
-    markApplied(session, next!.applied, new Map([["a", 2]]), scene([canonical]));
+    markApplied(
+      session,
+      next!.applied,
+      new Map([["a", editorStamp(canonical)]]),
+      scene([canonical]),
+    );
     expect(reconcile(session, scene([canonical]), [canonical], new Set())).toBeNull();
     expect(observeEditor(session, [canonical], "#ffffff")).toBe(false);
   });
@@ -222,6 +233,65 @@ describe("board sync", () => {
     expect(take(session, "m2")?.expectedOrderRevision).toBe(2);
   });
 
+  it("keeps an import's deletion queued behind an in-flight edit of the same record", () => {
+    const session = synced([element("a")]);
+    observeEditor(session, [element("a", { version: 2, x: 5 })], "#ffffff");
+    take(session);
+    // The user opens a file that drops the record while the edit is being saved.
+    observeEditor(session, [], "#ffffff");
+    acknowledge(session, {
+      revision: 2,
+      orderRevision: 1,
+      elements: [{ id: "a", version: 3, versionNonce: 30, index: "aa" }],
+    });
+    expect(take(session, "m2")?.operations).toEqual([
+      { type: "delete", id: "a", expected: { version: 3, versionNonce: 30 } },
+    ]);
+  });
+
+  it("does not credit an unrelated commit with a peer's reorder", () => {
+    const session = synced([element("a"), element("b")]);
+    observeEditor(session, [element("a", { version: 2, x: 5 }), element("b")], "#ffffff");
+    take(session);
+    observeEditor(
+      session,
+      [element("a", { version: 2, x: 5 }), element("b", { version: 2, index: "b5" })],
+      "#ffffff",
+    );
+    acknowledge(session, {
+      revision: 3,
+      orderRevision: 2,
+      elements: [{ id: "a", version: 3, versionNonce: 30, index: "aa" }],
+    });
+    expect(take(session, "m2")?.expectedOrderRevision).toBe(1);
+  });
+
+  it("sees an imported record that keeps the version but changes its content", () => {
+    const session = synced([element("a")]);
+    expect(observeEditor(session, [element("a", { versionNonce: 77, x: 40 })], "#ffffff")).toBe(
+      true,
+    );
+  });
+
+  it("forgets a create that an import dropped before it was sent", () => {
+    const session = synced([]);
+    observeEditor(session, [element("n")], "#ffffff");
+    observeEditor(session, [], "#ffffff");
+    expect(take(session)).toBeNull();
+  });
+
+  it("sizes a delete by the record the server stores as its tombstone", () => {
+    const session = synced(Array.from({ length: 25 }, (_, index) => element(`d${index}`)));
+    observeEditor(session, [], "#ffffff");
+    const batch = takeBatch(session, {
+      committedFileIds: new Set(),
+      editorFiles: {},
+      mutationId: "m1",
+      committedBytes: () => 200 * 1024,
+    });
+    expect(batch!.operations.length).toBeLessThan(25);
+  });
+
   it("holds remote records under local drafts and gestures, and applies the rest", () => {
     const session = synced([element("a"), element("b"), element("c")]);
     observeEditor(
@@ -249,7 +319,7 @@ describe("board sync", () => {
     const remote = element("a", { version: 4, versionNonce: 40 });
     const next = reconcile(session, scene([remote]), [], new Set());
     // The editor may repair the record and bump its version as it loads it.
-    markApplied(session, next!.applied, new Map([["a", 5]]), scene([remote]));
+    markApplied(session, next!.applied, new Map([["a", "5:10"]]), scene([remote]));
     expect(observeEditor(session, [element("a", { version: 5 })], "#ffffff")).toBe(false);
   });
 

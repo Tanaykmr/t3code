@@ -8,6 +8,7 @@ import {
   BOARD_GET_FILES_MAX_BYTES,
   BOARD_MAX_ELEMENT_BYTES,
   BOARD_MAX_FILE_BYTES,
+  BOARD_MAX_FILES,
   BOARD_MAX_ELEMENTS,
   BOARD_SCENE_FORMAT_VERSION,
   BoardApplyResult,
@@ -190,7 +191,13 @@ const repairIndices = (
     }
   }
   const taken = new Set(stable.map((entry) => entry.index));
-  const ordered = [...proposed].toSorted(compareCanonical);
+  const committedIndex = new Map(committed.map((entry) => [entry.id, entry.index]));
+  // Existing elements keeping their index claim it first, so a create never displaces them.
+  const keeps = (entry: BoardElement) =>
+    entry.index !== null && committedIndex.get(entry.id) === entry.index;
+  const ordered = [...proposed].toSorted(
+    (left, right) => Number(keeps(right)) - Number(keeps(left)) || compareCanonical(left, right),
+  );
   const needsRepair = new Set<string>();
   for (const entry of ordered) {
     if (entry.index !== null && isValidIndex(entry.index) && !taken.has(entry.index)) {
@@ -213,7 +220,13 @@ const repairIndices = (
   }
   stable.sort(compareCanonical);
   const repaired = new Map<string, string>();
-  for (const entry of ordered) {
+  // Containers are placed before their labels so a label can always go right above one.
+  const repairOrder = [...proposed]
+    .toSorted(compareCanonical)
+    .toSorted(
+      (left, right) => Number(containerOf(left) !== null) - Number(containerOf(right) !== null),
+    );
+  for (const entry of repairOrder) {
     if (!needsRepair.has(entry.id)) continue;
     const container = containerOf(entry);
     const containerPosition =
@@ -438,7 +451,7 @@ const make = Effect.gen(function* () {
     }
 
     const payload = yield* encodeBatchJson(batch).pipe(Effect.orDie);
-    if (payload.length > BOARD_BATCH_MAX_BYTES) {
+    if (Buffer.byteLength(payload) > BOARD_BATCH_MAX_BYTES) {
       return yield* new BoardInvalidBatchError({ reason: "batch-too-large" });
     }
     const payloadDigest = NodeCrypto.createHash("sha256").update(payload).digest("hex");
@@ -475,16 +488,6 @@ const make = Effect.gen(function* () {
       return yield* new BoardInvalidBatchError({ reason: "duplicate-element" });
     }
 
-    if (
-      batch.operations.some(
-        (operation) =>
-          operation.type !== "delete" &&
-          (operation.element.version < 0 || operation.element.version > MAX_PROPOSAL_VERSION),
-      )
-    ) {
-      return yield* new BoardInvalidBatchError({ reason: "invalid-version" });
-    }
-
     const currentRows =
       touchedIds.length === 0
         ? []
@@ -494,6 +497,19 @@ const make = Effect.gen(function* () {
             WHERE board_id = ${board.board_id} AND element_id IN ${sql.in(touchedIds)}
           `.pipe(storage("read"));
     const current = new Map(currentRows.map((row) => [row.element_id, row]));
+    // A proposal may sit just above the record it replaces; the stamp must stay a safe integer.
+    const versionOutOfRange = batch.operations.some((operation) => {
+      if (operation.type === "delete") return false;
+      const { version } = operation.element;
+      const prior = current.get(operation.element.id)?.version ?? 0;
+      const ceiling = Math.max(MAX_PROPOSAL_VERSION, prior + 1024);
+      return (
+        version < 0 || version > ceiling || Math.max(version, prior) >= Number.MAX_SAFE_INTEGER
+      );
+    });
+    if (versionOutOfRange) {
+      return yield* new BoardInvalidBatchError({ reason: "invalid-version" });
+    }
 
     const conflicts: Array<BoardConflict> = [];
     for (const operation of batch.operations) {
@@ -515,8 +531,8 @@ const make = Effect.gen(function* () {
       batch.expectedOrderRevision === undefined &&
       batch.operations.some(
         (operation) =>
-          (operation.type === "replace" || operation.type === "restore") &&
-          !operation.element.isDeleted &&
+          (operation.type === "restore" ||
+            (operation.type === "replace" && !operation.element.isDeleted)) &&
           current.has(operation.element.id) &&
           current.get(operation.element.id)?.idx !== operation.element.index,
       );
@@ -584,11 +600,15 @@ const make = Effect.gen(function* () {
       return yield* new BoardInvalidBatchError({ reason: "file-missing" });
     }
     if (newFiles.length > 0) {
-      const [stored] = yield* sql<{ readonly total: number | null }>`
-        SELECT SUM(size) AS total FROM board_file WHERE board_id = ${board.board_id}
+      const [stored] = yield* sql<{ readonly total: number | null; readonly count: number }>`
+        SELECT SUM(size) AS total, COUNT(*) AS count FROM board_file
+        WHERE board_id = ${board.board_id}
       `.pipe(storage("read"));
       const added = newFiles.reduce((total, file) => total + file.ref.size, 0);
-      if ((stored?.total ?? 0) + added > BOARD_MAX_FILE_BYTES) {
+      if (
+        (stored?.total ?? 0) + added > BOARD_MAX_FILE_BYTES ||
+        (stored?.count ?? 0) + newFiles.length > BOARD_MAX_FILES
+      ) {
         return yield* new BoardInvalidBatchError({ reason: "board-full" });
       }
     }

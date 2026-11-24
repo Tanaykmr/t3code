@@ -24,6 +24,7 @@ import {
   acknowledge,
   copyWithFreshIds,
   createBoardSession,
+  editorStamp,
   hasUnsavedWork,
   markApplied,
   observeEditor,
@@ -112,18 +113,24 @@ export class BoardController {
     markApplied(
       session,
       canonical,
-      new Map(elements.map((element) => [element.id, element.version])),
+      new Map(elements.map((element) => [element.id, editorStamp(element)])),
       view.board,
     );
-    session.shownBackground = view.settings.viewBackgroundColor;
+    // Until the stream reaches our own background commit, the acknowledged color is current.
+    if (view.board.revision >= session.backgroundRevision || session.shownBackground === null) {
+      session.shownBackground = view.settings.viewBackgroundColor;
+    }
     return {
       elements,
-      viewBackgroundColor: session.draftBackground ?? view.settings.viewBackgroundColor,
+      viewBackgroundColor: session.draftBackground ?? session.shownBackground,
     };
   }
 
   readonly attach = (api: ExcalidrawImperativeAPI) => {
     this.api = api;
+    // Images saved locally but not yet sent come back with the remounted editor.
+    const cached = Object.values(this.files).filter((file) => file !== undefined);
+    if (cached.length > 0) api.addFiles(cached);
     this.sync();
     if (hasUnsavedWork(this.session) && this.flushTimer === null) this.send();
   };
@@ -234,7 +241,7 @@ export class BoardController {
     if (backgroundChanged) session.shownBackground = background;
     if (next !== null) {
       const versions = new Map(
-        api.getSceneElementsIncludingDeleted().map((element) => [element.id, element.version]),
+        api.getSceneElementsIncludingDeleted().map((element) => [element.id, editorStamp(element)]),
       );
       markApplied(session, next.applied, versions, view.board);
     }
@@ -284,8 +291,12 @@ export class BoardController {
       session.pending ??
       takeBatch(session, {
         committedFileIds: new Set(view.files.map((file) => file.id)),
-        editorFiles: this.api?.getFiles() ?? this.files,
+        editorFiles: { ...this.files, ...this.api?.getFiles() },
         mutationId: randomUUID(),
+        committedBytes: (id) => {
+          const record = view.elements.find((element) => element.id === id);
+          return record === undefined ? 0 : new TextEncoder().encode(JSON.stringify(record)).length;
+        },
       });
     if (batch === null) {
       // Drafts that cannot go yet, such as an image whose bytes are still loading, wait for

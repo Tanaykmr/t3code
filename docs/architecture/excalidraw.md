@@ -38,7 +38,9 @@ thread. Displaying a missing board has no write side effect. Closing a panel, en
 archiving a thread, or switching branches preserves the board. Forking a thread starts with its
 own empty board on first creation. Permanent thread deletion removes the board through
 the thread deletion lifecycle and retires its asset references. Use the editor's native
-`.excalidraw` export and import for portable copies. Git checkpoints govern the checkout, and
+`.excalidraw` export and import for portable copies. Opening a file replaces the board's
+scene like the stock editor: records it drops are deleted, and a record that reuses an existing
+ID replaces it through the normal token check. Git checkpoints govern the checkout, and
 the board has an independent lifetime across checkpoint restores.
 
 This is environment state, so an agent can edit with every panel closed and a remote renderer

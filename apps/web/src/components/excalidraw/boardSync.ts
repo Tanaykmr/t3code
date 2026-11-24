@@ -24,8 +24,8 @@ export interface PendingBatch {
   readonly operations: ReadonlyArray<BoardOperation>;
   readonly settings: BoardSettings | undefined;
   readonly files: ReadonlyArray<BoardFileData>;
-  /** Each record as sent: its editor version and whether it was a deletion. */
-  readonly sent: ReadonlyMap<string, { readonly version: number; readonly isDeleted: boolean }>;
+  /** Each record as sent: the draft itself and whether it was a deletion. */
+  readonly sent: ReadonlyMap<string, { readonly draft: BoardElement; readonly isDeleted: boolean }>;
 }
 
 /** A committed edit of ours whose canonical record the stream has not delivered yet. */
@@ -40,7 +40,7 @@ interface Receipt extends ShownRecord {
 export interface BoardSession {
   readonly shown: Map<string, ShownRecord>;
   /** Editor version last synced per id; any other version is a local edit. */
-  readonly baseline: Map<string, number>;
+  readonly baseline: Map<string, string>;
   /** Unacknowledged local records, copied by value because the editor mutates its own. */
   readonly drafts: Map<string, BoardElement>;
   /** Order revision each draft started from, so a reorder is fenced by what the user saw. */
@@ -88,7 +88,7 @@ export function observeEditor(
   const present = new Set<string>();
   for (const element of elements) {
     present.add(element.id);
-    if (session.baseline.get(element.id) === element.version) continue;
+    if (session.baseline.get(element.id) === editorStamp(element)) continue;
     const draft = session.drafts.get(element.id);
     if (draft?.version === element.version && draft.versionNonce === element.versionNonce) continue;
     if (draft === undefined) session.draftOrderRevision.set(element.id, session.shownOrderRevision);
@@ -97,6 +97,14 @@ export function observeEditor(
     changed = true;
   }
   // Opening a file replaces the editor's scene; records it dropped are deletions.
+  for (const [id, draft] of session.drafts) {
+    // A create that never reached the server just disappears with the editor's copy.
+    if (present.has(id) || basis(session, id) !== undefined || draft.type === TOMBSTONE) continue;
+    if (session.pending?.sent.has(id)) continue;
+    session.drafts.delete(id);
+    session.draftOrderRevision.delete(id);
+    changed = true;
+  }
   for (const id of new Set([...session.shown.keys(), ...session.receipts.keys()])) {
     const known = basis(session, id);
     if (known === undefined || known.isDeleted || present.has(id)) continue;
@@ -116,11 +124,17 @@ export function observeEditor(
   return changed;
 }
 
+/** An editor record's version pair; an import can change content without changing version. */
+export const editorStamp = (element: {
+  readonly version: number;
+  readonly versionNonce: number;
+}): string => `${element.version}:${element.versionNonce}`;
+
 /** Placeholder for a record the editor dropped; it is only ever sent as a delete. */
 const TOMBSTONE = "deleted";
 
 const base = (session: BoardSession, id: string, shown: ShownRecord) => ({
-  version: (session.baseline.get(id) ?? shown.version) + 1,
+  version: shown.version + 1,
   versionNonce: shown.versionNonce,
   index: shown.index,
 });
@@ -147,19 +161,24 @@ export function takeBatch(
       Record<string, { readonly mimeType: string; readonly dataURL: string } | undefined>
     >;
     readonly mutationId: string;
+    /** Serialized size of a committed record, which the server stores again as a tombstone. */
+    readonly committedBytes?: (id: string) => number;
   },
 ): PendingBatch | null {
   if (session.pending !== null) return null;
   const operations: BoardOperation[] = [];
   const files: BoardFileData[] = [];
-  const sent = new Map<string, { readonly version: number; readonly isDeleted: boolean }>();
+  const sent = new Map<string, { readonly draft: BoardElement; readonly isDeleted: boolean }>();
   let fence: number | undefined;
   let elementBytes = 0;
   let totalBytes = 0;
   for (const [id, element] of session.drafts) {
     // Larger edits go out over several batches; the rest stay drafts for the next one.
     if (operations.length >= BOARD_MAX_OPERATIONS) break;
-    const size = utf8Bytes(JSON.stringify(element));
+    const size =
+      element.isDeleted && basis(session, id) !== undefined
+        ? (input.committedBytes?.(id) ?? utf8Bytes(JSON.stringify(element)))
+        : utf8Bytes(JSON.stringify(element));
     if (
       operations.length > 0 &&
       (elementBytes + size > ELEMENT_BUDGET || totalBytes + size > TOTAL_BUDGET)
@@ -188,7 +207,7 @@ export function takeBatch(
       if (element.isDeleted) {
         session.drafts.delete(id);
         session.draftOrderRevision.delete(id);
-        session.baseline.set(id, element.version);
+        session.baseline.set(id, editorStamp(element));
         continue;
       }
       operations.push({ type: "create", element });
@@ -203,7 +222,7 @@ export function takeBatch(
         fence = fence === undefined ? started : Math.min(fence, started);
       }
     }
-    sent.set(id, { version: element.version, isDeleted: element.isDeleted });
+    sent.set(id, { draft: element, isDeleted: element.isDeleted });
     elementBytes += size;
     totalBytes += size;
   }
@@ -238,15 +257,17 @@ export function acknowledge(session: BoardSession, result: BoardApplyResult): vo
       isDeleted: sent.isDeleted,
       revision: result.revision,
     });
-    session.baseline.set(accepted.id, sent.version);
-    if (session.drafts.get(accepted.id)?.version === sent.version) {
+    session.baseline.set(accepted.id, editorStamp(sent.draft));
+    // Only the exact draft that was sent is done; a newer one, even at the same version, waits.
+    if (session.drafts.get(accepted.id) === sent.draft) {
       session.drafts.delete(accepted.id);
       session.draftOrderRevision.delete(accepted.id);
     }
   }
-  // Our own commit right after the order we based it on keeps later drafts' fences current.
-  const based = pending.expectedOrderRevision ?? session.shownOrderRevision;
-  if (result.orderRevision === based + 1) {
+  // A fenced commit proves the order was ours and moved it by one, so drafts that started
+  // from the same order now continue from ours.
+  const based = pending.expectedOrderRevision;
+  if (based !== undefined && result.orderRevision === based + 1) {
     for (const [id, started] of session.draftOrderRevision) {
       if (started === based) session.draftOrderRevision.set(id, result.orderRevision);
     }
@@ -361,12 +382,12 @@ const toShown = (record: BoardElement): ShownRecord => ({
 export function markApplied(
   session: BoardSession,
   applied: ReadonlyArray<BoardElement>,
-  editorVersions: ReadonlyMap<string, number>,
+  editorStamps: ReadonlyMap<string, string>,
   canonical: Pick<CanonicalScene, "orderRevision">,
 ): void {
   for (const record of applied) {
     session.shown.set(record.id, toShown(record));
-    session.baseline.set(record.id, editorVersions.get(record.id) ?? record.version);
+    session.baseline.set(record.id, editorStamps.get(record.id) ?? editorStamp(record));
   }
   session.shownOrderRevision = canonical.orderRevision;
 }
