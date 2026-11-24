@@ -50,7 +50,7 @@ const boatSnapshotsAcross = Atom.family((environmentIdsKey: string) => {
 
 const newRequestId = () => BoatRequestId.make(uuidv4());
 
-function useBoatControllers() {
+export function useBoatControllers() {
   const { environments } = useEnvironments();
   const controllers = environments.filter(
     (environment) => environment.serverConfig?.boatEnvironments === true,
@@ -112,12 +112,20 @@ function useBoatLabels() {
 const TONE_CLASS = {
   neutral: "bg-foreground-muted",
   progress: "bg-primary",
-  success: "bg-success-foreground",
+  success: "bg-adaptive-emerald-600-400",
   warning: "bg-warning-foreground",
   danger: "bg-danger-foreground",
 } as const;
 
-function BoatMachineRow({ row, nowMs }: { readonly row: BoatRow; readonly nowMs: number }) {
+function BoatMachineRow({
+  row,
+  nowMs,
+  onOpenEnvironment,
+}: {
+  readonly row: BoatRow;
+  readonly nowMs: number;
+  readonly onOpenEnvironment: (environmentId: EnvironmentId) => void;
+}) {
   const gt = useGT();
   const labels = useBoatLabels();
   const [busy, setBusy] = useState(false);
@@ -179,6 +187,8 @@ function BoatMachineRow({ row, nowMs }: { readonly row: BoatRow; readonly nowMs:
   const actions = (["resume", "stop", "delete"] as const).filter((action) =>
     row.actions.has(action),
   );
+  const guestId = row.paired ? server.guestEnvironmentId : null;
+  const disabled = (actions.length === 0 && guestId === null) || busy;
   const openActions = () =>
     Dialog.alert(server.displayName, labels.lifecycle[server.lifecycle], [
       ...actions.map((action) => ({
@@ -186,6 +196,14 @@ function BoatMachineRow({ row, nowMs }: { readonly row: BoatRow; readonly nowMs:
         style: action === "delete" ? ("destructive" as const) : ("default" as const),
         onPress: () => confirmThen(action),
       })),
+      ...(guestId === null
+        ? []
+        : [
+            {
+              text: gt("Manage {environment}", { environment: server.displayName }),
+              onPress: () => onOpenEnvironment(guestId),
+            },
+          ]),
       { text: gt("Cancel"), style: "cancel" as const },
     ]);
 
@@ -197,8 +215,8 @@ function BoatMachineRow({ row, nowMs }: { readonly row: BoatRow; readonly nowMs:
         state: labels.lifecycle[server.lifecycle],
       })}
       accessibilityHint={actions.length > 0 ? gt("Shows Stop, Resume or Delete") : undefined}
-      accessibilityState={{ disabled: actions.length === 0 || busy, busy }}
-      disabled={actions.length === 0 || busy}
+      accessibilityState={{ disabled, busy }}
+      disabled={disabled}
       onPress={openActions}
       className="min-h-14 flex-row items-center gap-3 p-4"
     >
@@ -315,9 +333,14 @@ function BoatKeyRow(props: {
 }
 
 /** Boat machines from every paired controller that manages them, for both environment lists. */
-export function BoatMachinesSection() {
+export function BoatMachinesSection({
+  boat: { controllers, manageable, environments },
+  onOpenEnvironment,
+}: {
+  readonly boat: ReturnType<typeof useBoatControllers>;
+  readonly onOpenEnvironment: (environmentId: EnvironmentId) => void;
+}) {
   const gt = useGT();
-  const { controllers, manageable, environments } = useBoatControllers();
   const nowMs = useNowMinuteMs();
   if (controllers.length === 0) return null;
   const rows = boatRows({
@@ -343,7 +366,12 @@ export function BoatMachinesSection() {
           />
         ))}
         {rows.map((row) => (
-          <BoatMachineRow key={row.key} row={row} nowMs={nowMs} />
+          <BoatMachineRow
+            key={row.key}
+            row={row}
+            nowMs={nowMs}
+            onOpenEnvironment={onOpenEnvironment}
+          />
         ))}
       </SettingsSection>
     </View>

@@ -373,7 +373,7 @@ function BoatKeyRow({
           <Input
             autoComplete="off"
             spellCheck={false}
-            className="w-48 max-w-full"
+            className="w-72 max-w-full"
             aria-label={gt("Boat environment (optional)")}
             placeholder={gt("Boat environment (optional)")}
             maxLength={120}
@@ -445,13 +445,10 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
   );
   const capable = eligible.filter((entry) => entry.snapshot.createAvailable !== false);
   const [controllerId, setControllerId] = useState<EnvironmentId | null>(null);
-  const controller =
-    capable.find((entry) => entry.environment.environmentId === controllerId) ?? capable[0];
   const [name, setName] = useState("");
   const [size, setSize] = useState<BoatMachineSize>("small");
   const [ttlSeconds, setTtlSeconds] = useState<number>(BOAT_DEFAULT_TTL_SECONDS);
-  // A create the controller may have accepted without answering. Its inputs stay locked so a
-  // retry repeats the same request rather than conflicting with it or making a second machine.
+  // Only the original controller can resolve a lost create response against its saved receipt.
   const [pending, setPending] = useState<{
     readonly environmentId: EnvironmentId;
     readonly requestId: BoatRequestId;
@@ -462,6 +459,16 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
     reportFailure: false,
   });
 
+  const controller = pending
+    ? capable.find((entry) => entry.environment.environmentId === pending.environmentId)
+    : (capable.find((entry) => entry.environment.environmentId === controllerId) ?? capable[0]);
+  if (controller === undefined && pending !== null) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        {gt("Reconnect to the environment and try again.")}
+      </p>
+    );
+  }
   const blocked = eligible.find((entry) => entry.snapshot.createAvailable === false);
   if (controller === undefined && blocked !== undefined) {
     return (
@@ -487,7 +494,7 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
   const rate = controller.snapshot.rates.find((entry) => entry.size === size);
   const submit = async () => {
     const targetId = controller.environment.environmentId;
-    const requestId = pending?.environmentId === targetId ? pending.requestId : newRequestId();
+    const requestId = pending?.requestId ?? newRequestId();
     setPending({ environmentId: targetId, requestId });
     setCreating(true);
     const result = await create({
@@ -521,7 +528,7 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
       className="space-y-3"
       onSubmit={(event) => {
         event.preventDefault();
-        if (name.trim() !== "") void submit();
+        if (!creating && name.trim() !== "") void submit();
       }}
     >
       {capable.length > 1 ? (

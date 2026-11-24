@@ -1,7 +1,7 @@
 import { useGT } from "gt-react-native";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 
-import { useNavigation } from "@react-navigation/native";
+import { StackActions, useNavigation } from "@react-navigation/native";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Fragment, useState } from "react";
 import { View } from "react-native";
@@ -9,7 +9,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppBar } from "../../components/ui/AppBar";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
-import { BoatMachinesSection } from "./BoatMachines";
+import { BoatMachinesSection, useBoatControllers } from "./BoatMachines";
+import { withoutBoatGuests } from "./environmentSections";
 import { LocalEnvironmentList } from "./LocalEnvironmentList";
 import { PullRequestRoutingSettings } from "./PullRequestRoutingSettings";
 import { LinkedEnvironmentsSection } from "./LinkedEnvironmentsSection";
@@ -26,6 +27,7 @@ export function ConnectionsRouteScreen() {
   } = useRemoteConnections();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  const boat = useBoatControllers();
   const [expandedId, setExpandedId] = useState<EnvironmentId | null>(null);
   const handleToggle = (environmentId: EnvironmentId) => {
     setExpandedId((prev) => (prev === environmentId ? null : environmentId));
@@ -56,7 +58,7 @@ export function ConnectionsRouteScreen() {
         }}
       >
         <LocalEnvironmentList
-          environments={connectedEnvironments}
+          environments={withoutBoatGuests(connectedEnvironments, boat.controllers)}
           expandedId={expandedId}
           onToggle={handleToggle}
           onReconnect={onReconnectEnvironment}
@@ -78,7 +80,15 @@ export function ConnectionsRouteScreen() {
               />
             </Fragment>
           ))}
-        <BoatMachinesSection />
+        {/* Replaces this sheet: a page pushed from a sheet would open underneath it on iOS. */}
+        <BoatMachinesSection
+          boat={boat}
+          onOpenEnvironment={(environmentId) =>
+            navigation.dispatch(
+              StackActions.replace("SettingsEnvironmentDetail", { environmentId }),
+            )
+          }
+        />
         <PullRequestRoutingSettings />
       </ScrollView>
     </View>
