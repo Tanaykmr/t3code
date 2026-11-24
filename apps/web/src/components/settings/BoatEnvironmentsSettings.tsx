@@ -299,34 +299,38 @@ function BoatKeyRow({
     reportFailure: false,
   });
   const { account } = snapshot;
-  const save = async (apiKey: string) => {
-    // Checked again at send time: the route may have changed since the form rendered.
-    const route = appAtomRegistry.get(
-      environmentSession.preparedConnectionValueAtom(environment.environmentId),
-    );
-    if (!boatKeyRouteIsPrivate(Option.getOrNull(route)?.socketUrl ?? null)) {
-      setDraft("");
-      toastManager.add({
-        type: "error",
-        title: gt(
-          "This connection is plain HTTP over the network. Enter the key over HTTPS, T3 Connect, or on that machine.",
-        ),
-      });
-      return;
+  const save = async (apiKey: string | null) => {
+    if (saving || apiKey === "") return;
+    setDraft("");
+    if (apiKey !== null) {
+      // The route may have changed since the form rendered.
+      const route = appAtomRegistry.get(
+        environmentSession.preparedConnectionValueAtom(environment.environmentId),
+      );
+      if (!boatKeyRouteIsPrivate(Option.getOrNull(route)?.socketUrl ?? null)) {
+        toastManager.add({
+          type: "error",
+          title: gt(
+            "This connection is plain HTTP over the network. Enter the key over HTTPS, T3 Connect, or on that machine.",
+          ),
+        });
+        return;
+      }
     }
     setSaving(true);
     const result = await setKey({
       environmentId: environment.environmentId,
-      input: { apiKey, environment: boatEnvironment.trim() === "" ? null : boatEnvironment.trim() },
+      input: apiKey === null ? { apiKey } : { apiKey, environment: boatEnvironment.trim() || null },
     });
     setSaving(false);
-    // The key never stays in component state once sent.
-    setDraft("");
     if (result._tag === "Failure") {
       if (!isAtomCommandInterrupted(result)) {
         toastManager.add({
           type: "error",
-          title: gt("Could not save the Boat key"),
+          title:
+            apiKey === null
+              ? gt("Could not remove the Boat key")
+              : gt("Could not save the Boat key"),
           description: String(squashAtomCommandFailure(result)),
         });
       }
@@ -336,7 +340,14 @@ function BoatKeyRow({
       toastManager.add({ type: "error", title: gt("Boat did not accept that key") });
       return;
     }
+    if (apiKey === null) setBoatEnvironment("");
     setEditing(false);
+  };
+  const remove = async () => {
+    const message = gt("Remove the stored Boat key?");
+    const confirmed =
+      (await requestConfirmDialog(message, { variant: "destructive" })) ?? window.confirm(message);
+    if (confirmed) await save(null);
   };
   const status =
     account.status === "configured"
@@ -347,6 +358,9 @@ function BoatKeyRow({
             environment: environment.label,
           });
   const showForm = canManage && (editing || account.status !== "configured");
+  const canReplace = canManage && !showForm;
+  const canRemove =
+    canManage && !editing && account.status !== "missing" && snapshot.servers.length === 0;
   const prepared = useAtomValue(
     environmentSession.preparedConnectionValueAtom(environment.environmentId),
   );
@@ -356,10 +370,32 @@ function BoatKeyRow({
       title={gt("Boat account on {environment}", { environment: environment.label })}
       description={status}
       control={
-        canManage && !showForm ? (
-          <Button size="xs" variant="ghost-muted" onClick={() => setEditing(true)}>
-            {gt("Replace key")}
-          </Button>
+        canReplace || canRemove ? (
+          <div className="flex flex-wrap justify-end gap-1">
+            {canReplace ? (
+              <Button
+                size="xs"
+                variant="ghost-muted"
+                disabled={saving}
+                onClick={() => {
+                  setBoatEnvironment(account.environment ?? "");
+                  setEditing(true);
+                }}
+              >
+                {gt("Replace key")}
+              </Button>
+            ) : null}
+            {canRemove ? (
+              <Button
+                size="xs"
+                variant="ghost-muted"
+                disabled={saving}
+                onClick={() => void remove()}
+              >
+                {gt("Remove key")}
+              </Button>
+            ) : null}
+          </div>
         ) : null
       }
     >
@@ -374,7 +410,7 @@ function BoatKeyRow({
           className="mt-2 flex flex-wrap items-center gap-2"
           onSubmit={(event) => {
             event.preventDefault();
-            if (draft.trim() !== "") void save(draft.trim());
+            void save(draft.trim());
           }}
         >
           <Input
@@ -404,7 +440,15 @@ function BoatKeyRow({
             {gt("Save key")}
           </Button>
           {editing ? (
-            <Button size="xs" variant="ghost-muted" onClick={() => setEditing(false)}>
+            <Button
+              size="xs"
+              variant="ghost-muted"
+              disabled={saving}
+              onClick={() => {
+                setDraft("");
+                setEditing(false);
+              }}
+            >
               {gt("Cancel")}
             </Button>
           ) : null}

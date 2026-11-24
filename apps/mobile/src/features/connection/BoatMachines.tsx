@@ -250,6 +250,7 @@ function BoatKeyRow(props: {
   const gt = useGT();
   const [draft, setDraft] = useState("");
   const [boatEnvironment, setBoatEnvironment] = useState(props.snapshot.account.environment ?? "");
+  const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const setKey = useAtomCommand(serverEnvironment.setBoatApiKey, {
     label: "boat set api key",
@@ -260,38 +261,48 @@ function BoatKeyRow(props: {
     environmentSession.preparedConnectionValueAtom(props.environmentId),
   );
   const privateRoute = boatKeyRouteIsPrivate(Option.getOrNull(prepared)?.socketUrl ?? null);
-  const save = async (apiKey: string) => {
-    if (apiKey.trim() === "") return;
-    // Checked again at send time: the route may have changed since the field rendered.
-    const route = appAtomRegistry.get(
-      environmentSession.preparedConnectionValueAtom(props.environmentId),
-    );
-    if (!boatKeyRouteIsPrivate(Option.getOrNull(route)?.socketUrl ?? null)) {
-      setDraft("");
-      Dialog.alert(
-        gt(
-          "This connection is plain HTTP over the network. Enter the key over HTTPS, T3 Connect, or on that machine.",
-        ),
+  const showForm = props.canManage && (editing || account.status !== "configured");
+  const canReplace = props.canManage && !showForm;
+  const canRemove =
+    props.canManage &&
+    !editing &&
+    account.status !== "missing" &&
+    props.snapshot.servers.length === 0;
+  const save = async (apiKey: string | null) => {
+    if (saving || apiKey === "") return;
+    setDraft("");
+    if (apiKey !== null) {
+      // The route may have changed since the field rendered.
+      const route = appAtomRegistry.get(
+        environmentSession.preparedConnectionValueAtom(props.environmentId),
       );
-      return;
+      if (!boatKeyRouteIsPrivate(Option.getOrNull(route)?.socketUrl ?? null)) {
+        Dialog.alert(
+          gt(
+            "This connection is plain HTTP over the network. Enter the key over HTTPS, T3 Connect, or on that machine.",
+          ),
+        );
+        return;
+      }
     }
     setSaving(true);
     const result = await setKey({
       environmentId: props.environmentId,
-      input: {
-        apiKey: apiKey.trim(),
-        environment: boatEnvironment.trim() === "" ? null : boatEnvironment.trim(),
-      },
+      input: apiKey === null ? { apiKey } : { apiKey, environment: boatEnvironment.trim() || null },
     });
     setSaving(false);
-    // The key is sent once and never kept in screen state.
-    setDraft("");
     if (result._tag === "Failure") {
       if (!isAtomCommandInterrupted(result)) {
-        Dialog.alert(gt("Could not save the Boat key"), String(squashAtomCommandFailure(result)));
+        Dialog.alert(
+          apiKey === null ? gt("Could not remove the Boat key") : gt("Could not save the Boat key"),
+          String(squashAtomCommandFailure(result)),
+        );
       }
     } else if (result.value.status === "invalid") {
       Dialog.alert(gt("Boat did not accept that key"));
+    } else {
+      if (apiKey === null) setBoatEnvironment("");
+      setEditing(false);
     }
   };
   return (
@@ -306,13 +317,13 @@ function BoatKeyRow(props: {
             ? gt("Boat rejected the saved key. Enter a new one.")
             : gt("Add a scoped Boat API key to create machines from this server.")}
       </Text>
-      {props.canManage && account.status !== "configured" && !privateRoute ? (
+      {showForm && !privateRoute ? (
         <Text className="text-sm text-foreground-muted">
           {gt(
             "This connection is plain HTTP over the network. Enter the key over HTTPS, T3 Connect, or on that machine.",
           )}
         </Text>
-      ) : props.canManage && account.status !== "configured" ? (
+      ) : showForm ? (
         <>
           <AppTextInput
             accessibilityLabel={gt("Boat environment (optional)")}
@@ -330,9 +341,48 @@ function BoatKeyRow(props: {
             value={draft}
             editable={!saving}
             onChangeText={setDraft}
-            onSubmitEditing={(value) => void save(value)}
+            onSubmitEditing={(value) => void save(value.trim())}
           />
         </>
+      ) : null}
+      {(props.canManage && editing) || canReplace || canRemove ? (
+        <View className="flex-row flex-wrap gap-2">
+          {editing ? (
+            <Button
+              label={gt("Cancel")}
+              tone="text"
+              disabled={saving}
+              onPress={() => {
+                setDraft("");
+                setEditing(false);
+              }}
+            />
+          ) : canReplace ? (
+            <Button
+              label={gt("Replace key")}
+              disabled={saving}
+              onPress={() => {
+                setBoatEnvironment(account.environment ?? "");
+                setEditing(true);
+              }}
+            />
+          ) : null}
+          {canRemove ? (
+            <Button
+              label={gt("Remove key")}
+              tone="text"
+              disabled={saving}
+              onPress={() =>
+                Dialog.confirm({
+                  title: gt("Remove the stored Boat key?"),
+                  confirmText: gt("Remove key"),
+                  destructive: true,
+                  onConfirm: () => void save(null),
+                })
+              }
+            />
+          ) : null}
+        </View>
       ) : null}
     </View>
   );
