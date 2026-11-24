@@ -21,6 +21,8 @@ export class BotTurnContext extends Context.Service<
     readonly forThread: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<BotTurnContextEntry>>;
     /** Projects a bot-owned thread may start coding work in; null for an ordinary thread. */
     readonly workTargets: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<string> | null>;
+    /** Whether the thread is a bot's private chat, not a room or peer seat. */
+    readonly isDm: (threadId: ThreadId) => Effect.Effect<boolean>;
   }
 >()("t3/bots/BotTurnContext") {}
 
@@ -199,7 +201,14 @@ export const layer = Layer.effect(
       },
       (effect) => effect.pipe(Effect.orElseSucceed(() => null)),
     );
-    return BotTurnContext.of({ forThread, workTargets });
+    const isDm = Effect.fn("BotTurnContext.isDm")(
+      function* (threadId: ThreadId) {
+        const rows = yield* sql`SELECT 1 FROM bots WHERE dm_thread_id = ${threadId}`;
+        return rows.length > 0;
+      },
+      (effect) => effect.pipe(Effect.orElseSucceed(() => false)),
+    );
+    return BotTurnContext.of({ forThread, workTargets, isDm });
   }),
 );
 

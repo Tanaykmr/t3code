@@ -8,9 +8,11 @@ import {
   type OrchestrationV2Command,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 import { topOfPinnedRunOrderKey } from "@t3tools/shared/pinOrderKey";
 
+import * as BotTurnContext from "../../../bots/BotTurnContext.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
@@ -146,9 +148,21 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       const { caller } = yield* readCaller();
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
-      const { matches } = yield* threadSearch
+      const { matches: found } = yield* threadSearch
         .searchThreads({ ...input, projectId: input.projectId ?? caller?.projectId })
         .pipe(Effect.mapError(unavailable));
+      // A bot's chat is private from other bots, snippets included.
+      const botContext = yield* BotTurnContext.optional;
+      const matches =
+        scope.bot === true && Option.isSome(botContext)
+          ? yield* Effect.filter(found, (match) =>
+              match.threadId === scope.thread?.threadId
+                ? Effect.succeed(true)
+                : botContext.value
+                    .workTargets(match.threadId)
+                    .pipe(Effect.map((targets) => targets === null)),
+            )
+          : found;
       return {
         currentThreadId: scope.thread?.threadId ?? null,
         matches: matches.map((match) => ({

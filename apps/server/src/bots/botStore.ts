@@ -206,8 +206,8 @@ export interface TurnOrigin {
 
 /**
  * The input that started the thread's executing turn, following restart and continuation
- * runs back to the first: a server-written continuation keeps the provenance of what it
- * continues.
+ * runs and delegated-completion wakes back to the first: a server-written continuation keeps
+ * the provenance of what it continues.
  */
 export const executingTurnOrigin = Effect.fnUntraced(function* (
   sql: SqlClient.SqlClient,
@@ -227,7 +227,11 @@ export const executingTurnOrigin = Effect.fnUntraced(function* (
         json_extract(chain.payload_json, '$.restartContinuationOfRunId'),
         json_extract(chain.payload_json, '$.usageLimitContinuationOfRunId'),
         json_extract(chain.payload_json, '$.manualContinuationOfRunId'),
-        json_extract(chain.payload_json, '$.delegatedCompletion.parentRunId')
+        (
+          SELECT json_extract(input.payload_json, '$.delegatedCompletion.parentRunId')
+          FROM orchestration_v2_projection_messages AS input
+          WHERE input.message_id = json_extract(chain.payload_json, '$.userMessageId')
+        )
       )
       WHERE chain.depth < 20
     )

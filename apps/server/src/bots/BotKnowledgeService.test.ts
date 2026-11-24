@@ -144,6 +144,21 @@ layer("BotKnowledgeService", (it) => {
         .rememberFromThread({ threadId: dm, text: "x" })
         .pipe(Effect.flip);
       assert.match(fromRestart.message, /Only a message the user wrote/);
+      // A delegated child's completion wake keeps the routine turn's provenance.
+      yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'r4'`;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_runs VALUES
+          ('r5', ${dm}, 5, 'running', '{"userMessageId":"completion-msg"}')
+      `;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_messages VALUES
+          ('completion-msg', ${dm}, 'r5', 'user',
+            '{"text":"child done","delegatedCompletion":{"parentRunId":"r3"}}')
+      `;
+      const fromCompletion = yield* knowledge
+        .rememberFromThread({ threadId: dm, text: "x" })
+        .pipe(Effect.flip);
+      assert.match(fromCompletion.message, /not a routine/);
       const fromSeat = yield* knowledge
         .rememberFromThread({ threadId: seat, text: "x" })
         .pipe(Effect.flip);

@@ -843,17 +843,13 @@ const make = Effect.gen(function* () {
           return { threadId: ThreadId.make(asked.origin_thread_id), room: null };
         }
       }
-      const seat = yield* ensurePeerSeat(target);
-      yield* syncSeatModes(seat, target);
-      return { threadId: seat, room: null };
+      return { threadId: yield* ensurePeerSeat(target), room: null };
     }
     if (!message.channel_key.startsWith("room:")) {
       return { threadId: ThreadId.make(target.dm_thread_id ?? ""), room: null };
     }
     const room = yield* readRoom(message.channel_key.slice("room:".length));
-    const seat = yield* ensureRoomThread(room, target);
-    yield* syncSeatModes(seat, target);
-    return { threadId: seat, room };
+    return { threadId: yield* ensureRoomThread(room, target), room };
   });
 
   /**
@@ -917,11 +913,21 @@ const make = Effect.gen(function* () {
             }
           }
         }
-        const shell = yield* threads.getThreadShell(destination);
+        let shell = yield* threads.getThreadShell(destination);
         if (shell === null) return yield* block("Chat deleted");
         if (!committed) {
           // A busy bot keeps the delivery here, where membership and archive still apply.
           if (ACTIVE_STATUSES.has(shell.status)) return "deferred" as const;
+          if (destination !== target.dm_thread_id) {
+            // A seat refuses a mode change while background work runs; try again later.
+            const synced = yield* syncSeatModes(destination, target).pipe(
+              Effect.as(true),
+              Effect.orElseSucceed(() => false),
+            );
+            if (!synced) return "deferred" as const;
+            shell = yield* threads.getThreadShell(destination);
+            if (shell === null) return yield* block("Chat deleted");
+          }
           const senderMode = delivery.sender_runtime_mode;
           if (
             senderMode !== null &&

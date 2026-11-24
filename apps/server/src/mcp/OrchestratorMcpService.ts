@@ -2417,10 +2417,15 @@ const make = Effect.gen(function* () {
         input.bindToCurrentThread ??
         (parent !== undefined && parent.thread.projectId === projectId);
       // A bot's routine runs in its own chat, where its limits and persona apply.
-      if (scope.bot === true && !bindToCurrentThread) {
+      if (
+        scope.bot === true &&
+        (!bindToCurrentThread ||
+          parent === undefined ||
+          !(Option.isSome(botTurnContext) && (yield* botTurnContext.value.isDm(parent.thread.id))))
+      ) {
         return yield* failure(
           "invalid_request",
-          "A bot's routine runs in its own chat. Set bindToCurrentThread to true.",
+          "A bot's routine runs in its own chat: schedule it from there with bindToCurrentThread true.",
         );
       }
       if (bindToCurrentThread && (parent === undefined || parent.thread.projectId !== projectId)) {
@@ -2592,6 +2597,12 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
+        if (scope.bot === true && existing.threadId !== parent?.thread.id) {
+          return yield* failure(
+            "invalid_request",
+            "A bot deletes only the routines bound to its own chat.",
+          );
+        }
         yield* scheduledTasks
           .delete({ id: existing.id })
           .pipe(
@@ -3654,6 +3665,20 @@ const make = Effect.gen(function* () {
           ...(input.itemId === undefined ? {} : { itemId: input.itemId }),
         })
         .pipe(Effect.mapError(threadManagementFailure));
+      // A fork shows its source's messages; another bot's chat stays private through it too.
+      if (scope.bot === true && Option.isSome(botTurnContext)) {
+        for (const sourceThreadId of new Set(timeline.items.map((row) => row.sourceThreadId))) {
+          if (
+            sourceThreadId !== scope.thread?.threadId &&
+            (yield* botTurnContext.value.workTargets(sourceThreadId)) !== null
+          ) {
+            return yield* failure(
+              "invalid_request",
+              "That thread belongs to a bot and is private.",
+            );
+          }
+        }
+      }
       const messageIdsByThread = new Map<ThreadId, Array<MessageId>>();
       for (const row of timeline.items) {
         if (row.item.type !== "user_message" && row.item.type !== "assistant_message") continue;
