@@ -4,6 +4,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Redacted from "effect/Redacted";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -11,7 +12,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
-import { BoatApiError } from "./BoatApi.ts";
+import { BoatApi, BoatApiError, type BoatKey } from "./BoatApi.ts";
 import {
   FAKE_BOAT_KEY,
   FAKE_OTHER_WALLET_KEY,
@@ -24,13 +25,19 @@ let requestCounter = 0;
 const requestId = () =>
   BoatRequestId.make(`00000000-0000-4000-8000-${String(++requestCounter).padStart(12, "0")}`);
 
-function setup(options: FakeBoatOptions = {}) {
+function setup(
+  options: FakeBoatOptions = {},
+  decorateApi?: (api: BoatApi["Service"]) => BoatApi["Service"],
+) {
   const fake = makeFakeBoat(options);
+  const fakeLayer = decorateApi
+    ? Layer.effect(BoatApi, Effect.map(BoatApi, decorateApi)).pipe(Layer.provideMerge(fake.layer))
+    : fake.layer;
   const secrets = new Map<string, Uint8Array>();
   const layer = Layer.effect(BoatService.BoatService, BoatService.make).pipe(
     Layer.provideMerge(
       Layer.mergeAll(
-        fake.layer,
+        fakeLayer,
         SqlitePersistence.layerMemory,
         Layer.mock(ServerSecretStore.ServerSecretStore)({
           get: (name) => Effect.sync(() => Option.fromNullishOr(secrets.get(name))),
@@ -645,6 +652,53 @@ describe("BoatService", () => {
       yield* settle;
       expect(yield* boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY })).toEqual({
         status: "configured",
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("retries an in-flight stop with a same-wallet replacement key", () => {
+    const stopStarted = Deferred.makeUnsafe<void>();
+    const revokeOriginal = Deferred.makeUnsafe<void>();
+    const replacement = `${FAKE_BOAT_KEY}_replacement`;
+    const sameWallet = (key: BoatKey) =>
+      Redacted.value(key) === replacement ? Redacted.make(FAKE_BOAT_KEY) : key;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      account: (key) => api.account(sameWallet(key)),
+      get: (key, sandboxId) => api.get(sameWallet(key), sandboxId),
+      usage: (key, sandboxId) => api.usage(sameWallet(key), sandboxId),
+      stop: Effect.fnUntraced(function* (key, sandboxId) {
+        if (Redacted.value(key) === FAKE_BOAT_KEY) {
+          yield* Deferred.succeed(stopStarted, undefined);
+          yield* Deferred.await(revokeOriginal);
+          return yield* new BoatApiError({ category: "unauthorized" });
+        }
+        return yield* api.stop(sameWallet(key), sandboxId);
+      }),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* Deferred.await(stopStarted);
+      expect(yield* boat.setApiKey({ apiKey: replacement })).toEqual({ status: "configured" });
+      yield* Deferred.succeed(revokeOriginal, undefined);
+      yield* settle;
+
+      expect({
+        account: (yield* snapshot).account.status,
+        machine: yield* server(managedId),
+        providerState: [...fake.sandboxes.values()][0]?.sandbox.state,
+      }).toMatchObject({
+        account: "configured",
+        machine: {
+          lifecycle: "stopped",
+          operation: { kind: "stop", stage: "completed", failure: null },
+        },
+        providerState: "archived",
       });
     }).pipe(Effect.provide(layer));
   });

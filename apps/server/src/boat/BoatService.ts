@@ -315,6 +315,34 @@ export const make = Effect.gen(function* () {
   const locks = new Map<string, Semaphore.Semaphore>();
   // Key changes and create acceptance take turns, so no create binds to a key being replaced.
   const accountLock = Semaphore.makeUnsafe(1);
+  const credentialLock = Semaphore.makeUnsafe(1);
+  let keyGeneration = 0;
+  const readCredentials = credentialLock.withPermits(1)(
+    Effect.gen(function* () {
+      const [key, account] = yield* Effect.all([readKey, readAccount]);
+      return { key, account, generation: keyGeneration };
+    }),
+  );
+  const storeCredentials = (
+    key: string | null,
+    updateAccount: Effect.Effect<unknown, SqlError.SqlError>,
+  ) =>
+    credentialLock.withPermits(1)(
+      persistence(
+        (key === null
+          ? secrets.remove(API_KEY_SECRET)
+          : secrets.set(API_KEY_SECRET, new TextEncoder().encode(key))
+        ).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              keyGeneration += 1;
+            }),
+          ),
+          Effect.andThen(updateAccount),
+          Effect.uninterruptible,
+        ),
+      ),
+    );
   const lockFor = (managedId: string) => {
     let lock = locks.get(managedId);
     if (lock === undefined) {
@@ -811,9 +839,6 @@ export const make = Effect.gen(function* () {
     yield* Effect.logWarning("Boat operation failed.").pipe(
       Effect.annotateLogs({ "boat.operation": op.kind, "boat.failure": failure }),
     );
-    if (failure === "unauthorized") {
-      yield* sql`UPDATE boat_account SET status = 'invalid' WHERE id = 1`;
-    }
     const server = yield* readServer(op.managed_id);
     if (server !== null) {
       // Stop and Delete stay available from Failed while the machine is known.
@@ -867,7 +892,7 @@ export const make = Effect.gen(function* () {
     function* (op: OperationRow) {
       const server = yield* readServer(op.managed_id);
       if (server === null) return yield* new OperationFailed({ code: "not-found" });
-      const [key, account] = yield* Effect.all([readKey, readAccount]);
+      const { key, account, generation } = yield* readCredentials;
       // A record is managed only with the account that created it.
       if (Option.isNone(key) || account === null || account.account_id !== server.account_id) {
         return yield* new OperationFailed({ code: "unauthorized" });
@@ -880,8 +905,21 @@ export const make = Effect.gen(function* () {
             : op.kind === "resume"
               ? runResume
               : runDelete;
-      const done = yield* run(key.value, op, server);
-      if (done) yield* setStage(op.request_id, "completed");
+      const done = yield* run(key.value, op, server).pipe(
+        Effect.catchIf(
+          (error) => error._tag === "BoatApiError" && error.category === "unauthorized",
+          (error) =>
+            credentialLock.withPermits(1)(
+              Effect.gen(function* () {
+                // Reload the operation and its provider marker before retrying with the new key.
+                if (generation !== keyGeneration) return "retry" as const;
+                yield* sql`UPDATE boat_account SET status = 'invalid' WHERE id = 1`;
+                return yield* error;
+              }),
+            ),
+        ),
+      );
+      if (done === true) yield* setStage(op.request_id, "completed");
       return done;
     },
     (effect, op) =>
@@ -917,7 +955,7 @@ export const make = Effect.gen(function* () {
           for (;;) {
             const op = yield* nextPending(managedId);
             if (op === null) return;
-            if (!(yield* runOperation(op))) return;
+            if ((yield* runOperation(op)) === false) return;
           }
         }),
       )
@@ -1063,8 +1101,7 @@ export const make = Effect.gen(function* () {
           "Delete this server's Boat machines before removing the key that manages them.",
         );
       }
-      yield* persistence(secrets.remove(API_KEY_SECRET));
-      yield* persistence(sql`DELETE FROM boat_account WHERE id = 1`);
+      yield* storeCredentials(null, sql`DELETE FROM boat_account WHERE id = 1`);
       yield* publish;
       return { status: "missing" as const };
     }
@@ -1095,9 +1132,10 @@ export const make = Effect.gen(function* () {
     }
     const environment =
       input.environment === undefined ? (current?.boat_environment ?? null) : input.environment;
-    yield* persistence(secrets.set(API_KEY_SECRET, new TextEncoder().encode(input.apiKey)));
     // 0 only when Boat says it keeps stopped disks; an unreported policy blocks create like 1.
-    yield* persistence(sql`
+    yield* storeCredentials(
+      input.apiKey,
+      sql`
       INSERT INTO boat_account (id, account_id, label, status, zero_data_retention, boat_environment)
       VALUES (1, ${account.value.accountId}, ${account.value.label}, 'configured', ${
         account.value.zeroDataRetention === false ? 0 : 1
@@ -1105,7 +1143,8 @@ export const make = Effect.gen(function* () {
       ON CONFLICT (id) DO UPDATE SET account_id = excluded.account_id, label = excluded.label,
         status = excluded.status, zero_data_retention = excluded.zero_data_retention,
         boat_environment = excluded.boat_environment
-    `);
+    `,
+    );
     yield* publish;
     return { status: "configured" as const };
   });
