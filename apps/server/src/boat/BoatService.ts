@@ -772,11 +772,26 @@ export const make = Effect.gen(function* () {
           yield* retryTransient(api.account(key));
         }
       }
+      const target = server.sandbox_id;
       if (operationId !== null) {
         let completed = false;
         for (let attempt = 0; !completed && attempt < POLL_ATTEMPTS; attempt++) {
           if (attempt > 0) yield* Effect.sleep(POLL_INTERVAL);
-          completed = yield* retryTransient(api.deletionCompleted(key, operationId));
+          completed = yield* retryTransient(api.deletionCompleted(key, operationId)).pipe(
+            // Boat refuses deletion status to organization keys (seen live); there the sandbox
+            // answering 404 is the best evidence, and purge completion stays unconfirmed.
+            Effect.catchIf(
+              (error) => error.code === "api_key_org_forbidden",
+              () =>
+                api.get(key, target).pipe(
+                  Effect.as(false),
+                  Effect.catchIf(
+                    (error) => error.category === "not-found",
+                    () => Effect.succeed(true),
+                  ),
+                ),
+            ),
+          );
         }
         if (!completed) return false;
       }

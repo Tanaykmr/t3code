@@ -590,6 +590,27 @@ describe("BoatService", () => {
     },
   );
 
+  it.effect("completes a delete for an organization key that cannot read deletion status", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      // Boat answers organization keys this way on GET /deletion-operations (seen live).
+      fake.failNext(
+        "deletion",
+        new BoatApiError({ category: "unauthorized", code: "api_key_org_forbidden" }),
+      );
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toBeUndefined();
+      expect((yield* snapshot).account.status).toBe("configured");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("keeps the key while it still manages machines", () => {
     const { layer } = setup();
     return Effect.gen(function* () {
