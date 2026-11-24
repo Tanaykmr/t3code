@@ -98,13 +98,11 @@ it.effect("a bot deletes its routine only on the user's own request", () =>
     const bound = {
       ...schedules,
       list: () =>
-        schedules
-          .list()
-          .pipe(
-            Effect.map(({ tasks }) => ({
-              tasks: tasks.map((task) => ({ ...task, threadId: dm })),
-            })),
-          ),
+        schedules.list().pipe(
+          Effect.map(({ tasks }) => ({
+            tasks: tasks.map((task) => ({ ...task, threadId: dm })),
+          })),
+        ),
     };
     const botScope: McpInvocationScope = {
       ...client,
