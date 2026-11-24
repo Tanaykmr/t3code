@@ -212,6 +212,8 @@ const make = Effect.gen(function* () {
   });
 
   const create: BotService["Service"]["create"] = Effect.fn("BotService.create")(function* (input) {
+    // Peer channels join two bot ids with ":", so an id must not contain one.
+    if (input.botId.includes(":")) return yield* botError("That bot id is not valid.", input.botId);
     const existing = yield* readRow(input.botId);
     if (existing === undefined) {
       yield* assertBotProvider(input.modelSelection.instanceId);

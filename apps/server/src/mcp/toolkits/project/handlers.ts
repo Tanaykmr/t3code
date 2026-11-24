@@ -217,6 +217,12 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
     (input, { runtimeMode, interactionMode, linkOrigin }) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.McpInvocationContext;
+        if (scope.bot === true)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "A bot starts coding work with delegate_task, which keeps it to the projects the user allowed.",
+          });
         const context = yield* readCaller();
         const { caller } = context;
         // A retry with the same key replays the first launch: the ids derive
