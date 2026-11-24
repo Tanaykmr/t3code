@@ -815,16 +815,20 @@ function hasCompatibleOrchestrationProtocol(url: URL): boolean {
   );
 }
 
-function readSettingsClient(url: URL, request: HttpServerRequest.HttpServerRequest) {
+export function readSettingsClient(url: URL, request: HttpServerRequest.HttpServerRequest) {
   const capabilities = url.searchParams.get(CLIENT_CAPABILITIES_QUERY_PARAM)?.split(",") ?? [];
+  const socket = NodeHttpServerRequest.toIncomingMessage(request).socket;
+  const peerIp = socket?.remoteAddress?.replace(/^::ffff:/, "");
   const clientIp = deriveAuthClientMetadata({ request }).ipAddress;
   return {
     secretReferences: capabilities.includes(SETTINGS_SECRET_REFERENCES_CAPABILITY),
-    // TLS (directly or at a local proxy that sets X-Forwarded-Proto) or a peer on this machine.
+    // T3 Connect and local HTTPS proxies terminate TLS and forward to loopback.
     privateTransport:
-      url.protocol === "https:" ||
-      url.protocol === "wss:" ||
-      (clientIp !== undefined && isLoopbackHost(clientIp)),
+      (socket !== undefined && "encrypted" in socket && socket.encrypted === true) ||
+      (peerIp !== undefined &&
+        isLoopbackHost(peerIp) &&
+        (request.headers["x-forwarded-proto"] === "https" ||
+          (clientIp !== undefined && isLoopbackHost(clientIp)))),
   };
 }
 

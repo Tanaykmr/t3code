@@ -41,6 +41,20 @@ export type BoatPendingRequest =
 
 type SavedCreate = Extract<BoatPendingRequest, { kind: "create" }> & { readonly savedAt: number };
 
+export function selectBoatCreateController<
+  Controller extends {
+    readonly environment: { readonly environmentId: EnvironmentId };
+  },
+>(
+  eligible: ReadonlyArray<Controller>,
+  selectedId: EnvironmentId | null,
+  pending: { readonly environmentId: EnvironmentId } | null,
+): Controller | undefined {
+  const targetId = pending?.environmentId ?? selectedId;
+  const selected = eligible.find((entry) => entry.environment.environmentId === targetId);
+  return pending === null ? (selected ?? eligible[0]) : selected;
+}
+
 let queue: Promise<unknown> = Promise.resolve();
 /** One writer at a time, so two requests never overwrite each other's entry. */
 function serialized<A>(task: () => Promise<A>): Promise<A> {

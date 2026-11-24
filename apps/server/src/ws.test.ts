@@ -59,12 +59,13 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { Headers, HttpRouter, HttpServer } from "effect/http";
+import { Headers, HttpRouter, HttpServer, HttpServerRequest } from "effect/http";
 import * as Context from "effect/Context";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as ProviderInstallationGate from "./provider/ProviderInstallationGate.ts";
 import * as Ws from "./ws.ts";
+import { requestUrl } from "./requestUrl.ts";
 import { RpcGroup, RpcMessage, RpcServer } from "effect/rpc";
 import * as RpcTest from "effect/rpc/RpcTest";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -937,6 +938,26 @@ const layerConfigSources = Layer.mergeAll(
   ),
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
+
+it.each([
+  { name: "plaintext LAN", peer: "192.168.1.20", scheme: "http", expected: false },
+  { name: "untrusted forwarded HTTPS", peer: "192.168.1.20", scheme: "https", expected: false },
+  { name: "loopback HTTPS proxy", peer: "::ffff:127.0.0.1", scheme: "https", expected: true },
+  { name: "loopback HTTP proxy", peer: "::1", scheme: "http", expected: false },
+  { name: "direct loopback", peer: "127.0.0.1", expected: true },
+  { name: "direct TLS", peer: "192.168.1.20", encrypted: true, expected: true },
+])("classifies $name for Boat key entry", ({ peer, scheme, encrypted, expected }) => {
+  const source = Object.assign(
+    new Request("http://example.test/ws", {
+      headers: scheme ? { "x-forwarded-proto": scheme, "x-forwarded-for": "192.0.2.1" } : {},
+    }),
+    { socket: { remoteAddress: peer, encrypted } },
+  );
+  const request = HttpServerRequest.fromWeb(source);
+  const url = requestUrl(request);
+  if (url._tag === "None") throw new Error("Expected a valid request URL");
+  assert.equal(Ws.readSettingsClient(url.value, request).privateTransport, expected);
+});
 
 it.live.each([
   { subject: "desktop-bootstrap", extensions: "", framed: false },

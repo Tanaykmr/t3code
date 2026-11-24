@@ -37,7 +37,11 @@ vi.mock("@t3tools/client-runtime/state/runtime", async (importOriginal) => ({
   runAtomCommand: mocks.run,
 }));
 
-import { resendPendingBoatRequests, sendBoatRequest } from "./boatPendingRequests";
+import {
+  resendPendingBoatRequests,
+  selectBoatCreateController,
+  sendBoatRequest,
+} from "./boatPendingRequests";
 
 const CONTROLLER = EnvironmentId.make("env-controller");
 const create = {
@@ -67,13 +71,18 @@ describe("Boat pending requests", () => {
   });
 
   it("keeps a create whose reply was lost and resends it once its controller connects", async () => {
+    const otherId = EnvironmentId.make("env-other-controller");
+    const original = { environment: { environmentId: CONTROLLER } };
+    const other = { environment: { environmentId: otherId } };
     mocks.run.mockResolvedValueOnce(lost());
     expect(await sendBoatRequest(create)).toMatchObject({ ok: false, answered: false });
     expect(saved()).toEqual([expect.objectContaining(create)]);
 
-    await resendPendingBoatRequests(new Set());
+    expect(selectBoatCreateController([other], CONTROLLER, create)).toBeUndefined();
+    await resendPendingBoatRequests(new Set([otherId]));
     expect(mocks.run).toHaveBeenCalledTimes(1);
 
+    expect(selectBoatCreateController([other, original], null, create)).toBe(original);
     mocks.run.mockResolvedValueOnce(AsyncResult.success(receipt));
     await resendPendingBoatRequests(new Set([CONTROLLER]));
     expect(mocks.run).toHaveBeenLastCalledWith({}, "create", create, { reportFailure: false });

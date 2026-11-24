@@ -38,7 +38,7 @@ import { serverEnvironment } from "../../state/server";
 import { environmentSession, useEnvironmentsWithScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "../settings/components/SettingsSection";
-import { sendBoatRequest } from "./boatPendingRequests";
+import { selectBoatCreateController, sendBoatRequest } from "./boatPendingRequests";
 
 // Keyed by a JSON array of the environments that advertise Boat, read as one list.
 const boatSnapshotsAcross = Atom.family((environmentIdsKey: string) => {
@@ -400,14 +400,20 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
     readonly requestId: BoatRequestId;
   } | null>(null);
   const [creating, setCreating] = useState(false);
-  const controller =
-    eligible.find((entry) => entry.environment.environmentId === controllerId) ?? eligible[0];
+  const controller = selectBoatCreateController(eligible, controllerId, pending);
+  if (controller === undefined && pending !== null) {
+    return (
+      <Text className="px-4 text-sm text-foreground-muted">
+        {gt("Reconnect to the environment and try again.")}
+      </Text>
+    );
+  }
   if (controller === undefined) return null;
   const rate = controller.snapshot.rates.find((entry) => entry.size === size);
   const locked = creating || pending !== null;
   const submit = async () => {
     const targetId = controller.environment.environmentId;
-    const requestId = pending?.environmentId === targetId ? pending.requestId : newRequestId();
+    const requestId = pending?.requestId ?? newRequestId();
     setPending({ environmentId: targetId, requestId });
     setCreating(true);
     const outcome = await sendBoatRequest({
