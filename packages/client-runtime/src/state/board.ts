@@ -106,25 +106,32 @@ export function reduceBoardEvent(
   }
 }
 
-/** Folds every event in order. A gap means this subscriber fell behind, so it reopens. */
+/**
+ * Folds every event in order. A gap means this subscriber fell behind, so it reopens; only
+ * reopens that never reach a fresh snapshot count toward the limit.
+ */
 export function foldBoardStream<E, R>(
   stream: Stream.Stream<BoardStreamEvent, E, R>,
-  reopened = 0,
 ): Stream.Stream<BoardView, E, R> {
-  return stream.pipe(
-    Stream.mapAccumEffect(
-      (): BoardView | null => null,
-      (view, event) => {
-        const next = reduceBoardEvent(view, event);
-        return isBoardStreamGapError(next)
-          ? Effect.fail(next)
-          : Effect.succeed([next, [next]] as const);
-      },
-    ),
-    Stream.catchIf(isBoardStreamGapError, (gap) =>
-      reopened < MAX_GAP_REOPENS ? foldBoardStream(stream, reopened + 1) : Stream.die(gap),
-    ),
-  );
+  return Stream.suspend(() => {
+    let failedReopens = 0;
+    const fold = (): Stream.Stream<BoardView, E, R> =>
+      stream.pipe(
+        Stream.mapAccumEffect(
+          (): BoardView | null => null,
+          (view, event) => {
+            const next = reduceBoardEvent(view, event);
+            if (isBoardStreamGapError(next)) return Effect.fail(next);
+            if (event.type === "snapshot") failedReopens = 0;
+            return Effect.succeed([next, [next]] as const);
+          },
+        ),
+        Stream.catchIf(isBoardStreamGapError, (gap) =>
+          failedReopens++ < MAX_GAP_REOPENS ? fold() : Stream.die(gap),
+        ),
+      );
+    return fold();
+  });
 }
 
 export function createBoardEnvironmentAtoms<R, E>(

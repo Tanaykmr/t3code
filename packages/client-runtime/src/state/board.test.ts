@@ -88,4 +88,32 @@ describe("foldBoardStream", () => {
       ]);
     }),
   );
+
+  it.effect("keeps recovering from gaps spread over a long session", () =>
+    Effect.gen(function* () {
+      let opened = 0;
+      const source = Stream.suspend(() => {
+        opened += 1;
+        return opened < 8
+          ? Stream.make<Array<BoardStreamEvent>>({ type: "snapshot", snapshot }, delta(5, []))
+          : Stream.make<Array<BoardStreamEvent>>({ type: "snapshot", snapshot });
+      });
+      const views = yield* Stream.runCollect(foldBoardStream(source));
+      expect(opened).toBe(8);
+      expect(views).toHaveLength(8);
+    }),
+  );
+
+  it.effect("gives up after repeated reopens that never reach a snapshot", () =>
+    Effect.gen(function* () {
+      let opened = 0;
+      const source = Stream.suspend(() => {
+        opened += 1;
+        return Stream.make<Array<BoardStreamEvent>>(delta(5, []));
+      });
+      const exit = yield* Effect.exit(Stream.runCollect(foldBoardStream(source)));
+      expect(exit._tag).toBe("Failure");
+      expect(opened).toBe(6);
+    }),
+  );
 });
