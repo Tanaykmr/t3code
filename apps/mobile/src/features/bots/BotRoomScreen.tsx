@@ -99,6 +99,8 @@ export function BotRoomScreen({ route }: StaticScreenProps<BotRoomParams>) {
   const archived = room?.archivedAt != null;
   const send = useAtomCommand(serverEnvironment.sendBotRoomMessage, { reportFailure: false });
   const update = useAtomCommand(serverEnvironment.updateBotRoom, { reportFailure: false });
+  const canPost = useAtomValue(serverEnvironment.sendBotRoomMessage.permissionAtom(environmentId));
+  const canEdit = useAtomValue(serverEnvironment.updateBotRoom.permissionAtom(environmentId));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [composerHeight, setComposerHeight] = useState(64);
@@ -142,7 +144,7 @@ export function BotRoomScreen({ route }: StaticScreenProps<BotRoomParams>) {
         }
         onBack={() => navigation.goBack()}
         actions={
-          room === null
+          room === null || !canEdit
             ? []
             : [
                 {
@@ -204,7 +206,7 @@ export function BotRoomScreen({ route }: StaticScreenProps<BotRoomParams>) {
           <RoomComposer
             bots={members}
             placeholder={gt("Message {room}", { room: room?.name ?? "" })}
-            disabled={room === null}
+            disabled={room === null || !canPost}
             onLayoutHeight={setComposerHeight}
             onSend={async (text, mentions, messageId) => {
               if (room === null) return false;
@@ -304,6 +306,8 @@ function RoomComposer(props: {
   const pick = (bot: Bot) => {
     if (query === null) return;
     const inserted = `@${bot.name} `;
+    // A pick changes who is addressed, so it is a new submission.
+    submissionId.current = null;
     setText(`${text.slice(0, query.start)}${inserted}${text.slice(caret)}`);
     setChips([...chips, { botId: bot.id, label: bot.name }]);
     const next = query.start + inserted.length;

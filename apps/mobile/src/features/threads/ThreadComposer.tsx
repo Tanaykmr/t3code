@@ -112,6 +112,7 @@ import {
   addBotMentionChip,
   botMentionsIn,
   clearBotMentionChips,
+  handoffIdFor,
   resolveBotHandoff,
 } from "../bots/bot-mention-chips";
 import { withoutBotDms } from "../bots/bot-list";
@@ -448,10 +449,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       ? NO_BOTS
       : environmentBots
           .filter(
-            (entry) =>
-              entry.environmentId === dmBot.environmentId &&
-              entry.bot.archivedAt === null &&
-              entry.bot.id !== dmBot.bot.id,
+            (entry) => entry.environmentId === dmBot.environmentId && entry.bot.archivedAt === null,
           )
           .map((entry) => entry.bot);
   // Bot DMs and room seats are reached through their bots, not as threads.
@@ -612,7 +610,9 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
           environmentId: dmBot.environmentId,
           input: {
             botId: dmBot.bot.id,
-            messageId: BotMessageId.make(uuidv4()),
+            messageId: BotMessageId.make(
+              handoffIdFor(composerDraftKey, draftMessage.trim(), handoff, uuidv4),
+            ),
             text: draftMessage.trim(),
             mentions: handoff,
           },

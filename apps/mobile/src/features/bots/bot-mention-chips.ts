@@ -19,6 +19,27 @@ export function botMentionsIn(draftKey: string, text: string): ReadonlyArray<Bot
 
 export function clearBotMentionChips(draftKey: string) {
   chipsByDraft.delete(draftKey);
+  handoffIdByDraft.delete(draftKey);
+}
+
+const handoffIdByDraft = new Map<string, { readonly id: string; readonly signature: string }>();
+
+/**
+ * One handoff id per submission: a retry of the same text and picks reuses it, so a
+ * resend after a lost reply wakes nobody twice; any edit starts a new one.
+ */
+export function handoffIdFor(
+  draftKey: string,
+  text: string,
+  mentions: ReadonlyArray<BotMention>,
+  newId: () => string,
+): string {
+  const signature = JSON.stringify([text, mentions.map((mention) => mention.botId)]);
+  const current = handoffIdByDraft.get(draftKey);
+  if (current?.signature === signature) return current.id;
+  const id = newId();
+  handoffIdByDraft.set(draftKey, { id, signature });
+  return id;
 }
 
 /**
