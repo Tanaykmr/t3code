@@ -139,6 +139,24 @@ describe("BoatHttpApi", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect.each([
+    { status: 401, code: "unauthenticated", category: "unauthorized" },
+    { status: 403, code: "api_key_sandbox_forbidden", category: "forbidden" },
+  ])("classifies HTTP $status as $category", ({ status, code, category }) => {
+    const { layer } = fakeBoat((url) =>
+      url.pathname.endsWith("/me")
+        ? json({ user: { id: "usr_1" } })
+        : url.pathname.endsWith("/sandboxes")
+          ? json({})
+          : json({ code }, status),
+    );
+    return Effect.gen(function* () {
+      const api = yield* BoatApi;
+      expect((yield* api.account(KEY)).accountId).toBe("usr_1");
+      expect(yield* Effect.flip(api.get(KEY, SANDBOX_ID))).toMatchObject({ category, code });
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("leaves a retention policy /me omits unknown", () => {
     const { layer } = fakeBoat(() => json({ ok: true, user: { id: "usr_1", login: "me" } }));
     return Effect.gen(function* () {

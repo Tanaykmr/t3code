@@ -6,7 +6,7 @@ import { startSecondServer } from "./second-server.ts";
 import { environmentId, runPromise, test, WEB } from "./t3.ts";
 
 test(
-  "A paired Boat guest appears only under Boat machines",
+  "A paired Boat guest keeps its connection controls on the Boat row",
   WEB,
   async ({ t3, app, browser, screen }) => {
     await t3.project("demo");
@@ -81,7 +81,25 @@ test(
 
       await expect(screen.getByText(/Connected on this device/)).toBeVisible();
       await app.screenshot("paired-boat-guest");
-      await expect(screen.getByRole("button", "More actions for Scenario")).toHaveCount(0);
+      const actions = screen.getByRole("button", "More actions for Scenario");
+      const switchOff = screen.getByRole("switch", "Switch off Scenario");
+      await expect(switchOff).toHaveCount(1);
+      await switchOff.tap();
+      const switchOn = screen.getByRole("switch", "Switch on Scenario");
+      await switchOn.tap();
+      await expect(switchOff).toBeVisible();
+
+      await actions.press("Enter");
+      await screen.getByRole("menuitem", "Routes").press("Enter");
+      await expect(screen.getByRole("button", "Add route", { exact: true })).toBeVisible();
+      await app.screenshot("paired-boat-guest-routes");
+
+      await actions.press("Enter");
+      await screen.getByRole("menuitem", "Remove from this device…").press("Enter");
+      await screen.getByRole("button", "Confirm").press("Enter");
+      await expect(actions).toHaveCount(0);
+      await expect(screen.getByText(/Connected on this device/)).toHaveCount(0);
+      await expect(screen.getByRole("button", "Stop", { exact: true })).toBeVisible();
     } finally {
       await guest.stop();
     }

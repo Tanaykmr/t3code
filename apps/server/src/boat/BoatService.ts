@@ -144,6 +144,7 @@ function failureCode(error: BoatApiError | BoatBootstrapError): BoatFailureCode 
     case "snapshot-expired":
       return "snapshot-expired";
     case "conflict":
+    case "forbidden":
     case "rejected":
       return "provider-rejected";
   }
@@ -763,7 +764,7 @@ export const make = Effect.gen(function* () {
     if (server.sandbox_id !== null) {
       let operationId = op.provider_operation_id;
       if (operationId === null) {
-        // Purge only what Boat reports archived right now, on the same account.
+        // Check that the sandbox is archived or terminal before asking Boat to purge it.
         const current = yield* retryTransient(api.get(key, server.sandbox_id)).pipe(
           Effect.asSome,
           Effect.catchIf(
@@ -771,12 +772,14 @@ export const make = Effect.gen(function* () {
             () => Effect.succeedNone,
           ),
         );
-        if (Option.isSome(current) && current.value.state !== "archived") {
+        if (
+          Option.isSome(current) &&
+          current.value.state !== "archived" &&
+          current.value.state !== "error" &&
+          current.value.state !== "cancelled"
+        ) {
           yield* observe(server.managed_id, current.value);
           if (current.value.state === "archiving") return false;
-          if (current.value.state === "error" || current.value.state === "cancelled") {
-            return yield* new OperationFailed({ code: "provider-rejected" });
-          }
           return yield* new OperationFailed({ code: "machine-running" });
         }
         // Not retried in place: a later pass looks at the machine again before sending it.
@@ -1091,6 +1094,22 @@ export const make = Effect.gen(function* () {
   const replaceApiKey = Effect.fn("BoatService.replaceApiKey")(function* (
     input: BoatSetApiKeyInput,
   ) {
+    if (input.apiKey !== null) {
+      // Check before reading sandbox IDs. The account lock prevents new creates from being queued.
+      const allocating = yield* persistence(sql`
+        SELECT 1 FROM boat_operations
+        JOIN boat_servers USING (managed_id)
+        WHERE kind = 'create' AND stage NOT IN ('completed', 'failed')
+          AND sandbox_id IS NULL AND deleted_at IS NULL
+        LIMIT 1
+      `);
+      if (allocating.length > 0) {
+        return yield* fail(
+          "conflict",
+          "Wait for Boat to finish allocating machines before replacing the key.",
+        );
+      }
+    }
     const servers = yield* persistence(readServers);
     const current = yield* persistence(readAccount);
     if (input.apiKey === null) {
@@ -1122,11 +1141,10 @@ export const make = Effect.gen(function* () {
         "This key belongs to a different Boat account than the machines this server manages.",
       );
     }
-    // The same user's key for another wallet passes the account check but cannot see its machines.
-    if (!(yield* seesAnyMachine(Redacted.make(input.apiKey), servers))) {
+    if (!(yield* seesAllMachines(Redacted.make(input.apiKey), servers))) {
       return yield* fail(
         "conflict",
-        "This key cannot see the Boat machines this server manages. Use a key for the same Boat wallet.",
+        "Use a key that can access every Boat machine this server manages.",
       );
     }
     const environment =
@@ -1148,29 +1166,28 @@ export const make = Effect.gen(function* () {
     return { status: "configured" as const };
   });
 
-  /** True when `key` can read one of the machines' sandboxes, or there is none to read. */
-  const seesAnyMachine = Effect.fn("BoatService.seesAnyMachine")(function* (
+  const seesAllMachines = Effect.fn("BoatService.seesAllMachines")(function* (
     key: BoatKey,
     servers: ReadonlyArray<ServerRow>,
   ) {
-    const sandboxIds = servers.flatMap((server) =>
-      server.sandbox_id === null ? [] : [server.sandbox_id],
-    );
-    if (sandboxIds.length === 0) return true;
-    for (const sandboxId of sandboxIds) {
-      const seen = yield* api.get(key, sandboxId).pipe(
+    for (const server of servers) {
+      if (server.sandbox_id === null) continue;
+      const seen = yield* api.get(key, server.sandbox_id).pipe(
         Effect.as(true),
         Effect.catchIf(
-          (error) => error.category === "not-found" || error.category === "unauthorized",
+          (error) =>
+            error.category === "not-found" ||
+            error.category === "unauthorized" ||
+            error.category === "forbidden",
           () => Effect.succeed(false),
         ),
         Effect.mapError(
           () => new BoatError({ code: "provider-unavailable", message: "Could not reach Boat." }),
         ),
       );
-      if (seen) return true;
+      if (!seen) return false;
     }
-    return false;
+    return true;
   });
 
   /** Refreshes one settled machine: an external archive, restart, or deletion shows up here. */

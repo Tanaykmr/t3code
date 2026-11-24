@@ -24,7 +24,7 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useGT } from "gt-react";
 import { PlayIcon, SquareIcon, Trash2Icon } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { requestConfirmDialog } from "../../confirmDialog";
 import { useNowMinute } from "../../hooks/useNowMinute";
@@ -128,7 +128,20 @@ function formatUsd(usd: number) {
   return `$${usd < 0.01 ? usd.toFixed(4) : usd.toFixed(2)}`;
 }
 
-function BoatRowView({ row, nowMs }: { readonly row: BoatRow; readonly nowMs: number }) {
+type RenderSavedGuest = (
+  environmentId: EnvironmentId,
+  content: { readonly label: string; readonly status: ReactNode; readonly actions: ReactNode },
+) => ReactNode;
+
+function BoatRowView({
+  row,
+  nowMs,
+  renderSavedGuest,
+}: {
+  readonly row: BoatRow;
+  readonly nowMs: number;
+  readonly renderSavedGuest: RenderSavedGuest;
+}) {
   const gt = useGT();
   const labels = useBoatLabels();
   const [busy, setBusy] = useState<BoatAction | null>(null);
@@ -208,6 +221,45 @@ function BoatRowView({ row, nowMs }: { readonly row: BoatRow; readonly nowMs: nu
     row.stale ? gt("Controller offline; last known state") : null,
   ].filter((part): part is string => part !== null);
 
+  const description = (
+    <span className="flex flex-col gap-0.5">
+      <span>
+        {labels.lifecycle[server.lifecycle]}
+        {stage && server.lifecycle !== "running" && server.lifecycle !== "stopped"
+          ? ` · ${stage}`
+          : ""}
+      </span>
+      {failure ? <span className="text-destructive-foreground">{failure}</span> : null}
+      <span className="text-muted-foreground/80">{details.join(" · ")}</span>
+    </span>
+  );
+  const actions = (["resume", "stop", "delete"] as const)
+    .filter((action) => row.actions.has(action))
+    .map((action) => {
+      const Icon = action === "stop" ? SquareIcon : action === "resume" ? PlayIcon : Trash2Icon;
+      return (
+        <Button
+          key={action}
+          size="xs"
+          variant={action === "delete" ? "ghost-destructive" : "ghost-muted"}
+          disabled={busy !== null}
+          onClick={() => void act(action)}
+        >
+          {busy === action ? <Spinner size="sm" /> : <Icon aria-hidden className="size-3" />}
+          <span>{labels.action[action]}</span>
+        </Button>
+      );
+    });
+  const savedGuest =
+    server.guestEnvironmentId === null
+      ? null
+      : renderSavedGuest(server.guestEnvironmentId, {
+          label: server.displayName,
+          status: description,
+          actions,
+        });
+  if (savedGuest !== null) return savedGuest;
+
   return (
     <SettingsRow
       title={
@@ -219,44 +271,8 @@ function BoatRowView({ row, nowMs }: { readonly row: BoatRow; readonly nowMs: nu
           <span className="truncate">{server.displayName}</span>
         </span>
       }
-      description={
-        <span className="flex flex-col gap-0.5">
-          <span>
-            {labels.lifecycle[server.lifecycle]}
-            {stage && server.lifecycle !== "running" && server.lifecycle !== "stopped"
-              ? ` · ${stage}`
-              : ""}
-          </span>
-          {failure ? <span className="text-destructive-foreground">{failure}</span> : null}
-          <span className="text-muted-foreground/80">{details.join(" · ")}</span>
-        </span>
-      }
-      control={
-        <div className="flex items-center gap-1">
-          {(["resume", "stop", "delete"] as const)
-            .filter((action) => row.actions.has(action))
-            .map((action) => {
-              const Icon =
-                action === "stop" ? SquareIcon : action === "resume" ? PlayIcon : Trash2Icon;
-              return (
-                <Button
-                  key={action}
-                  size="xs"
-                  variant={action === "delete" ? "ghost-destructive" : "ghost-muted"}
-                  disabled={busy !== null}
-                  onClick={() => void act(action)}
-                >
-                  {busy === action ? (
-                    <Spinner size="sm" />
-                  ) : (
-                    <Icon aria-hidden className="size-3" />
-                  )}
-                  <span>{labels.action[action]}</span>
-                </Button>
-              );
-            })}
-        </div>
-      }
+      description={description}
+      control={<div className="flex items-center gap-1">{actions}</div>}
     />
   );
 }
@@ -398,8 +414,10 @@ function BoatKeyRow({
 /** Boat machines this device can see, from every controller that manages them. */
 export function BoatEnvironmentsSettings({
   boat: { controllers, manageable, environments },
+  renderSavedGuest,
 }: {
   readonly boat: ReturnType<typeof useBoatControllers>;
+  readonly renderSavedGuest: RenderSavedGuest;
 }) {
   const gt = useGT();
   // The tick is a UTC minute without a zone suffix.
@@ -427,7 +445,7 @@ export function BoatEnvironmentsSettings({
         />
       ))}
       {rows.map((row) => (
-        <BoatRowView key={row.key} row={row} nowMs={nowMs} />
+        <BoatRowView key={row.key} row={row} nowMs={nowMs} renderSavedGuest={renderSavedGuest} />
       ))}
     </SettingsSection>
   );

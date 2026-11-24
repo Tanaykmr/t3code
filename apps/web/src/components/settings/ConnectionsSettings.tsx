@@ -1930,7 +1930,27 @@ function ConnectionsSettingsContent({
           </>
         )}
       </SettingsSection>
-      <BoatEnvironmentsSettings boat={boat} />
+      <BoatEnvironmentsSettings
+        boat={boat}
+        renderSavedGuest={(environmentId, { label, status, actions }) => {
+          const environment = savedRemoteEnvironments.find(
+            (saved) => saved.environmentId === environmentId,
+          );
+          return environment ? (
+            <SavedBackendListRow
+              environment={environment}
+              label={label}
+              extraStatus={status}
+              removingEnvironmentId={removingSavedEnvironmentId}
+              onSetEnabled={handleSetSavedBackendEnabled}
+              onRemove={handleRemoveSavedBackend}
+              onAddRoute={openAddRoute}
+            >
+              {actions}
+            </SavedBackendListRow>
+          ) : null;
+        }}
+      />
       {hasCloudPublicConfig() ? (
         <RemoveT3ConnectEnvironmentDialog
           environmentLabel={pendingT3ConnectRemoval?.label ?? null}

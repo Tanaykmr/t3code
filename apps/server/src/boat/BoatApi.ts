@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 
 export const BoatApiErrorCategory = Schema.Literals([
   "unauthorized",
+  "forbidden",
   "not-found",
   /** Idempotency key still in flight, a stop in progress, or a state conflict. */
   "conflict",

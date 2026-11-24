@@ -614,7 +614,7 @@ describe("BoatService", () => {
       // Boat answers organization keys this way on GET /deletion-operations (seen live).
       fake.failNext(
         "deletion",
-        new BoatApiError({ category: "unauthorized", code: "api_key_org_forbidden" }),
+        new BoatApiError({ category: "forbidden", code: "api_key_org_forbidden" }),
       );
       yield* boat.delete({ requestId: requestId(), managedId });
       yield* settle;
@@ -676,6 +676,96 @@ describe("BoatService", () => {
       expect(yield* boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY })).toEqual({
         status: "configured",
       });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("keeps the old key when a replacement can only read the first machine", () => {
+    const replacement = `${FAKE_BOAT_KEY}_scoped`;
+    let accessibleSandboxId: string | null | undefined;
+    const { layer, secrets } = setup({}, (api) => ({
+      ...api,
+      account: (key) =>
+        api.account(Redacted.value(key) === replacement ? Redacted.make(FAKE_BOAT_KEY) : key),
+      get: (key, id) =>
+        Redacted.value(key) !== replacement
+          ? api.get(key, id)
+          : id === accessibleSandboxId
+            ? api.get(Redacted.make(FAKE_BOAT_KEY), id)
+            : Effect.fail(new BoatApiError({ category: "not-found" })),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const stored = secrets.get("boat-api-key");
+      const first = yield* createSmall;
+      const second = yield* createSmall;
+      yield* settle;
+      const firstMachine = yield* server(first.managedId);
+      expect(firstMachine).toMatchObject({ lifecycle: "running" });
+      accessibleSandboxId = firstMachine?.sandboxId;
+      expect(yield* server(second.managedId)).toMatchObject({ lifecycle: "running" });
+
+      const error = yield* Effect.flip(boat.setApiKey({ apiKey: replacement }));
+      expect(error.code).toBe("conflict");
+      expect(secrets.get("boat-api-key")).toEqual(stored);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each(["cancelled", "error"] as const)(
+    "deletes a sandbox after its create ends in %s and allows key removal",
+    (state) => {
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        get: (key, id) => api.get(key, id).pipe(Effect.map((sandbox) => ({ ...sandbox, state }))),
+        stop: () => Effect.fail(new BoatApiError({ category: "conflict" })),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        expect(yield* server(managedId)).toMatchObject({
+          lifecycle: "failed",
+          sandboxId: expect.any(String),
+          operation: { kind: "create", stage: "failed" },
+        });
+
+        yield* boat.delete({ requestId: requestId(), managedId });
+        yield* settle;
+        expect(fake.sandboxes.size).toBe(0);
+        expect(yield* server(managedId)).toBeUndefined();
+        expect(yield* boat.setApiKey({ apiKey: null })).toEqual({ status: "missing" });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("keeps the old key until a pending allocation has a sandbox ID to verify", () => {
+    const allocated = Deferred.makeUnsafe<void>();
+    const releaseResponse = Deferred.makeUnsafe<void>();
+    const replacement = `${FAKE_BOAT_KEY}_scoped`;
+    const { layer, secrets } = setup({}, (api) => ({
+      ...api,
+      account: (key) =>
+        api.account(Redacted.value(key) === replacement ? Redacted.make(FAKE_BOAT_KEY) : key),
+      create: Effect.fnUntraced(function* (key, input) {
+        const sandbox = yield* api.create(key, input);
+        yield* Deferred.succeed(allocated, undefined);
+        yield* Deferred.await(releaseResponse);
+        return sandbox;
+      }),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const stored = secrets.get("boat-api-key");
+      yield* createSmall;
+      yield* Deferred.await(allocated);
+      const result = yield* boat
+        .setApiKey({ apiKey: replacement })
+        .pipe(Effect.result, Effect.ensuring(Deferred.succeed(releaseResponse, undefined)));
+      expect(result).toMatchObject({ _tag: "Failure", failure: { code: "conflict" } });
+      expect(secrets.get("boat-api-key")).toEqual(stored);
+      yield* settle;
     }).pipe(Effect.provide(layer));
   });
 

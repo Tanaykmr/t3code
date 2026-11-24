@@ -78,7 +78,8 @@ const toSandbox = (body: typeof SandboxBody.Type): BoatSandbox => ({
 });
 
 function categoryFor(status: number, code: string | undefined): BoatApiErrorCategory {
-  if (status === 401 || status === 403) return "unauthorized";
+  if (status === 401) return "unauthorized";
+  if (status === 403) return "forbidden";
   if (status === 404) return "not-found";
   if (status === 402) return "quota-exceeded";
   if (status === 409 && code === "snapshot_data_expired") return "snapshot-expired";
