@@ -285,7 +285,7 @@ export class ScheduledTaskService extends Context.Service<
     }) => Effect.Effect<void, ScheduledTaskError>;
     /** The dispatched thread, or null if dispatch failed; leaves the task's binding unchanged. */
     readonly runNow: (
-      input: ScheduledTaskRunNowInput,
+      input: ScheduledTaskRunNowInput & { readonly requiredThreadId?: ThreadId },
     ) => Effect.Effect<
       ScheduledTaskRunNowResult & { readonly threadId: ThreadId | null },
       ScheduledTaskError
@@ -976,6 +976,7 @@ export const layer = Layer.effect(
         readonly prompt: string;
         readonly dispatched: Ref.Ref<boolean>;
       },
+      requiredThreadId?: ThreadId,
     ) {
       // Read before reserving: nothing between the reservation and its release may fail.
       const startedAt = yield* localNow;
@@ -993,6 +994,11 @@ export const layer = Layer.effect(
             return yield* taskError("Schedule task not found.", { taskId: task.id });
           }
           return { task, threadId: null, dispatchFailed: false };
+        }
+        if (requiredThreadId !== undefined && active.threadId !== requiredThreadId) {
+          return yield* taskError("Schedule task is no longer bound to the required thread.", {
+            taskId: task.id,
+          });
         }
         if (
           webhook !== undefined &&
@@ -1762,14 +1768,14 @@ export const layer = Layer.effect(
 
     const runNow: ScheduledTaskService["Service"]["runNow"] = Effect.fn(
       "ScheduledTaskService.runNow",
-    )(function* (input: ScheduledTaskRunNowInput) {
+    )(function* (input) {
       const task = yield* loadTask(input.id);
       if (task.schedule.type === "webhook") {
         return yield* taskError("Webhook tasks run when their URL receives a request.", {
           taskId: input.id,
         });
       }
-      return yield* runTask(task, "manual").pipe(
+      return yield* runTask(task, "manual", undefined, input.requiredThreadId).pipe(
         Effect.mapError((cause) =>
           isScheduledTaskError(cause)
             ? cause

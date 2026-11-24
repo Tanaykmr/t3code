@@ -16,7 +16,7 @@ import * as BotTurnContext from "../../../bots/BotTurnContext.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
-  assertBotThreadAccess,
+  botRoutineAccess,
   dispatchFailure,
   foreignBotThreads,
   newCommandId,
@@ -123,12 +123,20 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           message: "The scheduled task was not found.",
         });
       const scope = yield* McpInvocationContext.McpInvocationContext;
-      if (scope.bot === true && scheduled.threadId !== null) {
-        const { threads } = yield* readCaller();
-        yield* assertBotThreadAccess(threads, scope, scheduled.threadId);
+      const canAccess = yield* botRoutineAccess(scope);
+      if (!canAccess(scheduled.threadId)) {
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "A bot can run only routines bound to its own chat.",
+        });
       }
       const { task, threadId } = yield* scheduler
-        .runNow({ id: input.taskId })
+        .runNow({
+          id: input.taskId,
+          ...(scope.bot === true && scheduled.threadId !== null
+            ? { requiredThreadId: scheduled.threadId }
+            : {}),
+        })
         .pipe(
           Effect.mapError(
             (error) =>

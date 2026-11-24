@@ -311,6 +311,16 @@ export const assertBotThreadAccess = Effect.fn("mcp.assertBotThreadAccess")(func
   }
 });
 
+export const botRoutineAccess = Effect.fn("mcp.botRoutineAccess")(function* (
+  scope: McpInvocationContext.McpInvocationScope,
+) {
+  if (scope.bot !== true) return (_threadId: ThreadId | null) => true;
+  const bots = yield* BotTurnContext.optional;
+  const callerId = scope.thread?.threadId;
+  const isDm = callerId !== undefined && Option.isSome(bots) && (yield* bots.value.isDm(callerId));
+  return (threadId: ThreadId | null) => isDm && threadId === callerId;
+});
+
 export const readThread = Effect.fn("mcp.readThread")(function* <
   K extends ProjectionRecordField = never,
 >(threadId?: ThreadId, fields: ReadonlyArray<K> = [], filter?: ProjectionRecordFilter) {

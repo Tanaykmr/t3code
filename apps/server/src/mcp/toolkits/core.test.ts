@@ -1290,7 +1290,19 @@ const botShells = [
   McpToolAccessTestkit.liveThreadShell(threadId),
   McpToolAccessTestkit.liveThreadShell(codingThread),
 ];
-const botIsolationLayer = layerOrchestratorToolkit.pipe(
+const botProjectId = McpToolAccessTestkit.liveThreadShell(threadId).projectId;
+const botRoutines = [
+  Schema.decodeSync(ScheduledTask)({
+    ...Schema.decodeSync(ScheduledTask)(scheduledTask("bot-routine", "full-access")),
+    projectId: botProjectId,
+    threadId,
+  }),
+  Schema.decodeSync(ScheduledTask)(scheduledTask("unbound-routine", "full-access")),
+];
+const botIsolationLayer = Layer.merge(
+  layerOrchestratorToolkit,
+  McpHttpServer.layerThreadToolkit.pipe(Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({}))),
+).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provide(NodeCrypto.layer),
   Layer.provide(
@@ -1319,7 +1331,13 @@ const botIsolationLayer = layerOrchestratorToolkit.pipe(
   Layer.provide(ServerSettings.layerTest()),
   Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
   Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
-  Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+  Layer.provide(
+    Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+      list: () => Effect.succeed({ tasks: botRoutines }),
+      runNow: ({ id }) =>
+        Effect.succeed({ task: botRoutines.find((task) => task.id === id)!, threadId: null }),
+    }),
+  ),
   Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
   Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
   Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
@@ -1345,6 +1363,30 @@ const asBot = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     ),
     Effect.provide(botIsolationLayer),
   );
+
+it.effect("lists only routines bound to the calling bot DM", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const list = (projectId: ProjectId) =>
+      server.callTool({ name: "list_scheduled_tasks", arguments: { projectId } });
+    expect((yield* list(botProjectId)).structuredContent).toMatchObject({
+      tasks: [{ scheduledTaskId: "bot-routine" }],
+    });
+    expect((yield* list(ProjectId.make("project-a"))).structuredContent).toEqual({ tasks: [] });
+  }).pipe(asBot),
+);
+
+it.effect("runs only routines bound to the calling bot DM", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const run = (taskId: string) =>
+      server.callTool({ name: "run_scheduled_task_now", arguments: { taskId } });
+    expect((yield* run("bot-routine")).structuredContent).toMatchObject({ taskId: "bot-routine" });
+    expect(declaredFailure(yield* run("unbound-routine"))).toMatchObject({
+      code: "invalid_request",
+    });
+  }).pipe(asBot),
+);
 
 it.effect("paginates only the threads visible to the bot", () =>
   Effect.gen(function* () {

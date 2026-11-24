@@ -1,12 +1,16 @@
 import { useAtomValue } from "@effect/atom-react";
 import { Link, useLocation } from "@tanstack/react-router";
+import { connectionCatalogDisplayUrl } from "@t3tools/client-runtime/connection";
 import { type EnvironmentBot, botActivity } from "@t3tools/client-runtime/state/bots";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { ChevronDownIcon, MessagesSquareIcon, PlusIcon } from "lucide-react";
 import { T, useGT } from "gt-react";
 import { memo, useState } from "react";
 import * as Schema from "effect/Schema";
+import { Atom } from "effect/reactivity";
 
+import { environmentCatalog } from "../../connection/catalog";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useBotEnvironmentIds, useEnvironmentBotRooms, useEnvironmentBots } from "../../state/bots";
 import { useQuietThreadShell } from "../../state/entities";
@@ -14,6 +18,7 @@ import { serverEnvironment } from "../../state/server";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { BotAvatarIcon } from "./BotAvatarIcon";
 import { openBotEditor } from "./BotEditorDialog";
@@ -48,7 +53,7 @@ export function SidebarBotsSection(props: { readonly routeThreadKey: string | nu
             className={cn("size-3 shrink-0 transition-transform", collapsed && "-rotate-90")}
           />
         </button>
-        <NewBotButton environmentId={environmentIds[0]!} />
+        <NewBotResourceButton kind="bot" environmentIds={environmentIds} />
       </div>
       {collapsed ? null : (
         <ul className="flex flex-col gap-px">
@@ -87,19 +92,16 @@ export function SidebarBotsSection(props: { readonly routeThreadKey: string | nu
             : null}
         </ul>
       )}
-      {collapsed ? null : <SidebarRooms environmentId={environmentIds[0]!} />}
+      {collapsed ? null : <SidebarRooms environmentIds={environmentIds} />}
     </section>
   );
 }
 
 /** Rooms sit under the bots: shared chats where @-chips pick who answers. */
-function SidebarRooms(props: { readonly environmentId: EnvironmentBot["environmentId"] }) {
+function SidebarRooms(props: { readonly environmentIds: ReadonlyArray<EnvironmentId> }) {
   const gt = useGT();
   const pathname = useLocation({ select: (location) => location.pathname });
   const rooms = useEnvironmentBotRooms();
-  const canCreateRoom = useAtomValue(
-    serverEnvironment.createBotRoom.permissionAtom(props.environmentId),
-  );
   const shown = rooms.filter((entry) => entry.room.archivedAt === null);
   const archived = rooms.length - shown.length;
   return (
@@ -108,15 +110,7 @@ function SidebarRooms(props: { readonly environmentId: EnvironmentBot["environme
         <span className="flex-1 px-(--sidebar-row-content-inset) text-xs text-sidebar-muted-foreground">
           <T>Rooms</T>
         </span>
-        <Button
-          size="icon-xs"
-          variant="ghost-muted"
-          disabled={!canCreateRoom}
-          aria-label={gt("New room")}
-          onClick={() => openBotRoomEditor({ mode: "create", environmentId: props.environmentId })}
-        >
-          <PlusIcon aria-hidden />
-        </Button>
+        <NewBotResourceButton kind="room" environmentIds={props.environmentIds} />
       </div>
       <ul className="flex flex-col gap-px">
         {[...shown, ...rooms.filter((entry) => entry.room.archivedAt !== null)].map((entry) => {
@@ -163,29 +157,81 @@ function SidebarRooms(props: { readonly environmentId: EnvironmentBot["environme
   );
 }
 
-function NewBotButton(props: { readonly environmentId: EnvironmentBot["environmentId"] }) {
+const creationEnvironmentIdsAtom = Atom.family((ids: ReadonlyArray<EnvironmentId>) =>
+  Atom.make((get) => ({
+    bot: ids.filter((id) => get(serverEnvironment.createBot.permissionAtom(id))),
+    room: ids.filter((id) => get(serverEnvironment.createBotRoom.permissionAtom(id))),
+  })),
+);
+
+function NewBotResourceButton(props: {
+  readonly kind: "bot" | "room";
+  readonly environmentIds: ReadonlyArray<EnvironmentId>;
+}) {
   const gt = useGT();
-  const { environmentId } = props;
-  const canCreate = useAtomValue(serverEnvironment.createBot.permissionAtom(environmentId));
-  if (!canCreate) return null;
+  const { entries } = useAtomValue(environmentCatalog.catalogValueAtom);
+  const { kind, environmentIds } = props;
+  const writable = useAtomValue(creationEnvironmentIdsAtom(environmentIds))[kind];
+  const label = kind === "bot" ? gt("New bot") : gt("New room");
+  const openEditor = kind === "bot" ? openBotEditor : openBotRoomEditor;
+  const canCreate = writable.length > 0;
+  if (kind === "bot" && !canCreate) return null;
+  const chooseEnvironment = environmentIds.length > 1 && canCreate;
+  const [firstWritable] = writable;
+  const button = (
+    <Button
+      size="icon-xs"
+      variant="ghost-muted"
+      aria-label={label}
+      disabled={!canCreate}
+      onClick={
+        chooseEnvironment || firstWritable === undefined
+          ? undefined
+          : () => openEditor({ mode: "create", environmentId: firstWritable })
+      }
+    >
+      <PlusIcon aria-hidden />
+    </Button>
+  );
+  const trigger = chooseEnvironment ? <MenuTrigger render={button} /> : button;
+  const action =
+    kind === "bot" ? (
+      <Tooltip>
+        <TooltipTrigger render={trigger} />
+        <TooltipPopup>{label}</TooltipPopup>
+      </Tooltip>
+    ) : (
+      trigger
+    );
+  if (!chooseEnvironment) return action;
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            size="icon-xs"
-            variant="ghost-muted"
-            aria-label={gt("New bot")}
-            onClick={() => openBotEditor({ mode: "create", environmentId })}
-          />
-        }
-      >
-        <PlusIcon aria-hidden />
-      </TooltipTrigger>
-      <TooltipPopup>
-        <T>New bot</T>
-      </TooltipPopup>
-    </Tooltip>
+    <Menu>
+      {action}
+      <MenuPopup align="end" aria-label={label}>
+        {writable.map((environmentId) => {
+          const environment = entries.get(environmentId);
+          const name = environment?.target.label ?? environmentId;
+          const sharedName = writable.some(
+            (id) => id !== environmentId && entries.get(id)?.target.label === name,
+          );
+          const detail =
+            sharedName && environment !== undefined
+              ? (connectionCatalogDisplayUrl(environment) ?? environmentId)
+              : null;
+          return (
+            <MenuItem
+              key={environmentId}
+              onClick={() => openEditor({ mode: "create", environmentId })}
+            >
+              {name}
+              {detail === null ? null : (
+                <span className="text-xs text-muted-foreground">{detail}</span>
+              )}
+            </MenuItem>
+          );
+        })}
+      </MenuPopup>
+    </Menu>
   );
 }
 

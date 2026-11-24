@@ -140,6 +140,7 @@ import {
 } from "./delegatedTaskModes.ts";
 import {
   assertBotThreadAccess,
+  botRoutineAccess,
   assertTargetWithinLimits,
   foreignBotThreads,
   isLiveCallerShell,
@@ -2522,16 +2523,12 @@ const make = Effect.gen(function* () {
             (projectId === undefined || task.projectId === projectId) &&
             (input.scheduledTaskId === undefined || task.id === input.scheduledTaskId),
         );
-        const isForeign = yield* foreignBotThreads(threadManagement, scope);
-        const visible =
-          scope.bot === true
-            ? yield* Effect.filter(candidates, (task) =>
-                task.threadId === null
-                  ? Effect.succeed(true)
-                  : isForeign(task.threadId).pipe(Effect.map((foreign) => !foreign)),
-              )
-            : candidates;
-        return { tasks: visible.map((task) => scheduledTaskSummary(task, false)) };
+        const canAccess = yield* botRoutineAccess(scope);
+        return {
+          tasks: candidates
+            .filter((task) => canAccess(task.threadId))
+            .map((task) => scheduledTaskSummary(task, false)),
+        };
       },
     ),
     updateScheduledTask: Effect.fn("OrchestratorMcpService.updateScheduledTask")(
