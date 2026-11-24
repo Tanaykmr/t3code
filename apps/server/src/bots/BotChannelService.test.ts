@@ -23,6 +23,7 @@ import * as BotService from "./BotService.ts";
 
 const sends: Array<{ threadId: string; text: string; commandId: string }> = [];
 const busyThreads = new Set<string>();
+const modeChanges: Array<string> = [];
 
 const database = NodeSqliteClient.layer({ filename: ":memory:" });
 const launchMock = Layer.mock(ThreadLaunchService.ThreadLaunchService)({
@@ -46,6 +47,11 @@ const threadsMock = Layer.unwrap(
           modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
         } as never),
       hasReceipt: () => Effect.succeed(false),
+      dispatch: (command) =>
+        Effect.sync(() => {
+          modeChanges.push(command.type);
+          return {} as never;
+        }),
       sendToThread: (input) =>
         Effect.gen(function* () {
           sends.push({ threadId: input.threadId, text: input.text, commandId: input.commandId });
@@ -165,6 +171,8 @@ layer("BotChannelService", (it) => {
       assert.strictEqual(replies.length, 3);
       assert.ok(replies.every((reply) => reply.replyToId !== null));
       assert.ok(room[0]!.deliveries.every((delivery) => delivery.status === "settled"));
+      // Cora's DM asks for approval, so her room seat is brought down to match before it runs.
+      assert.include(modeChanges, "thread.runtime-mode.set");
     }),
   );
 

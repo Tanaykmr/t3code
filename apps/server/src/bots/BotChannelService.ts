@@ -612,6 +612,36 @@ const make = Effect.gen(function* () {
     return launched.threadId;
   });
 
+  /** A seat runs with its DM's current access, so lowering the DM lowers every seat. */
+  const syncSeatModes = Effect.fn("BotChannelService.syncSeatModes")(function* (
+    seatId: ThreadId,
+    bot: BotRow,
+  ) {
+    const [dm, seat] = yield* Effect.all([
+      threads.getThreadShell(ThreadId.make(bot.dm_thread_id ?? "")),
+      threads.getThreadShell(seatId),
+    ]);
+    if (dm === null || seat === null) return;
+    if (seat.runtimeMode !== dm.runtimeMode) {
+      yield* threads.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make(`bot-seat-mode:${seatId}:${dm.runtimeMode}:${yield* now}`),
+        threadId: seatId,
+        runtimeMode: dm.runtimeMode,
+      });
+    }
+    if (seat.interactionMode !== dm.interactionMode) {
+      yield* threads.dispatch({
+        type: "thread.interaction-mode.set",
+        commandId: CommandId.make(
+          `bot-seat-interaction:${seatId}:${dm.interactionMode}:${yield* now}`,
+        ),
+        threadId: seatId,
+        interactionMode: dm.interactionMode,
+      });
+    }
+  });
+
   /**
    * Another bot's requests wake this seat: it has the bot's persona and skills but not its
    * private DM history or memory, so a peer cannot draw them out.
@@ -813,13 +843,17 @@ const make = Effect.gen(function* () {
           return { threadId: ThreadId.make(asked.origin_thread_id), room: null };
         }
       }
-      return { threadId: yield* ensurePeerSeat(target), room: null };
+      const seat = yield* ensurePeerSeat(target);
+      yield* syncSeatModes(seat, target);
+      return { threadId: seat, room: null };
     }
     if (!message.channel_key.startsWith("room:")) {
       return { threadId: ThreadId.make(target.dm_thread_id ?? ""), room: null };
     }
     const room = yield* readRoom(message.channel_key.slice("room:".length));
-    return { threadId: yield* ensureRoomThread(room, target), room };
+    const seat = yield* ensureRoomThread(room, target);
+    yield* syncSeatModes(seat, target);
+    return { threadId: seat, room };
   });
 
   /**

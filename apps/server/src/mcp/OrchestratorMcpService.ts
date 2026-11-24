@@ -2507,7 +2507,8 @@ const make = Effect.gen(function* () {
         if (
           scope.bot === true &&
           (existing.projectId !== parent?.thread.projectId ||
-            existing.threadId !== parent.thread.id)
+            existing.threadId !== parent.thread.id ||
+            input.bindToCurrentThread === false)
         ) {
           return yield* failure(
             "invalid_request",
@@ -3623,6 +3624,15 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadListResult;
     }),
     readThread: Effect.fn("OrchestratorMcpService.readThread")(function* (scope, input) {
+      // A bot reads only its own thread among bot threads: a peer seat cannot read the DM.
+      if (
+        scope.bot === true &&
+        input.threadId !== scope.thread?.threadId &&
+        Option.isSome(botTurnContext) &&
+        (yield* botTurnContext.value.workTargets(input.threadId)) !== null
+      ) {
+        return yield* failure("invalid_request", "That thread belongs to a bot and is private.");
+      }
       const runLimit = input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT;
       const { parent, target, shell, runCount } = yield* loadReadableThread(
         scope,

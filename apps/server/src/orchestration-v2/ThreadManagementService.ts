@@ -36,6 +36,7 @@ import {
   ProjectId,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   ProviderInstanceId,
+  isBotProvider,
   type ProviderSessionId,
   resolveProjectProviderInstanceEnabled,
   RunId,
@@ -54,6 +55,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -646,6 +648,7 @@ const make = Effect.gen(function* () {
   const agentScope = yield* AgentScope;
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const botSql = yield* Effect.serviceOption(SqlClient.SqlClient);
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
   const worktreeRestore = yield* ThreadWorktreeRestore;
 
@@ -787,8 +790,55 @@ const make = Effect.gen(function* () {
       Effect.andThen(orchestrator.getThreadSnapshotWindow(threadId, options)),
     );
 
+  // A bot's chat or seat keeps to providers that carry its persona and tools, on every path.
+  const assertBotThreadProvider = (
+    threadId: string,
+    projectId: ProjectId,
+    instanceId: ProviderInstanceId,
+  ) =>
+    Option.isNone(botSql)
+      ? Effect.void
+      : botSql.value<{ readonly owned: number }>`
+          SELECT 1 AS owned FROM bots WHERE dm_thread_id = ${threadId} OR peer_thread_id = ${threadId}
+          UNION ALL SELECT 1 FROM bot_room_threads WHERE thread_id = ${threadId}
+          LIMIT 1
+        `.pipe(
+          Effect.orElseSucceed(() => []),
+          Effect.flatMap((rows) =>
+            rows.length === 0
+              ? Effect.void
+              : serverSettings.getSettings.pipe(
+                  Effect.orDie,
+                  Effect.flatMap((current) =>
+                    isBotProvider({
+                      driverKind: current.providerInstances?.[instanceId]?.driver ?? instanceId,
+                      instanceId,
+                    })
+                      ? Effect.void
+                      : new ThreadManagementProviderInstanceDisabledError({
+                          projectId,
+                          instanceId,
+                        }),
+                  ),
+                ),
+          ),
+        );
+
   const assertDispatchTargetEnabled = (command: OrchestrationV2ServerCommand) => {
     switch (command.type) {
+      case "thread.model-selection.set":
+      case "provider.switch":
+        return orchestrator
+          .getThreadRecords(command.threadId, [])
+          .pipe(
+            Effect.flatMap((projection) =>
+              assertBotThreadProvider(
+                command.threadId,
+                projection.thread.projectId,
+                command.modelSelection.instanceId,
+              ),
+            ),
+          );
       case "thread.metadata.update":
         return command.continuation === undefined
           ? Effect.void
@@ -808,7 +858,17 @@ const make = Effect.gen(function* () {
               projectId: projection.thread.projectId,
               commandId: command.commandId,
               instanceId: (command.modelSelection ?? projection.thread.modelSelection).instanceId,
-            }),
+            }).pipe(
+              Effect.andThen(
+                command.modelSelection === undefined
+                  ? Effect.void
+                  : assertBotThreadProvider(
+                      command.threadId,
+                      projection.thread.projectId,
+                      command.modelSelection.instanceId,
+                    ),
+              ),
+            ),
           ),
         );
       case "delegated_task.request":

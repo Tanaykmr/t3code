@@ -226,7 +226,8 @@ export const executingTurnOrigin = Effect.fnUntraced(function* (
       JOIN chain ON run.run_id = COALESCE(
         json_extract(chain.payload_json, '$.restartContinuationOfRunId'),
         json_extract(chain.payload_json, '$.usageLimitContinuationOfRunId'),
-        json_extract(chain.payload_json, '$.manualContinuationOfRunId')
+        json_extract(chain.payload_json, '$.manualContinuationOfRunId'),
+        json_extract(chain.payload_json, '$.delegatedCompletion.parentRunId')
       )
       WHERE chain.depth < 20
     )
