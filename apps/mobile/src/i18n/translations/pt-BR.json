@@ -4645,6 +4645,8 @@
   "548123cb74c4abcf": "Limites de uso indisponíveis",
   "b0eadfef07c14ecb": "Este provedor não informa limites no momento.",
   "da39f97188187260": "Anexando texto colado",
+  "3b481c1e3a187175": "Anexos não podem ir para outro bot",
+  "c006fe8cbeb650fd": "Remova-os ou envie sem escolher outro bot.",
   "fbbae5b31766aeec": "Não foi possível passar ao bot",
   "a0753692f70d9400": "Enviado para {bots}",
   "ec69e0a9202da9d3": "O próximo envio mantém todos os {tokens} tokens do histórico",

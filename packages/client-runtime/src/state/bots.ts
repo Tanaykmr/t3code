@@ -70,6 +70,28 @@ function namesMention(text: string, label: string): boolean {
 }
 
 /** The `@query` being typed at the caret, if any. */
+/**
+ * Where a DM send goes: `handoff` lists the other picked bots, and `skipThread` is true when
+ * the DM's own bot was not picked, so it stays idle. A handoff carries text only, so a draft
+ * with attachments or context is `blocked` rather than sent without them.
+ */
+export function resolveBotHandoff(
+  mentions: ReadonlyArray<BotMention>,
+  dmBotId: string,
+  hasAttachments: boolean,
+): {
+  readonly handoff: ReadonlyArray<BotMention>;
+  readonly skipThread: boolean;
+  readonly blocked: boolean;
+} {
+  const handoff = mentions.filter((mention) => mention.botId !== dmBotId);
+  return {
+    handoff,
+    skipThread: handoff.length > 0 && handoff.length === mentions.length,
+    blocked: handoff.length > 0 && hasAttachments,
+  };
+}
+
 export function mentionQueryAt(
   text: string,
   caret: number,

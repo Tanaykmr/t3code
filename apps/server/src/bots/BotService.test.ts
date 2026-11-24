@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -19,6 +20,7 @@ import * as BotTurnContext from "./BotTurnContext.ts";
 
 const launches: Array<string> = [];
 const threadStatus = { current: "idle" };
+const busySeats = new Set<string>();
 const dispatched: Array<string> = [];
 
 const database = NodeSqliteClient.layer({ filename: ":memory:" });
@@ -35,7 +37,10 @@ const launchMock = Layer.mock(ThreadLaunchService.ThreadLaunchService)({
     }),
 });
 const threadsMock = Layer.mock(ThreadManagementService.ThreadManagementService)({
-  getThreadShell: () => Effect.sync(() => ({ status: threadStatus.current }) as never),
+  getThreadShell: (threadId: string) =>
+    Effect.sync(
+      () => ({ status: busySeats.has(threadId) ? "running" : threadStatus.current }) as never,
+    ),
   dispatch: (command) =>
     Effect.sync(() => {
       dispatched.push(command.type);
@@ -46,6 +51,7 @@ const layer = it.layer(
   Layer.mergeAll(
     BotService.layer.pipe(Layer.provide(Layer.mergeAll(database, launchMock, threadsMock))),
     BotTurnContext.layer.pipe(Layer.provide(database)),
+    database,
   ),
 );
 
@@ -113,6 +119,13 @@ layer("BotService", (it) => {
       assert.match(busy.message, /still working/);
 
       threadStatus.current = "idle";
+      // A room seat still working keeps the bot from archiving, though its DM is idle.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO bot_room_threads (room_id, bot_id, thread_id) VALUES ('r', 'bot-cora', 'seat-cora')`;
+      busySeats.add("seat-cora");
+      const seatBusy = yield* bots.archive({ botId: created.bot.id }).pipe(Effect.flip);
+      assert.match(seatBusy.message, /still working/);
+      busySeats.clear();
       const archived = yield* bots.archive({ botId: created.bot.id });
       assert.isNotNull(archived.bot.archivedAt);
       // An archived bot's name is free again until it is restored.

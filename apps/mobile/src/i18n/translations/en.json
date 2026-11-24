@@ -4653,6 +4653,8 @@
   "548123cb74c4abcf": "Usage limits unavailable",
   "b0eadfef07c14ecb": "This provider does not currently report limits.",
   "da39f97188187260": "Attaching pasted text",
+  "3b481c1e3a187175": "Attachments can't go to another bot",
+  "c006fe8cbeb650fd": "Remove them, or send without picking another bot.",
   "fbbae5b31766aeec": "Could not hand off to the bot",
   "a0753692f70d9400": "Sent to {bots}",
   "ec69e0a9202da9d3": "Next send keeps all {tokens} tokens of history",

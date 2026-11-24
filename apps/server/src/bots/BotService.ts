@@ -303,15 +303,23 @@ const make = Effect.gen(function* () {
     function* (input) {
       const row = yield* requireReadyBot(input.botId);
       if (row.archived_at !== null) return yield* toResult(row);
-      const shell = yield* threads
-        .getThreadShell(ThreadId.make(row.dm_thread_id ?? ""))
-        .pipe(
-          Effect.mapError((cause) =>
-            botError("Could not read the bot's chat.", input.botId, cause),
-          ),
-        );
-      if (shell !== null && ACTIVE_STATUSES.has(shell.status)) {
-        return yield* botError(`${row.name} is still working. Stop it first.`, input.botId);
+      // The bot also runs in its peer and room seats, which keep going after its DM is idle.
+      const seats = yield* sql<{ thread_id: string }>`
+        SELECT thread_id FROM bot_room_threads WHERE bot_id = ${input.botId}
+      `.pipe(Effect.mapError((cause) => botError("Could not read the bot.", input.botId, cause)));
+      const owned = [row.dm_thread_id, row.peer_thread_id, ...seats.map((seat) => seat.thread_id)];
+      for (const threadId of owned) {
+        if (threadId === null) continue;
+        const shell = yield* threads
+          .getThreadShell(ThreadId.make(threadId))
+          .pipe(
+            Effect.mapError((cause) =>
+              botError("Could not read the bot's chat.", input.botId, cause),
+            ),
+          );
+        if (shell !== null && ACTIVE_STATUSES.has(shell.status)) {
+          return yield* botError(`${row.name} is still working. Stop it first.`, input.botId);
+        }
       }
       const archivedAt = DateTime.formatIso(yield* DateTime.now);
       // The DM is archived with its bot, so nothing, including the composer, wakes it meanwhile.

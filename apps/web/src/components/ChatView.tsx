@@ -3192,6 +3192,7 @@ export default function ChatView(props: ChatViewProps) {
   const sendBotHandoff = useBotHandoffSend({
     activeBot,
     targetKey: composerTargetKey(composerDraftTarget),
+    hasAttachments: composerHasNonPromptContent,
   });
   const onSendOrHandoff: typeof onSend = async (...args) => {
     // A bot DM's picked @-chips go to those bots; the DM's own bot runs only when picked too.

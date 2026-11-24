@@ -113,8 +113,8 @@ import {
   botMentionsIn,
   clearBotMentionChips,
   handoffIdFor,
-  resolveBotHandoff,
 } from "../bots/bot-mention-chips";
+import { resolveBotHandoff } from "@t3tools/client-runtime/state/bots";
 import { withoutBotDms } from "../bots/bot-list";
 import { botDmThreadKeysAtom, useBotForThread, useEnvironmentBots } from "../../state/bots";
 import { serverEnvironment } from "../../state/server";
@@ -601,10 +601,18 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     }
     // A bot DM's picked @-chips go to those bots; the DM's own bot runs only when picked too.
     if (dmBot !== null && composerDraftKey !== null && followUp === undefined) {
-      const { handoff, skipThread } = resolveBotHandoff(
+      const { handoff, skipThread, blocked } = resolveBotHandoff(
         botMentionsIn(composerDraftKey, draftMessage),
         dmBot.bot.id,
+        draftAttachments.length > 0,
       );
+      if (blocked) {
+        Dialog.alert(
+          gt("Attachments can't go to another bot"),
+          gt("Remove them, or send without picking another bot."),
+        );
+        return;
+      }
       if (handoff.length > 0) {
         const result = await handoffToBots({
           environmentId: dmBot.environmentId,

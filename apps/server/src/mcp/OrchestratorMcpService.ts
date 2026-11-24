@@ -2632,6 +2632,17 @@ const make = Effect.gen(function* () {
             "A bot deletes only the routines bound to its own chat.",
           );
         }
+        if (
+          scope.bot === true &&
+          parent !== undefined &&
+          Option.isSome(botTurnContext) &&
+          !(yield* botTurnContext.value.isOperatorTurn(parent.thread.id))
+        ) {
+          return yield* failure(
+            "invalid_request",
+            "A bot deletes routines only when the user asks in its chat, not for another bot or a routine.",
+          );
+        }
         yield* scheduledTasks
           .delete({ id: existing.id })
           .pipe(

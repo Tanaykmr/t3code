@@ -3367,6 +3367,8 @@
   "c3cb3fe916f6fec5": "Aucun bot pour l’instant.",
   "f15a46fd65bc6906": "Salons",
   "85cb47ffa4f48bd3": "Aucun salon pour l’instant.",
+  "3b481c1e3a187175": "Les pièces jointes ne peuvent pas être envoyées à un autre bot",
+  "c006fe8cbeb650fd": "Retirez-les, ou envoyez sans choisir un autre bot.",
   "fbbae5b31766aeec": "Impossible de transmettre au bot",
   "a0753692f70d9400": "Envoyé à {bots}",
   "49cc06e79f21f85a": "{seconds} s",

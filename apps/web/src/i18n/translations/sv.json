@@ -3367,6 +3367,8 @@
   "c3cb3fe916f6fec5": "Inga botar än.",
   "f15a46fd65bc6906": "Rum",
   "85cb47ffa4f48bd3": "Inga rum än.",
+  "3b481c1e3a187175": "Bilagor kan inte skickas till en annan bot",
+  "c006fe8cbeb650fd": "Ta bort dem, eller skicka utan att välja en annan bot.",
   "fbbae5b31766aeec": "Det gick inte att skicka vidare till boten",
   "a0753692f70d9400": "Skickat till {bots}",
   "49cc06e79f21f85a": "{seconds} s",

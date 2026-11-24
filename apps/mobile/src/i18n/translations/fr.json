@@ -4645,6 +4645,8 @@
   "548123cb74c4abcf": "Limites d’utilisation indisponibles",
   "b0eadfef07c14ecb": "Ce fournisseur ne signale pas de limites actuellement.",
   "da39f97188187260": "Ajout du texte collé",
+  "3b481c1e3a187175": "Les pièces jointes ne peuvent pas être envoyées à un autre bot",
+  "c006fe8cbeb650fd": "Retirez-les, ou envoyez sans choisir un autre bot.",
   "fbbae5b31766aeec": "Impossible de transmettre au bot",
   "a0753692f70d9400": "Envoyé à {bots}",
   "ec69e0a9202da9d3": "Le prochain envoi conserve les {tokens} tokens d’historique",

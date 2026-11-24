@@ -3367,6 +3367,8 @@
   "c3cb3fe916f6fec5": "Nenhum bot ainda.",
   "f15a46fd65bc6906": "Salas",
   "85cb47ffa4f48bd3": "Nenhuma sala ainda.",
+  "3b481c1e3a187175": "Anexos não podem ir para outro bot",
+  "c006fe8cbeb650fd": "Remova-os ou envie sem escolher outro bot.",
   "fbbae5b31766aeec": "Não foi possível passar ao bot",
   "a0753692f70d9400": "Enviado para {bots}",
   "49cc06e79f21f85a": "{seconds}s",

@@ -1,4 +1,4 @@
-import type { EnvironmentBot } from "@t3tools/client-runtime/state/bots";
+import { type EnvironmentBot, resolveBotHandoff } from "@t3tools/client-runtime/state/bots";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -34,14 +34,26 @@ const pendingHandoffs = new Map<string, { readonly key: string; readonly message
 export function useBotHandoffSend(input: {
   readonly activeBot: EnvironmentBot | null;
   readonly targetKey: string;
+  readonly hasAttachments: boolean;
 }) {
   const handoff = useAtomCommand(serverEnvironment.handoffToBots, { label: "bot handoff" });
   return async (prompt: string): Promise<BotHandoffOutcome> => {
     const { activeBot, targetKey } = input;
     if (activeBot === null) return "none";
-    const mentions = botMentionsIn(targetKey, prompt);
-    const others = mentions.filter((mention) => mention.botId !== activeBot.bot.id);
+    const {
+      handoff: others,
+      skipThread,
+      blocked,
+    } = resolveBotHandoff(botMentionsIn(targetKey, prompt), activeBot.bot.id, input.hasAttachments);
     if (others.length === 0) return "none";
+    if (blocked) {
+      toastManager.add({
+        type: "error",
+        title: m(msg("Attachments can't go to another bot")),
+        description: m(msg("Remove them, or send without picking another bot.")),
+      });
+      return "failed";
+    }
     const text = prompt.trim();
     const key = `${targetKey}\u0000${text}\u0000${others.map((m) => m.botId).join(",")}`;
     let pending = pendingHandoffs.get(targetKey);
@@ -74,6 +86,6 @@ export function useBotHandoffSend(input: {
       type: "success",
       title: m(msg("Sent to {bots}"), { bots: others.map((mention) => mention.label).join(", ") }),
     });
-    return others.length === mentions.length ? "handed-off-only" : "handed-off";
+    return skipThread ? "handed-off-only" : "handed-off";
   };
 }

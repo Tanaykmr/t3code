@@ -7,6 +7,7 @@ import {
   isValidBotName,
   mentionQueryAt,
   mentionsInText,
+  resolveBotHandoff,
   sortBots,
 } from "./bots.ts";
 
@@ -77,5 +78,27 @@ describe("bots", () => {
     expect(mentionQueryAt("ask @Bo", 7)).toEqual({ start: 4, query: "Bo" });
     expect(mentionQueryAt("mail a@b", 8)).toBeNull();
     expect(mentionQueryAt("@", 1)).toEqual({ start: 0, query: "" });
+  });
+
+  it("keeps the DM's own bot idle unless picked, and holds a handoff with attachments", () => {
+    const bolt = { botId: BotId.make("bolt"), label: "Bolt" };
+    const ada = { botId: BotId.make("ada"), label: "Ada" };
+    expect(resolveBotHandoff([bolt], "ada", false)).toEqual({
+      handoff: [bolt],
+      skipThread: true,
+      blocked: false,
+    });
+    expect(resolveBotHandoff([ada, bolt], "ada", false)).toEqual({
+      handoff: [bolt],
+      skipThread: false,
+      blocked: false,
+    });
+    expect(resolveBotHandoff([], "ada", true)).toEqual({
+      handoff: [],
+      skipThread: false,
+      blocked: false,
+    });
+    // A handoff sends text only, so files or images must not silently drop out of it.
+    expect(resolveBotHandoff([bolt], "ada", true).blocked).toBe(true);
   });
 });

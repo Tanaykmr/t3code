@@ -4644,6 +4644,8 @@
   "548123cb74c4abcf": "Límites de uso no disponibles",
   "b0eadfef07c14ecb": "Este proveedor no informa de límites actualmente.",
   "da39f97188187260": "Adjuntando texto pegado",
+  "3b481c1e3a187175": "Los adjuntos no pueden ir a otro bot",
+  "c006fe8cbeb650fd": "Quítalos o envía sin elegir otro bot.",
   "fbbae5b31766aeec": "No se pudo pasar al bot",
   "a0753692f70d9400": "Enviado a {bots}",
   "ec69e0a9202da9d3": "El próximo envío conserva los {tokens} tokens del historial",

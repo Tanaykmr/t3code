@@ -3367,6 +3367,8 @@
   "c3cb3fe916f6fec5": "Aún no hay bots.",
   "f15a46fd65bc6906": "Salas",
   "85cb47ffa4f48bd3": "Aún no hay salas.",
+  "3b481c1e3a187175": "Los adjuntos no pueden ir a otro bot",
+  "c006fe8cbeb650fd": "Quítalos o envía sin elegir otro bot.",
   "fbbae5b31766aeec": "No se pudo pasar al bot",
   "a0753692f70d9400": "Enviado a {bots}",
   "49cc06e79f21f85a": "{seconds} s",

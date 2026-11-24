@@ -41,15 +41,3 @@ export function handoffIdFor(
   handoffIdByDraft.set(draftKey, { id, signature });
   return id;
 }
-
-/**
- * Where a DM send goes: `handoff` lists the other picked bots, and `skipThread` is true
- * when the DM's own bot was not picked, so it stays idle.
- */
-export function resolveBotHandoff(
-  mentions: ReadonlyArray<BotMention>,
-  dmBotId: string,
-): { readonly handoff: ReadonlyArray<BotMention>; readonly skipThread: boolean } {
-  const handoff = mentions.filter((mention) => mention.botId !== dmBotId);
-  return { handoff, skipThread: handoff.length > 0 && handoff.length === mentions.length };
-}

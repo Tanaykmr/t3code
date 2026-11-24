@@ -4651,6 +4651,8 @@
   "548123cb74c4abcf": "Nutzungslimits nicht verfügbar",
   "b0eadfef07c14ecb": "Dieser Anbieter meldet derzeit keine Limits.",
   "da39f97188187260": "Eingefügter Text wird angehängt",
+  "3b481c1e3a187175": "Anhänge können nicht an einen anderen Bot gehen",
+  "c006fe8cbeb650fd": "Entferne sie oder sende, ohne einen anderen Bot auszuwählen.",
   "fbbae5b31766aeec": "Übergabe an den Bot fehlgeschlagen",
   "a0753692f70d9400": "An {bots} gesendet",
   "ec69e0a9202da9d3": "Beim nächsten Senden bleiben alle {tokens} Tokens des Verlaufs erhalten",

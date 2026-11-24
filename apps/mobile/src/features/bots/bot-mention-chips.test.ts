@@ -6,11 +6,9 @@ import {
   botMentionsIn,
   clearBotMentionChips,
   handoffIdFor,
-  resolveBotHandoff,
 } from "./bot-mention-chips";
 
 const bolt = { botId: BotId.make("bolt"), label: "Bolt" };
-const ada = { botId: BotId.make("ada"), label: "Ada" };
 
 describe("bot mention chips", () => {
   it("routes only picked bots still in the text", () => {
@@ -20,12 +18,6 @@ describe("bot mention chips", () => {
     expect(botMentionsIn("other", "@Bolt typed, not picked")).toEqual([]);
     clearBotMentionChips("draft");
     expect(botMentionsIn("draft", "@Bolt look at this")).toEqual([]);
-  });
-
-  it("keeps the DM's own bot idle unless it is picked too", () => {
-    expect(resolveBotHandoff([bolt], "ada")).toEqual({ handoff: [bolt], skipThread: true });
-    expect(resolveBotHandoff([ada, bolt], "ada")).toEqual({ handoff: [bolt], skipThread: false });
-    expect(resolveBotHandoff([], "ada")).toEqual({ handoff: [], skipThread: false });
   });
 
   it("keeps one handoff id per submission until an edit or a success", () => {
