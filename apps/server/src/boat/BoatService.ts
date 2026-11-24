@@ -55,6 +55,8 @@ import * as BoatHttpApi from "./BoatHttpApi.ts";
 const API_KEY_SECRET = "boat-api-key";
 /** Boat keeps create idempotency keys for 24 hours; stop trusting ours a little before. */
 const IDEMPOTENCY_WINDOW_MS = 23 * 60 * 60 * 1000;
+/** How long label discovery keeps looking for a create that may have reached Boat. */
+const DISCOVERY_GRACE_MS = IDEMPOTENCY_WINDOW_MS + 60 * 60 * 1000;
 const POLL_INTERVAL = "3 seconds";
 /** About ten minutes of polling before an operation waits for the next reconcile. */
 const POLL_ATTEMPTS = 200;
@@ -111,7 +113,9 @@ const decodeUsage = Schema.decodeUnknownOption(UsageJson);
 const encodeUsage = Schema.encodeEffect(UsageJson);
 
 /** Raised before anything reached Boat; settles the operation without cleanup. */
-class OperationRefused extends Schema.TaggedError<OperationRefused>()("OperationRefused", {}) {}
+class OperationRefused extends Schema.TaggedError<OperationRefused>()("OperationRefused", {
+  code: Schema.Literals(["bootstrap-unavailable", "provider-rejected", "provider-unavailable"]),
+}) {}
 
 /** Raised inside a run to settle its operation as failed with a safe code. */
 class OperationFailed extends Schema.TaggedError<OperationFailed>()("OperationFailed", {
@@ -433,7 +437,9 @@ export const make = Effect.gen(function* () {
     // A create this server cannot finish is refused before Boat sees it. One that may already
     // have been sent (it left "queued") is only discovered, so an accepted machine is not lost.
     const discoverOnly = server.sandbox_id === null && !bootstrap.available;
-    if (discoverOnly && op.stage === "queued") return yield* new OperationRefused();
+    if (discoverOnly && op.stage === "queued") {
+      return yield* new OperationRefused({ code: "bootstrap-unavailable" });
+    }
     yield* setStage(op.request_id, "allocating");
     let sandboxId = server.sandbox_id;
     if (sandboxId === null) {
@@ -473,7 +479,10 @@ export const make = Effect.gen(function* () {
         if (Option.isNone(listed)) return false;
         const matches = listed.value;
         const [only] = matches;
-        if (discoverOnly && matches.length === 0) return yield* new OperationRefused();
+        // Boat may list an accepted machine a little later; keep looking before giving up.
+        if (matches.length === 0 && now - Date.parse(op.created_at) < DISCOVERY_GRACE_MS) {
+          return false;
+        }
         if (matches.length !== 1 || only === undefined) {
           return yield* new OperationFailed({ code: "unresolved-create" });
         }
@@ -537,13 +546,23 @@ export const make = Effect.gen(function* () {
   ) {
     const sandboxId = server.sandbox_id;
     if (sandboxId === null) return yield* new OperationFailed({ code: "not-found" });
-    if (!bootstrap.available) return yield* new OperationRefused();
+    if (!bootstrap.available && op.stage === "queued") {
+      return yield* new OperationRefused({ code: "bootstrap-unavailable" });
+    }
+    // A stop queued behind this resume wins rather than waiting on Boat to accept a wake.
+    if (op.stage === "queued" && (yield* hasPendingStop(server.managed_id))) {
+      return yield* new OperationRefused({ code: "provider-unavailable" });
+    }
     yield* setStage(op.request_id, "resuming");
     yield* setServer(server.managed_id, { lifecycle: "provisioning" });
     // Only an archived machine is woken; one already waking or live is just watched, since a
     // resume whose reply was lost may have been accepted.
     const current = yield* retryTransient(api.get(key, sandboxId));
     yield* observe(server.managed_id, current);
+    // This build cannot verify a guest: never wake one; one already woken is failed below.
+    if (!bootstrap.available && current.state === "archived") {
+      return yield* new OperationRefused({ code: "bootstrap-unavailable" });
+    }
     if (current.state === "archived") {
       // Sent once per pass: a later pass looks at the machine again before any resend.
       const sent = yield* api.resume(key, sandboxId, server.ttl_seconds).pipe(
@@ -554,19 +573,27 @@ export const make = Effect.gen(function* () {
           () => Effect.succeed("refused" as const),
         ),
       );
-      if (sent === "unknown") return false;
+      if (sent === "unknown") {
+        // Nothing was confirmed sent; a stop waiting behind this resume goes first.
+        if (yield* hasPendingStop(server.managed_id)) {
+          return yield* new OperationRefused({ code: "provider-unavailable" });
+        }
+        return false;
+      }
       if (sent === "refused") {
         const after = yield* retryTransient(api.get(key, sandboxId));
         yield* observe(server.managed_id, after);
         if (after.state === "archiving") return false;
-        // Still archived after a refusal is a definite no; settle so queued work can run.
+        // Still archived after a refusal is a definite no: nothing woke, so nothing to stop.
         if (after.state === "archived") {
-          return yield* new OperationFailed({ code: "provider-rejected" });
+          return yield* new OperationRefused({ code: "provider-rejected" });
         }
       }
     }
     const live = yield* pollUntil(key, server.managed_id, sandboxId, (s) => isLiveState(s.state));
     if (Option.isNone(live)) return false;
+    // Woken by an earlier build but this one cannot verify the guest: fail, which stops it.
+    if (!bootstrap.available) return yield* new OperationFailed({ code: "bootstrap-failed" });
     yield* bootstrapGuest(key, op, server, sandboxId);
     return true;
   });
@@ -667,10 +694,13 @@ export const make = Effect.gen(function* () {
     return true;
   });
 
-  const settleRefusal = Effect.fn("BoatService.settleRefusal")(function* (op: OperationRow) {
-    // Nothing changed at Boat: a refused resume leaves the machine as it was.
+  const settleRefusal = Effect.fn("BoatService.settleRefusal")(function* (
+    op: OperationRow,
+    failure: OperationRefused["code"],
+  ) {
+    // Nothing woke at Boat: a refused resume leaves the machine stopped, with no cleanup stop.
     yield* setServer(op.managed_id, { lifecycle: op.kind === "resume" ? "stopped" : "failed" });
-    yield* setStage(op.request_id, "failed", { failure: "bootstrap-unavailable" });
+    yield* setStage(op.request_id, "failed", { failure });
     return true;
   });
 
@@ -698,7 +728,7 @@ export const make = Effect.gen(function* () {
     (effect, op) =>
       effect.pipe(
         Effect.catchTags({
-          OperationRefused: () => settleRefusal(op),
+          OperationRefused: (refusal) => settleRefusal(op, refusal.code),
           BoatApiError: (error) => settleFailure(op, failureCode(error)),
           BoatBootstrapError: (error) => settleFailure(op, failureCode(error)),
           OperationFailed: (error) => settleFailure(op, error.code as BoatFailureCode),

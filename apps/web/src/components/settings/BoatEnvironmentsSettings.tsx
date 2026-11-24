@@ -30,6 +30,7 @@ import { useNowMinute } from "../../hooks/useNowMinute";
 import { cn, randomUUID } from "../../lib/utils";
 import { environmentAtomList, environmentIdsKey } from "../../state/environmentAtomList";
 import { type EnvironmentPresentation, useEnvironments } from "../../state/environments";
+import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { serverEnvironment } from "../../state/server";
 import { environmentSession, useEnvironmentsWithScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -137,8 +138,9 @@ function BoatRowView({ row, nowMs }: { readonly row: BoatRow; readonly nowMs: nu
   const { server } = row;
   const operation = server.operation;
   const stage = operation === null ? null : labels.stage[operation.stage];
+  // A refused action can leave the machine Stopped; its reason still shows.
   const failure =
-    server.lifecycle === "failed" && operation?.failure ? labels.failure[operation.failure] : null;
+    operation?.stage === "failed" && operation.failure ? labels.failure[operation.failure] : null;
   const minutesLeft =
     server.autoStopAt === null || server.lifecycle !== "running"
       ? null
@@ -278,6 +280,20 @@ function BoatKeyRow({
   });
   const { account } = snapshot;
   const save = async (apiKey: string | null) => {
+    // Checked again at send time: the route may have changed since the form rendered.
+    const route = appAtomRegistry.get(
+      environmentSession.preparedConnectionValueAtom(environment.environmentId),
+    );
+    if (apiKey !== null && !boatKeyRouteIsPrivate(Option.getOrNull(route)?.socketUrl ?? null)) {
+      setDraft("");
+      toastManager.add({
+        type: "error",
+        title: gt(
+          "This connection is plain HTTP over the network. Enter the key over HTTPS, T3 Connect, or on that machine.",
+        ),
+      });
+      return;
+    }
     setSaving(true);
     const result = await setKey({ environmentId: environment.environmentId, input: { apiKey } });
     setSaving(false);

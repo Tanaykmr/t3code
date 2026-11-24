@@ -438,6 +438,63 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("keeps looking for a create that may have reached Boat instead of dropping it", () => {
+    const { layer, fake } = setup({ bootstrapAvailable: false });
+    return Effect.gen(function* () {
+      yield* configure;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO boat_servers (managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at)
+        VALUES ('boat_sent', 'acct_fake', 'Sent', 'small', 3600, 'provisioning', 'unknown', '1970-01-01T00:00:00.000Z')
+      `;
+      // It left "queued", so an earlier build may have sent it before restarting.
+      yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+        VALUES ('00000000-0000-4000-8000-0000000000fe', 'boat_sent', 'create', '', 'allocating', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z')
+      `;
+      yield* settle;
+      expect((yield* server("boat_sent"))?.operation).toMatchObject({
+        stage: "allocating",
+        failure: null,
+      });
+      expect(fake.calls).toContain("list");
+      expect(fake.calls).not.toContain("create");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("lets a stop queued behind a resume win without waking the machine", () => {
+    const gate = Deferred.makeUnsafe<void>();
+    let hold = false;
+    const { layer, fake } = setup({
+      latency: Effect.suspend(() => (hold ? Deferred.await(gate) : Effect.void)),
+    });
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      hold = true;
+      // The resume's worker is parked on the account read; the stop queues behind it.
+      const sql = yield* SqlClient.SqlClient;
+      const resumeId = requestId();
+      yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+        VALUES (${resumeId}, ${managedId}, 'resume', ${managedId}, 'queued', '1970-01-01T00:00:01.000Z', '1970-01-01T00:00:01.000Z')
+      `;
+      yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+        VALUES (${requestId()}, ${managedId}, 'stop', ${managedId}, 'queued', '1970-01-01T00:00:02.000Z', '1970-01-01T00:00:02.000Z')
+      `;
+      hold = false;
+      yield* Deferred.succeed(gate, undefined);
+      yield* settle;
+      expect(fake.calls).not.toContain("resume");
+      expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("keeps the key while it still manages machines", () => {
     const { layer } = setup();
     return Effect.gen(function* () {

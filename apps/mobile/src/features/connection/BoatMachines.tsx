@@ -33,6 +33,7 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { cn } from "../../lib/cn";
 import { uuidv4 } from "../../lib/uuid";
 import { useEnvironments } from "../../state/environments";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { serverEnvironment } from "../../state/server";
 import { environmentSession, useEnvironmentsWithScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -123,7 +124,7 @@ function BoatMachineRow({ row, nowMs }: { readonly row: BoatRow; readonly nowMs:
       : null,
     row.stale ? gt("Controller offline") : null,
   ].filter((part): part is string => part !== null);
-  const failed = server.lifecycle === "failed" && server.operation?.failure != null;
+  const failed = server.operation?.stage === "failed" && server.operation.failure != null;
 
   const run = async (action: BoatAction) => {
     setBusy(true);
@@ -197,7 +198,7 @@ function BoatMachineRow({ row, nowMs }: { readonly row: BoatRow; readonly nowMs:
         </Text>
         {failed ? (
           <Text className="text-sm text-danger-foreground">
-            {gt("The last action failed. Stop or Delete are still available.")}
+            {gt("The last action did not complete.")}
           </Text>
         ) : null}
       </View>
@@ -225,6 +226,19 @@ function BoatKeyRow(props: {
   const privateRoute = boatKeyRouteIsPrivate(Option.getOrNull(prepared)?.socketUrl ?? null);
   const save = async (apiKey: string) => {
     if (apiKey.trim() === "") return;
+    // Checked again at send time: the route may have changed since the field rendered.
+    const route = appAtomRegistry.get(
+      environmentSession.preparedConnectionValueAtom(props.environmentId),
+    );
+    if (!boatKeyRouteIsPrivate(Option.getOrNull(route)?.socketUrl ?? null)) {
+      setDraft("");
+      Dialog.alert(
+        gt(
+          "This connection is plain HTTP over the network. Enter the key over HTTPS, T3 Connect, or on that machine.",
+        ),
+      );
+      return;
+    }
     setSaving(true);
     const result = await setKey({
       environmentId: props.environmentId,

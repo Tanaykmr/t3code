@@ -156,13 +156,13 @@ export async function sendBoatRequest(request: BoatPendingRequest): Promise<Outc
 
 /** Sends again every saved create for the controllers now connected, and drops stale ones. */
 export async function resendPendingBoatRequests(connected: ReadonlySet<EnvironmentId>) {
-  const now = Date.now();
   // Rewriting also drops what the loader refused, such as stale or undated entries.
-  await update((entries) => entries.filter((entry) => isFresh(entry, now)));
+  await update((entries) => entries.filter((entry) => isFresh(entry, Date.now())));
   const saved = await serialized(load);
   if (saved === null) return;
   for (const entry of saved) {
-    if (!isFresh(entry, now) || !connected.has(entry.environmentId)) continue;
+    // The clock is read at each send, so an entry that aged out during storage I/O stays out.
+    if (!isFresh(entry, Date.now()) || !connected.has(entry.environmentId)) continue;
     const { savedAt: _savedAt, ...request } = entry;
     await send(request);
   }
