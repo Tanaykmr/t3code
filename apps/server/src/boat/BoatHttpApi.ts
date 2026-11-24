@@ -29,6 +29,13 @@ const SandboxBody = Schema.Struct({
   dataExpiredAt: Schema.optional(Schema.NullOr(Schema.String)),
   // Boat reports a cancelled sandbox once with only id, state and error.
   snapshotAvailable: Schema.optional(Schema.Boolean),
+  stop: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        status: Schema.Literals(["pending", "failing", "completed", "superseded"]),
+      }),
+    ),
+  ),
 });
 const SandboxEnvelope = Schema.Struct({ sandbox: SandboxBody });
 const ListEnvelope = Schema.Struct({
@@ -62,6 +69,7 @@ const toSandbox = (body: typeof SandboxBody.Type): BoatSandbox => ({
   stoppedAt: body.stoppedAt ?? null,
   dataExpiredAt: body.dataExpiredAt ?? null,
   snapshotAvailable: body.snapshotAvailable ?? null,
+  stopStatus: body.stop?.status ?? null,
 });
 
 function categoryFor(status: number, code: string | undefined): BoatApiErrorCategory {

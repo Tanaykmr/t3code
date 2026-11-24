@@ -49,6 +49,8 @@ export interface BoatSandbox {
   readonly dataExpiredAt: string | null;
   /** Null when Boat's reply left it out, which says nothing about the disk. */
   readonly snapshotAvailable: boolean | null;
+  /** Boat's latest stop for this sandbox; "failing" retries archival, "superseded" lost to a start. */
+  readonly stopStatus: "pending" | "failing" | "completed" | "superseded" | null;
 }
 
 export interface BoatAccount {

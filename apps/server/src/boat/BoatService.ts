@@ -110,6 +110,8 @@ interface AccountRow {
 const decodeServer = Schema.decodeUnknownOption(BoatServer);
 /** Marks a stop or resume Boat acknowledged, so later passes only confirm it. */
 const ACKNOWLEDGED = "acknowledged";
+/** Set just before a stop is first sent, so an unanswered send is never repeated blind. */
+const DISPATCHING = "dispatching";
 const isBoatError = Schema.is(BoatError);
 const UsageJson = Schema.fromJsonString(BoatUsageSample);
 const decodeUsage = Schema.decodeUnknownOption(UsageJson);
@@ -533,22 +535,25 @@ export const make = Effect.gen(function* () {
     yield* setStage(op.request_id, "stopping");
     yield* setServer(server.managed_id, { lifecycle: "stopping" });
     if (!acknowledged) {
-      // A graceful stop is safe to send unseen; only skip it when Boat already reports archived.
       const current = yield* retryTransient(api.get(key, sandboxId)).pipe(
         Effect.asSome,
         Effect.catchIf(isTransient, () => Effect.succeedNone),
       );
+      // Unseen, only a stop never sent before goes out; an earlier unanswered send waits.
+      if (Option.isNone(current) && op.provider_operation_id === DISPATCHING) return false;
       if (Option.isNone(current) || current.value.state !== "archived") {
+        yield* setStage(op.request_id, "stopping", { provider_operation_id: DISPATCHING });
         yield* retryTransient(api.stop(key, sandboxId));
         yield* setStage(op.request_id, "stopping", { provider_operation_id: ACKNOWLEDGED });
       }
     } else {
-      // Boat took this stop earlier. A live machine now was started again outside T3: report
-      // that rather than stopping it a second time.
+      // Boat took this stop earlier. Only Boat's own word that a start superseded it counts as
+      // an external start; a stop still pending or retrying a snapshot keeps the row Stopping.
       const current = yield* retryTransient(api.get(key, sandboxId));
       yield* observe(server.managed_id, current);
-      if (isLiveState(current.state))
+      if (isLiveState(current.state) && current.stopStatus === "superseded") {
         return yield* new OperationRefused({ code: "provider-rejected" });
+      }
     }
     const archived = yield* pollUntil(
       key,
@@ -593,9 +598,18 @@ export const make = Effect.gen(function* () {
     // Settle as stopped rather than waking it again with a fresh deadline.
     if (op.provider_operation_id === ACKNOWLEDGED && current.state === "archived") {
       yield* setServer(server.managed_id, {
-        lifecycle: "stopped",
         last_stopped_at: current.stoppedAt ?? (yield* nowIso),
       });
+      // One statement, so a stop accepted meanwhile keeps the row Stopping.
+      yield* sql`
+        UPDATE boat_servers SET lifecycle = CASE WHEN EXISTS (
+          SELECT 1 FROM boat_operations
+          WHERE managed_id = ${server.managed_id} AND kind = 'stop'
+            AND stage NOT IN ('completed', 'failed')
+        ) THEN 'stopping' ELSE 'stopped' END
+        WHERE managed_id = ${server.managed_id}
+      `;
+      yield* publish;
       return true;
     }
     // This build cannot verify a guest: never wake one; one already woken is failed below.

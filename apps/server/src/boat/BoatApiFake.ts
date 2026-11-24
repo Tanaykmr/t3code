@@ -79,6 +79,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
       archiveAfter: null,
       snapshotAvailable: true,
       dataExpiredAt: iso(now + RETENTION_MS),
+      stopStatus: "completed",
     });
 
   const createSandbox = Effect.fn("FakeBoat.create")(function* (
@@ -109,6 +110,7 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
         stoppedAt: null,
         dataExpiredAt: null,
         snapshotAvailable: false,
+        stopStatus: null,
       },
     };
     sandboxes.set(id, entry);
@@ -229,7 +231,13 @@ export function makeFakeBoat(options: FakeBoatOptions = {}) {
     /** As if someone resumed the sandbox from Boat's dashboard. */
     resumeExternally: (sandboxId: string) => {
       const entry = sandboxes.get(sandboxId);
-      if (entry !== undefined) patch(entry, { state: "running", stoppedAt: null });
+      if (entry !== undefined) {
+        patch(entry, {
+          state: "running",
+          stoppedAt: null,
+          stopStatus: entry.sandbox.stopStatus === null ? null : "superseded",
+        });
+      }
     },
     /** As if someone deleted the sandbox from Boat's dashboard. */
     deleteExternally: (sandboxId: string) => sandboxes.delete(sandboxId),
