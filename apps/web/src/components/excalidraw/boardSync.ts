@@ -90,6 +90,22 @@ export function observeEditor(
   const present = new Set<string>();
   for (const element of elements) {
     present.add(element.id);
+    const queued = session.drafts.get(element.id);
+    if (queued?.type === TOMBSTONE && !element.isDeleted) {
+      // A record an import dropped came back: cancel its deletion, or restore it after the
+      // deletion already in flight lands.
+      if (session.pending?.sent.get(element.id)?.draft === queued) {
+        session.drafts.set(element.id, JSON.parse(JSON.stringify(element)) as BoardElement);
+      } else {
+        session.drafts.delete(element.id);
+        session.draftOrderRevision.delete(element.id);
+        if (session.baseline.get(element.id) !== editorStamp(element)) {
+          session.drafts.set(element.id, JSON.parse(JSON.stringify(element)) as BoardElement);
+        }
+      }
+      changed = true;
+      continue;
+    }
     if (session.baseline.get(element.id) === editorStamp(element)) continue;
     const draft = session.drafts.get(element.id);
     if (draft?.version === element.version && draft.versionNonce === element.versionNonce) continue;

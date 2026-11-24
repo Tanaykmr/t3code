@@ -394,6 +394,13 @@ layer("board toolkit", (it) => {
       expect(stored.get(ids.a!)!.height).toBeGreaterThan(60);
       expect(relabeled.elements.map((element) => element.id)).toContain(ids.link);
       expect(stored.get(ids.link!)!.y).not.toBe(30);
+      // Only the end on the box that grew moves; the end on unchanged B stays put.
+      const farEnd = (arrow: Record<string, unknown>) => {
+        const points = arrow["points"] as ReadonlyArray<readonly [number, number]>;
+        const [dx, dy] = points[points.length - 1]!;
+        return [Math.round((arrow["x"] as number) + dx), Math.round((arrow["y"] as number) + dy)];
+      };
+      expect(farEnd(stored.get(ids.link!)!)).toEqual(farEnd(before));
 
       yield* userEdit(threadId, ids.link!, { elbowed: true });
       read = yield* callAs(as, "board_get", {});

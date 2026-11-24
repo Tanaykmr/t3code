@@ -127,7 +127,10 @@ export class BoardController {
     }
     return {
       elements,
-      viewBackgroundColor: session.draftBackground ?? session.shownBackground,
+      viewBackgroundColor:
+        session.draftBackground ??
+        session.pending?.settings?.viewBackgroundColor ??
+        session.shownBackground,
     };
   }
 
@@ -224,8 +227,10 @@ export class BoardController {
       this.held,
     );
     const background = view.settings.viewBackgroundColor;
+    // While our own color is saving, the stream's older color must not replace it.
     const backgroundChanged =
       session.draftBackground === null &&
+      session.pending?.settings === undefined &&
       session.shownBackground !== background &&
       view.board.revision >= session.backgroundRevision;
     if (next === null && !backgroundChanged) return;

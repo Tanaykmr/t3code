@@ -356,6 +356,30 @@ describe("board sync", () => {
     expect(take(session, "m2")?.expectedOrderRevision).toBe(2);
   });
 
+  it("cancels an import's queued deletion when the record comes back unchanged", () => {
+    const session = synced([element("a")]);
+    observeEditor(session, [], "#ffffff");
+    expect(observeEditor(session, [element("a")], "#ffffff")).toBe(true);
+    expect(take(session)).toBeNull();
+  });
+
+  it("restores a record whose import deletion is already in flight", () => {
+    const session = synced([element("a")]);
+    observeEditor(session, [], "#ffffff");
+    take(session);
+    observeEditor(session, [element("a")], "#ffffff");
+    acknowledge(session, {
+      revision: 2,
+      orderRevision: 1,
+      previousOrderRevision: 1,
+      elements: [{ id: "a", version: 3, versionNonce: 30, index: "aa" }],
+    });
+    expect(take(session, "m2")?.operations[0]).toMatchObject({
+      type: "restore",
+      expected: { version: 3, versionNonce: 30 },
+    });
+  });
+
   it("holds remote records under local drafts and gestures, and applies the rest", () => {
     const session = synced([element("a"), element("b"), element("c")]);
     observeEditor(

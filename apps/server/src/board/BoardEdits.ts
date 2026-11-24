@@ -463,8 +463,11 @@ export const compileBoardEdits = (input: {
   /** Set when an edit would move an elbow arrow, which needs the editor's own router. */
   let movesElbow = false;
 
-  /** Re-aims an arrow's bound ends at its targets' outlines, keeping any bend points. */
-  const routeArrow = (arrowId: string, seed?: ReadonlyArray<Point>) => {
+  /**
+   * Re-aims an arrow's bound ends at its targets' outlines, keeping any bend points. When one
+   * shape changed, only the end bound to it moves; the other end keeps its native placement.
+   */
+  const routeArrow = (arrowId: string, seed?: ReadonlyArray<Point>, movedId?: string) => {
     if (read(arrowId)?.elbowed === true) {
       movesElbow = true;
       return;
@@ -477,11 +480,11 @@ export const compileBoardEdits = (input: {
     const start = startId === null ? undefined : live(startId);
     const end = endId === null ? undefined : live(endId);
     const last = points.length - 1;
-    if (start !== undefined) {
+    if (start !== undefined && (movedId === undefined || startId === movedId)) {
       const toward = last > 1 ? points[1]! : end !== undefined ? centerOf(end) : points[last]!;
       points[0] = edgePoint(start, toward);
     }
-    if (end !== undefined) {
+    if (end !== undefined && (movedId === undefined || endId === movedId)) {
       const toward =
         last > 1 ? points[last - 1]! : start !== undefined ? centerOf(start) : points[0]!;
       points[last] = edgePoint(end, toward);
@@ -503,7 +506,7 @@ export const compileBoardEdits = (input: {
   const relayoutDependents = (id: string) => {
     relayoutLabel(id);
     for (const ref of boundRefs(read(id)!)) {
-      if (ref.type === "arrow" && live(ref.id) !== undefined) routeArrow(ref.id);
+      if (ref.type === "arrow" && live(ref.id) !== undefined) routeArrow(ref.id, undefined, id);
     }
   };
 

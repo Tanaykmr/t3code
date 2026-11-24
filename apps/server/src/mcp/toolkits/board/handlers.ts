@@ -67,11 +67,13 @@ const refusePlanMode = Effect.fn("BoardToolkit.refusePlanMode")(function* () {
   }
 });
 
+const utf8 = new TextEncoder();
+
 /** FNV-1a, enough to tell one board_get filter from another in a cursor. */
 const filterKey = (ids: ReadonlyArray<string> | undefined, text: string | undefined) => {
   let hash = 0x811c9dc5;
-  for (const char of JSON.stringify([ids ?? null, text ?? null])) {
-    hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193);
+  for (const byte of utf8.encode(JSON.stringify([ids ?? null, text ?? null]))) {
+    hash = Math.imul(hash ^ byte, 0x01000193);
   }
   return (hash >>> 0).toString(36);
 };
@@ -89,7 +91,8 @@ const page = (candidates: ReadonlyArray<BoardSummaryElement>) => {
   let bytes = 0;
   for (const element of candidates) {
     const clipped = clipBoardSummary(element);
-    bytes += JSON.stringify(clipped).length;
+    // Encoded size, plus the comma between array items.
+    bytes += utf8.encode(JSON.stringify(clipped)).length + 1;
     if (elements.length > 0 && bytes > PAGE_BYTES) break;
     elements.push(clipped);
   }
