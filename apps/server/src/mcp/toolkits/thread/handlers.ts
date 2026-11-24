@@ -156,9 +156,14 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       const matches =
         scope.bot === true
           ? yield* Effect.filter(found, (match) =>
-              isForeignBotThread(threads, scope, match.threadId).pipe(
-                Effect.map((foreign) => !foreign),
-              ),
+              Effect.gen(function* () {
+                // A hit whose thread is gone cannot be checked, so its snippet stays hidden.
+                const shell = yield* threads
+                  .getThreadShell(match.threadId)
+                  .pipe(Effect.orElseSucceed(() => null));
+                if (shell === null) return false;
+                return !(yield* isForeignBotThread(threads, scope, match.threadId));
+              }),
             )
           : found;
       return {

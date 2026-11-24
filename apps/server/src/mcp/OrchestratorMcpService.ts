@@ -2539,6 +2539,17 @@ const make = Effect.gen(function* () {
           );
         }
         if (
+          scope.bot === true &&
+          parent !== undefined &&
+          Option.isSome(botTurnContext) &&
+          !(yield* botTurnContext.value.isOperatorTurn(parent.thread.id))
+        ) {
+          return yield* failure(
+            "invalid_request",
+            "A bot changes routines only when the user asks in its chat, not for another bot or a routine.",
+          );
+        }
+        if (
           input.bindToCurrentThread === true &&
           (parent === undefined || parent.thread.projectId !== existing.projectId)
         ) {

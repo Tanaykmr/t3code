@@ -104,6 +104,20 @@ export const layer = McpToolAccess.toLayer(
                 message: "That thread belongs to a bot. Agents cannot message it directly.",
               });
             }
+            if (
+              scope.bot === true &&
+              scope.thread !== undefined &&
+              Option.isSome(bots) &&
+              !((yield* bots.value.workTargets(scope.thread.threadId)) ?? []).includes(
+                projection.thread.projectId,
+              )
+            ) {
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message:
+                  "A bot works only in its work targets. Use delegate_task with one of them.",
+              });
+            }
             if (projection.thread.archivedAt !== null)
               return yield* new OrchestratorMcpFailure({
                 code: "invalid_request",
