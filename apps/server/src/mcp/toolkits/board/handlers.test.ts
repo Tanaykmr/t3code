@@ -422,6 +422,40 @@ layer("board toolkit", (it) => {
     }),
   );
 
+  it.effect("refuses reroutes onto rotated shapes and moves of frames", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-rotated");
+      const as = threadCaller(threadId);
+      yield* callAs(as, "board_create", {});
+      const { ids } = yield* callAs(as, "board_apply", {
+        edits: [
+          box("a", 0, "A"),
+          box("b", 300, "B"),
+          { op: "create", type: "arrow", id: "link", start: "a", end: "b" },
+        ],
+      });
+      yield* userEdit(threadId, ids.b!, { angle: 0.5 });
+      let read = yield* callAs(as, "board_get", {});
+      const a = read.elements.find((element) => element.id === ids.a)!;
+      expect(
+        yield* callAs(as, "board_apply", {
+          revision: read.revision,
+          edits: [{ op: "patch", id: a.id, expected: token(a), x: 40 }],
+        }).pipe(Effect.flip),
+      ).toMatchObject({ code: "invalid_request", message: expect.stringContaining("rotated") });
+
+      yield* userEdit(threadId, ids.a!, { type: "frame" });
+      read = yield* callAs(as, "board_get", {});
+      const frame = read.elements.find((element) => element.id === ids.a)!;
+      expect(
+        yield* callAs(as, "board_apply", {
+          revision: read.revision,
+          edits: [{ op: "patch", id: frame.id, expected: token(frame), x: 40 }],
+        }).pipe(Effect.flip),
+      ).toMatchObject({ code: "invalid_request", message: expect.stringContaining("frame") });
+    }),
+  );
+
   it.effect("pages board_get by size and searches text past the preview", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread-pages");

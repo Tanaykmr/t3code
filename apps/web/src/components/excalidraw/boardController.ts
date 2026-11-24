@@ -53,7 +53,11 @@ const asEditorElements = (elements: ReadonlyArray<BoardElement>) =>
   });
 
 /** Ids an unfinished gesture or text edit is changing, or null when nothing is in progress. */
-function gestureIds(appState: AppState, composing: boolean): ReadonlySet<string> | null {
+function gestureIds(
+  appState: AppState,
+  composing: boolean,
+  elements: ReadonlyArray<ExcalidrawElement>,
+): ReadonlySet<string> | null {
   const active =
     composing ||
     appState.cursorButton === "down" ||
@@ -63,7 +67,7 @@ function gestureIds(appState: AppState, composing: boolean): ReadonlySet<string>
     appState.isResizing ||
     appState.isRotating;
   if (!active) return null;
-  return new Set(
+  const ids = new Set(
     [
       ...Object.keys(appState.selectedElementIds),
       appState.newElement?.id,
@@ -71,6 +75,15 @@ function gestureIds(appState: AppState, composing: boolean): ReadonlySet<string>
       appState.editingTextElement?.id,
     ].filter((id) => id !== undefined),
   );
+  // Dragging a shape also moves its labels and attached arrows, and an arrow's ends move
+  // with it, so those records are part of the gesture too.
+  for (const element of elements) {
+    if (!ids.has(element.id)) continue;
+    for (const bound of element.boundElements ?? []) ids.add(bound.id);
+    if ("startBinding" in element && element.startBinding) ids.add(element.startBinding.elementId);
+    if ("endBinding" in element && element.endBinding) ids.add(element.endBinding.elementId);
+  }
+  return ids;
 }
 
 /**
@@ -87,6 +100,8 @@ export class BoardController {
   private readonly fetching = new Set<string>();
   private flushTimer: number | null = null;
   private retryTimer: number | null = null;
+  /** True while a batch is on the wire, so a stream update cannot send it a second time. */
+  private sending = false;
   private saveState: SaveState = "saved";
   private readonly listeners = new Set<() => void>();
 
@@ -165,7 +180,7 @@ export class BoardController {
   ) {
     // A remounted editor starts without the bytes of images that are still unsent.
     this.files = { ...this.files, ...files };
-    const gesture = gestureIds(appState, input.composing);
+    const gesture = gestureIds(appState, input.composing, elements);
     const wasHeld = this.held.size > 0;
     this.held = gesture ?? new Set();
     if (gesture !== null || this.api === null) return;
@@ -210,7 +225,7 @@ export class BoardController {
     if (this.api === null || this.view === null) return;
     this.showCanonical();
     this.loadFiles();
-    if (this.session.pending !== null && this.retryTimer === null) this.send();
+    if (this.session.pending !== null && this.retryTimer === null && !this.sending) this.send();
   }
 
   private showCanonical() {
@@ -297,7 +312,7 @@ export class BoardController {
 
   private send() {
     const { session, view } = this;
-    if (view === null) return;
+    if (view === null || this.sending) return;
     const batch =
       session.pending ??
       takeBatch(session, {
@@ -317,6 +332,7 @@ export class BoardController {
       return;
     }
     this.retryTimer = null;
+    this.sending = true;
     this.setSaveState("saving");
     void runAtomCommand(
       appAtomRegistry,
@@ -337,6 +353,7 @@ export class BoardController {
       },
       { reportFailure: false },
     ).then((outcome) => {
+      this.sending = false;
       if (session.pending?.mutationId !== batch.mutationId) return;
       if (outcome._tag === "Success") {
         acknowledge(session, outcome.value);

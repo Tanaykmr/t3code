@@ -399,10 +399,13 @@ export function reconcile<T extends { readonly id: string; readonly index: strin
     applied.push(record);
   }
   let discarded = false;
+  const committed = new Set(canonical.elements.map((record) => record.id));
   for (const id of session.discard) {
     if (held.has(id)) continue;
-    discarded = next.delete(id) || discarded;
     session.discard.delete(id);
+    // Another editor committed this id first; its record replaces ours, it is not removed.
+    if (committed.has(id)) continue;
+    discarded = next.delete(id) || discarded;
   }
   if (applied.length === 0 && !discarded) return null;
   return { elements: [...next.values()].toSorted(order), applied };

@@ -405,6 +405,16 @@ describe("board sync", () => {
     expect(session.draftBackground).toBeNull();
   });
 
+  it("keeps another editor's committed record when our create of the same id is rejected", () => {
+    const session = synced([]);
+    observeEditor(session, [element("n", { x: 1 })], "#ffffff");
+    take(session);
+    rejectPending(session);
+    const winner = element("n", { version: 2, versionNonce: 20, x: 9 });
+    const next = reconcile(session, scene([winner]), [element("n", { x: 1 })], new Set());
+    expect(next?.elements).toEqual([winner]);
+  });
+
   it("holds remote records under local drafts and gestures, and applies the rest", () => {
     const session = synced([element("a"), element("b"), element("c")]);
     observeEditor(

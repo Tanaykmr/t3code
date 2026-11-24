@@ -468,8 +468,15 @@ export const compileBoardEdits = (input: {
    * shape changed, only the end bound to it moves; the other end keeps its native placement.
    */
   const routeArrow = (arrowId: string, seed?: ReadonlyArray<Point>, movedId?: string) => {
-    // Elbow and rotated arrows need the editor's own geometry to reroute.
-    if (read(arrowId)?.elbowed === true || (read(arrowId)?.angle ?? 0) !== 0) {
+    // Elbow and rotated arrows, and arrows on rotated shapes, need the editor's own geometry.
+    const rotated = (id: string | null) => id !== null && (read(id)?.angle ?? 0) !== 0;
+    const current = read(arrowId);
+    if (
+      current?.elbowed === true ||
+      rotated(arrowId) ||
+      rotated(bindingTarget(current?.startBinding)) ||
+      rotated(bindingTarget(current?.endBinding))
+    ) {
       movesElbow = true;
       return;
     }
@@ -784,6 +791,14 @@ export const compileBoardEdits = (input: {
       return { _tag: "Invalid", message: `${where}: a ${target.type} cannot hold a label.` };
     }
 
+    // A frame's children move with it in the editor; that is not supported here yet.
+    if ((moves || resizes) && (target.type === "frame" || target.type === "magicframe")) {
+      return {
+        _tag: "Invalid",
+        message: `${where}: moving or resizing a frame is not supported yet. Move the shapes inside it instead.`,
+      };
+    }
+
     const element = write(edit.id);
     if (edit.x !== undefined) element.x = edit.x;
     if (edit.y !== undefined) element.y = edit.y;
@@ -810,7 +825,7 @@ export const compileBoardEdits = (input: {
     if (movesElbow) {
       return {
         _tag: "Invalid",
-        message: `${where}: "${edit.id}" has an elbow or rotated connector, and rerouting one is not supported yet. Leave its size and position, or delete the connector first.`,
+        message: `${where}: "${edit.id}" is attached to an elbow, rotated, or rotated-shape connector, and rerouting one is not supported yet. Leave its size and position, or delete the connector first.`,
       };
     }
   }
