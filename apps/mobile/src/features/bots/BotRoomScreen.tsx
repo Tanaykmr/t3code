@@ -44,6 +44,29 @@ const DELIVERY_LABEL = {
   cancelled: msg("Stopped", { $context: "bot delivery status" }),
 } as const;
 
+const DELIVERY_REASON = {
+  "Bot deleted": msg("Bot deleted"),
+  "Bot archived": msg("Bot archived"),
+  "Message missing": msg("Message missing"),
+  "Room archived": msg("Room archived"),
+  "Removed from the room": msg("Removed from the room"),
+  "Chat deleted": msg("Chat deleted"),
+  "Needs more access than the sender has": msg("Needs more access than the sender has"),
+  "The run failed": msg("The run failed"),
+  Stopped: msg("Stopped", { $context: "bot delivery status" }),
+  "Could not deliver": msg("Could not deliver"),
+} as const;
+
+/** The server sends a fixed set of reasons; anything else shows as sent. */
+function deliveryReason(
+  reason: string,
+  m: (message: (typeof DELIVERY_REASON)[keyof typeof DELIVERY_REASON]) => string,
+) {
+  return Object.hasOwn(DELIVERY_REASON, reason)
+    ? m(DELIVERY_REASON[reason as keyof typeof DELIVERY_REASON])
+    : reason;
+}
+
 /** A room's shared transcript; @-chips choose who answers, a plain post goes to the default responder. */
 export function BotRoomScreen({ route }: StaticScreenProps<BotRoomParams>) {
   const gt = useGT();
@@ -183,12 +206,12 @@ export function BotRoomScreen({ route }: StaticScreenProps<BotRoomParams>) {
             placeholder={gt("Message {room}", { room: room?.name ?? "" })}
             disabled={room === null}
             onLayoutHeight={setComposerHeight}
-            onSend={async (text, mentions) => {
+            onSend={async (text, mentions, messageId) => {
               if (room === null) return false;
               setError(null);
               const result = await send({
                 environmentId,
-                input: { roomId: room.id, messageId: BotMessageId.make(uuidv4()), text, mentions },
+                input: { roomId: room.id, messageId: BotMessageId.make(messageId), text, mentions },
               });
               if (AsyncResult.isFailure(result)) {
                 const cause = squashAtomCommandFailure(result);
@@ -239,7 +262,7 @@ function RoomMessage(props: {
           ) : null}
           <Text className="text-xs text-foreground-muted">
             {`${props.botName(delivery.targetBotId)} · ${m(DELIVERY_LABEL[delivery.status])}${
-              delivery.reason ? ` · ${delivery.reason}` : ""
+              delivery.reason ? ` · ${deliveryReason(delivery.reason, m)}` : ""
             }`}
           </Text>
         </Pressable>
@@ -254,7 +277,12 @@ function RoomComposer(props: {
   readonly placeholder: string;
   readonly disabled: boolean;
   readonly onLayoutHeight: (height: number) => void;
-  readonly onSend: (text: string, mentions: ReadonlyArray<BotMention>) => Promise<boolean>;
+  /** `messageId` is kept across retries of one submission, so a resend posts once. */
+  readonly onSend: (
+    text: string,
+    mentions: ReadonlyArray<BotMention>,
+    messageId: string,
+  ) => Promise<boolean>;
 }) {
   const gt = useGT();
   const [text, setText] = useState("");
@@ -263,6 +291,7 @@ function RoomComposer(props: {
   // Set only to move the caret after a pick; the input owns it otherwise.
   const [selection, setSelection] = useState<{ start: number; end: number } | undefined>();
   const [sending, setSending] = useState(false);
+  const submissionId = useRef<string | null>(null);
   const query = mentionQueryAt(text, caret);
   const suggestions =
     query === null
@@ -285,7 +314,10 @@ function RoomComposer(props: {
   const send = async () => {
     if (sending || text.trim() === "") return;
     setSending(true);
-    const sent = await props.onSend(text.trim(), mentions);
+    const messageId = submissionId.current ?? uuidv4();
+    submissionId.current = messageId;
+    const sent = await props.onSend(text.trim(), mentions, messageId);
+    if (sent) submissionId.current = null;
     setSending(false);
     if (sent) {
       setText("");
@@ -341,7 +373,11 @@ function RoomComposer(props: {
             editable={!props.disabled && !sending}
             value={text}
             {...(selection === undefined ? {} : { selection })}
-            onChangeText={setText}
+            onChangeText={(next) => {
+              // An edited draft is a new submission.
+              submissionId.current = null;
+              setText(next);
+            }}
             onSelectionChange={(event) => {
               setCaret(event.nativeEvent.selection.end);
               setSelection(undefined);

@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import { Link, useLocation } from "@tanstack/react-router";
 import { type EnvironmentBot, botActivity } from "@t3tools/client-runtime/state/bots";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
@@ -9,6 +10,7 @@ import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useBotEnvironmentIds, useEnvironmentBotRooms, useEnvironmentBots } from "../../state/bots";
 import { useQuietThreadShell } from "../../state/entities";
+import { serverEnvironment } from "../../state/server";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
@@ -95,6 +97,9 @@ function SidebarRooms(props: { readonly environmentId: EnvironmentBot["environme
   const gt = useGT();
   const pathname = useLocation({ select: (location) => location.pathname });
   const rooms = useEnvironmentBotRooms();
+  const canCreateRoom = useAtomValue(
+    serverEnvironment.createBotRoom.permissionAtom(props.environmentId),
+  );
   const shown = rooms.filter((entry) => entry.room.archivedAt === null);
   const archived = rooms.length - shown.length;
   return (
@@ -106,6 +111,7 @@ function SidebarRooms(props: { readonly environmentId: EnvironmentBot["environme
         <Button
           size="icon-xs"
           variant="ghost-muted"
+          disabled={!canCreateRoom}
           aria-label={gt("New room")}
           onClick={() => openBotRoomEditor({ mode: "create", environmentId: props.environmentId })}
         >
@@ -158,6 +164,8 @@ function SidebarRooms(props: { readonly environmentId: EnvironmentBot["environme
 function NewBotButton(props: { readonly environmentId: EnvironmentBot["environmentId"] }) {
   const gt = useGT();
   const { environmentId } = props;
+  const canCreate = useAtomValue(serverEnvironment.createBot.permissionAtom(environmentId));
+  if (!canCreate) return null;
   return (
     <Tooltip>
       <TooltipTrigger

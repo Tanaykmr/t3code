@@ -4,7 +4,7 @@ import { ArrowUpIcon, AtSignIcon } from "lucide-react";
 import { useGT } from "gt-react";
 import { useRef, useState } from "react";
 
-import { cn } from "~/lib/utils";
+import { cn, randomUUID } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { BotAvatarIcon } from "./BotAvatarIcon";
 
@@ -17,6 +17,8 @@ export function BotMentionComposer(props: {
   readonly placeholder: string;
   readonly disabled?: boolean;
   readonly onSend: (input: {
+    /** Kept across retries of one submission, so a resend after a lost reply posts once. */
+    readonly messageId: string;
     readonly text: string;
     readonly mentions: ReadonlyArray<BotMention>;
   }) => Promise<boolean>;
@@ -28,6 +30,7 @@ export function BotMentionComposer(props: {
   const [caret, setCaret] = useState(0);
   const [highlight, setHighlight] = useState(0);
   const [sending, setSending] = useState(false);
+  const [submissionId, setSubmissionId] = useState<string | null>(null);
   const query = mentionQueryAt(text, caret);
   const suggestions =
     query === null
@@ -58,12 +61,15 @@ export function BotMentionComposer(props: {
   const send = async () => {
     if (!canSend) return;
     setSending(true);
-    const sent = await props.onSend({ text: text.trim(), mentions });
+    const messageId = submissionId ?? randomUUID();
+    setSubmissionId(messageId);
+    const sent = await props.onSend({ messageId, text: text.trim(), mentions });
     setSending(false);
     if (sent) {
       setText("");
       setChips([]);
       setCaret(0);
+      setSubmissionId(null);
     }
   };
 
@@ -117,6 +123,8 @@ export function BotMentionComposer(props: {
         aria-label={props.placeholder}
         disabled={props.disabled}
         onChange={(event) => {
+          // An edited draft is a new submission.
+          if (event.target.value !== text) setSubmissionId(null);
           setText(event.target.value);
           setCaret(event.target.selectionStart);
           setHighlight(0);

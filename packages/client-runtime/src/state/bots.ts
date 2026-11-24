@@ -42,10 +42,28 @@ export function mentionsInText(
 ): ReadonlyArray<BotMention> {
   const seen = new Set<string>();
   return chips.filter((chip) => {
-    if (seen.has(chip.botId) || !text.includes(`@${chip.label}`)) return false;
+    if (seen.has(chip.botId) || !namesMention(text, chip.label)) return false;
     seen.add(chip.botId);
     return true;
   });
+}
+
+const MENTION_NAME_CHAR = /[\p{L}\p{N}_.-]/u;
+
+/** `@label` as a whole token: picking `@Ada` and then typing `@Adam` names Adam, not Ada. */
+function namesMention(text: string, label: string): boolean {
+  const token = `@${label}`;
+  for (let at = text.indexOf(token); at >= 0; at = text.indexOf(token, at + 1)) {
+    const end = at + token.length;
+    const next = text[end];
+    // A trailing "." or "-" is punctuation unless the name goes on after it.
+    const continues =
+      next !== undefined &&
+      MENTION_NAME_CHAR.test(next) &&
+      !(/[.-]/.test(next) && !MENTION_NAME_CHAR.test(text[end + 1] ?? " "));
+    if (!continues) return true;
+  }
+  return false;
 }
 
 /** The `@query` being typed at the caret, if any. */

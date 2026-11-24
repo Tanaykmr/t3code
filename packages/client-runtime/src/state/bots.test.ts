@@ -67,6 +67,9 @@ describe("bots", () => {
     expect(mentionsInText("@Bolt and @Bolt, look", [bolt, bolt, cora])).toEqual([bolt]);
     // Typing a name with no chip routes nowhere.
     expect(mentionsInText("@Cora hi", [])).toEqual([]);
+    // A picked name edited into a longer one no longer routes to the picked bot.
+    expect(mentionsInText("@Boltz, look", [bolt])).toEqual([]);
+    expect(mentionsInText("ask @Bolt.", [bolt])).toEqual([bolt]);
   });
 
   it("finds the @query at the caret", () => {
