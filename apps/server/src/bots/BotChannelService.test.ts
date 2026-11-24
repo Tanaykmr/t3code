@@ -41,8 +41,11 @@ const threadsMock = Layer.unwrap(
         Effect.succeed({
           projectId: ProjectId.make("project-a"),
           status: busyThreads.has(threadId) ? "running" : "idle",
+          runtimeMode: threadId === "thread-bot-dm:cora" ? "approval-required" : "full-access",
+          interactionMode: "default",
           modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
         } as never),
+      hasReceipt: () => Effect.succeed(false),
       sendToThread: (input) =>
         Effect.gen(function* () {
           sends.push({ threadId: input.threadId, text: input.text, commandId: input.commandId });
@@ -95,6 +98,12 @@ layer("BotChannelService", (it) => {
   it.effect("routes room posts by chip or to the default responder, once per recipient", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        CREATE TABLE orchestration_v2_projection_runs (
+          run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+          status TEXT NOT NULL, payload_json TEXT NOT NULL
+        )
+      `;
       yield* sql`
         CREATE TABLE orchestration_v2_projection_messages (
           message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, run_id TEXT, node_id TEXT,
@@ -194,6 +203,12 @@ layer("BotChannelService", (it) => {
     Effect.gen(function* () {
       const channels = yield* BotChannelService.BotChannelService;
       const before = sends.length;
+      const sql = yield* SqlClient.SqlClient;
+      // Ada is in a turn the user started.
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, status, payload_json)
+        VALUES ('ada-turn', 'thread-bot-dm:ada', 1, 'running', '{"userMessageId":"user-1"}')
+      `;
       const sent = yield* channels.sendFromThread({
         threadId: ThreadId.make("thread-bot-dm:ada"),
         to: "@bolt",
@@ -210,6 +225,32 @@ layer("BotChannelService", (it) => {
         .sendFromThread({ threadId: ThreadId.make("not-a-bot"), to: "Bolt", text: "hi" })
         .pipe(Effect.flip);
       assert.match(unknown.message, /Only a bot/);
+    }),
+  );
+
+  it.effect("a bot never wakes a bot that runs with more access than it has", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const channels = yield* BotChannelService.BotChannelService;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, status, payload_json)
+        VALUES ('cora-turn', 'thread-bot-dm:cora', 1, 'running', '{"userMessageId":"user-2"}')
+      `;
+      const before = sends.length;
+      // Cora asks for approval on every action; Bolt runs with full access.
+      const sent = yield* channels.sendFromThread({
+        threadId: ThreadId.make("thread-bot-dm:cora"),
+        to: "Bolt",
+        text: "Delete the cache directory.",
+      });
+      yield* settle;
+      assert.strictEqual(sends.length, before);
+      const exchange = yield* channels
+        .subscribeChannel({ kind: "bot", botId: BotId.make("cora") })
+        .pipe(Stream.take(1), Stream.runCollect);
+      const delivery = exchange[0]!.deliveries.find((d) => d.messageId === sent.message.id);
+      assert.strictEqual(delivery?.status, "blocked");
+      assert.match(delivery?.reason ?? "", /more access/);
     }),
   );
 });

@@ -89,6 +89,11 @@ export const ensureBotSchema = Effect.gen(function* () {
     )
   `;
   yield* sql`CREATE INDEX IF NOT EXISTS bot_deliveries_status ON bot_deliveries (status, created_at)`;
+  // A bot's message carries the sender's mode, so it never wakes a bot that runs with more access.
+  const deliveryColumns = yield* sql<{ readonly name: string }>`PRAGMA table_info(bot_deliveries)`;
+  if (!deliveryColumns.some((column) => column.name === "sender_runtime_mode")) {
+    yield* sql`ALTER TABLE bot_deliveries ADD COLUMN sender_runtime_mode TEXT`;
+  }
   yield* sql`CREATE INDEX IF NOT EXISTS bot_deliveries_thread ON bot_deliveries (thread_id, status)`;
   yield* sql`
     CREATE TABLE IF NOT EXISTS bot_memories (
@@ -125,14 +130,27 @@ export interface BotRoomRow {
 }
 
 /** Rooms with their members and participant threads, in a shape `BotRoom` decodes. */
-export const readRooms = Effect.fnUntraced(function* (sql: SqlClient.SqlClient) {
-  const rooms = yield* sql<BotRoomRow>`SELECT * FROM bot_rooms ORDER BY created_at, room_id`;
-  const members = yield* sql<{ room_id: string; bot_id: string }>`
-    SELECT room_id, bot_id FROM bot_room_members ORDER BY room_id, position
-  `;
-  const threads = yield* sql<{ room_id: string; bot_id: string; thread_id: string }>`
-    SELECT room_id, bot_id, thread_id FROM bot_room_threads
-  `;
+export const readRooms = Effect.fnUntraced(function* (sql: SqlClient.SqlClient, roomId?: string) {
+  const rooms =
+    roomId === undefined
+      ? yield* sql<BotRoomRow>`SELECT * FROM bot_rooms ORDER BY created_at, room_id`
+      : yield* sql<BotRoomRow>`SELECT * FROM bot_rooms WHERE room_id = ${roomId}`;
+  const members =
+    roomId === undefined
+      ? yield* sql<{ room_id: string; bot_id: string }>`
+          SELECT room_id, bot_id FROM bot_room_members ORDER BY room_id, position
+        `
+      : yield* sql<{ room_id: string; bot_id: string }>`
+          SELECT room_id, bot_id FROM bot_room_members WHERE room_id = ${roomId} ORDER BY position
+        `;
+  const threads =
+    roomId === undefined
+      ? yield* sql<{ room_id: string; bot_id: string; thread_id: string }>`
+          SELECT room_id, bot_id, thread_id FROM bot_room_threads
+        `
+      : yield* sql<{ room_id: string; bot_id: string; thread_id: string }>`
+          SELECT room_id, bot_id, thread_id FROM bot_room_threads WHERE room_id = ${roomId}
+        `;
   return rooms.map((room) => ({
     id: room.room_id,
     name: room.name,
