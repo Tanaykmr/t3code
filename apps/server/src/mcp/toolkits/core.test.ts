@@ -1291,6 +1291,13 @@ const botShells = [
   McpToolAccessTestkit.liveThreadShell(codingThread),
 ];
 const botProjectId = McpToolAccessTestkit.liveThreadShell(threadId).projectId;
+const botTestAttachment = ChatImageAttachment.make({
+  type: "image",
+  id: "bot-test-image",
+  name: "test.png",
+  mimeType: "image/png",
+  sizeBytes: 12,
+});
 const botRoutines = [
   Schema.decodeSync(ScheduledTask)({
     ...Schema.decodeSync(ScheduledTask)(scheduledTask("bot-routine", "full-access")),
@@ -1299,9 +1306,14 @@ const botRoutines = [
   }),
   Schema.decodeSync(ScheduledTask)(scheduledTask("unbound-routine", "full-access")),
 ];
-const botIsolationLayer = Layer.merge(
+const botIsolationLayer = Layer.mergeAll(
   layerOrchestratorToolkit,
   McpHttpServer.layerThreadToolkit.pipe(Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({}))),
+  McpHttpServer.layerAttachmentToolkit.pipe(
+    Layer.provide(AssetSigner.layer.pipe(Layer.provideMerge(ServerSecretStore.layer))),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-bot-attachment-" })),
+    Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+  ),
 ).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provide(NodeCrypto.layer),
@@ -1320,12 +1332,22 @@ const botIsolationLayer = Layer.merge(
           McpToolAccessTestkit.idleThreadProjection(McpToolAccessTestkit.liveThreadShell(id)),
         ),
       getProjectThreadRecords: ({ threadId }) =>
-        Effect.succeed(
-          McpToolAccessTestkit.idleThreadProjection(McpToolAccessTestkit.liveThreadShell(threadId)),
-        ),
+        Effect.succeed({
+          ...McpToolAccessTestkit.idleThreadProjection(
+            McpToolAccessTestkit.liveThreadShell(threadId),
+          ),
+          messages: [{ attachments: [botTestAttachment] }] as never,
+        }),
+      sendToThread: () =>
+        Effect.succeed({
+          message: { attachments: [botTestAttachment] },
+          run: { id: RunId.make("run:sent"), status: "running" },
+          delivery: "started",
+        } as never),
       dispatch: () => Effect.succeed({ sequence: 1, storedEvents: [] }),
       interruptThread: () => Effect.succeed({ type: "no_active_run" }),
       stopDelegatedTasks: () => Effect.void,
+      stopWorkflow: () => Effect.void,
     }),
   ),
   Layer.provide(ServerSettings.layerTest()),
@@ -1344,25 +1366,104 @@ const botIsolationLayer = Layer.merge(
   Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
   Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
   Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
-);
-
-const asBot = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(
-    Effect.provideService(McpInvocationContext.McpInvocationContext, { ...scope, bot: true }),
-    Effect.provideService(McpSchema.McpServerClient, client),
-    Effect.provideService(
+  Layer.provideMerge(
+    Layer.succeed(
       BotTurnContext.BotTurnContext,
       BotTurnContext.BotTurnContext.of({
         workTargets: (id) =>
-          Effect.succeed(id === foreignBotThread || id === threadId ? ["test-project"] : null),
+          Effect.succeed(id === foreignBotThread || id === threadId ? [botProjectId] : null),
         privateThreadIds: Effect.succeed(new Set([foreignBotThread, threadId])),
         forThread: () => Effect.succeed([]),
         isDm: () => Effect.succeed(true),
         isOperatorTurn: () => Effect.succeed(true),
       }),
     ),
+  ),
+);
+
+const asBot = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.provideService(McpInvocationContext.McpInvocationContext, { ...scope, bot: true }),
+    Effect.provideService(McpSchema.McpServerClient, client),
     Effect.provide(botIsolationLayer),
   );
+
+it.effect.each([
+  { name: "t3_thread_send", args: { message: "Check the build" } },
+  { name: "t3_thread_send_attachments", args: { attachments: [botTestAttachment] } },
+])("denies bot use of $name even in an allowed project or its own chat", ({ name, args }) =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    for (const target of [codingThread, threadId]) {
+      const result = yield* server.callTool({ name, arguments: { ...args, threadId: target } });
+      expect(declaredFailure(result)).toMatchObject({
+        code: "invalid_request",
+        message: expect.stringContaining("delegate_task"),
+      });
+    }
+  }).pipe(asBot),
+);
+
+it.effect.each([
+  { name: "t3_thread_interrupt", args: {} },
+  { name: "t3_thread_interrupt", args: { stop: true } },
+  { name: "t3_workflow_stop", args: { subagentId: "active-workflow" } },
+  { name: "t3_thread_organize", args: { action: "unsnooze" } },
+  {
+    name: "t3_queue",
+    args: { action: "promote_to_steer", queuedRunId: "queued", targetRunId: "active" },
+  },
+  {
+    name: "t3_pending_request",
+    args: { action: "respond", requestId: "question", answers: { size: "large" } },
+  },
+  {
+    name: "t3_thread_transfer",
+    args: { action: "merge_back", threadId, targetThreadId: codingThread },
+  },
+])("denies bot writes via $name to a user's thread", ({ name, args }) =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const result = yield* server.callTool({ name, arguments: { threadId: codingThread, ...args } });
+    expect(declaredFailure(result)).toMatchObject({
+      code: "invalid_request",
+      message: expect.stringContaining("delegate_task"),
+    });
+  }).pipe(asBot),
+);
+
+it.effect("blocks a bot from steering its own chat while keeping chat organization available", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const steer = yield* server.callTool({
+      name: "t3_queue",
+      arguments: { action: "promote_to_steer", queuedRunId: "queued", targetRunId: "active" },
+    });
+    expect(declaredFailure(steer)).toMatchObject({
+      code: "invalid_request",
+      message: expect.stringContaining("delegate_task"),
+    });
+    const organize = yield* server.callTool({
+      name: "t3_thread_organize",
+      arguments: { action: "unsnooze" },
+    });
+    expect(organize.structuredContent).toMatchObject({ sequence: 1 });
+  }).pipe(asBot),
+);
+
+it.effect("blocks a bot from answering a pending request in its own chat", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const response = yield* server.callTool({
+      name: "t3_pending_request",
+      arguments: { action: "respond", requestId: "question", answers: { size: "large" } },
+    });
+    expect(declaredFailure(response)).toMatchObject({
+      code: "invalid_request",
+      message: "A person must answer the bot's pending request.",
+    });
+  }).pipe(asBot),
+);
 
 it.effect("lists only routines bound to the calling bot DM", () =>
   Effect.gen(function* () {

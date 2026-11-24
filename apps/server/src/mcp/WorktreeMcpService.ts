@@ -452,6 +452,12 @@ const make = Effect.gen(function* () {
   const handoff: WorktreeMcpService["Service"]["handoff"] = Effect.fn("WorktreeMcpService.handoff")(
     function* (callerScope, input) {
       yield* requireCapability(callerScope);
+      if (callerScope.bot === true) {
+        return yield* failure(
+          "invalid_request",
+          "Use delegate_task with worktree isolation to start coding work.",
+        );
+      }
       const scope = yield* requireThreadScope(callerScope);
       // Acquire and register cleanup atomically so cancellation cannot strand the guard until restart.
       return yield* Effect.uninterruptibleMask((restore) =>

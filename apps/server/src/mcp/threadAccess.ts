@@ -311,6 +311,19 @@ export const assertBotThreadAccess = Effect.fn("mcp.assertBotThreadAccess")(func
   }
 });
 
+export const assertBotThreadWrite = (
+  scope: McpInvocationContext.McpInvocationScope,
+  threadId: ThreadId,
+) =>
+  scope.bot === true && threadId !== scope.thread?.threadId
+    ? Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "A bot can only control its own chat. Use delegate_task to start coding work.",
+        }),
+      )
+    : Effect.void;
+
 export const botRoutineAccess = Effect.fn("mcp.botRoutineAccess")(function* (
   scope: McpInvocationContext.McpInvocationScope,
 ) {

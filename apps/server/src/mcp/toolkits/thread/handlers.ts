@@ -316,6 +316,13 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     ),
     writesThread((input) =>
       Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        if (scope.bot === true) {
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "A person must answer the bot's pending request.",
+          });
+        }
         const requestId = yield* required(input.requestId, "requestId");
         const answers = yield* required(input.answers, "answers");
         const { threads, projection } = yield* readQuestion({
@@ -447,6 +454,14 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
             }));
           }
           case "promote_to_steer": {
+            const scope = yield* McpInvocationContext.McpInvocationContext;
+            if (scope.bot === true) {
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message:
+                  "Use delegate_task to start coding work. A person can send queued messages as steering.",
+              });
+            }
             const targetRunId = yield* required(input.targetRunId, "targetRunId");
             return yield* dispatch(input.threadId, (common) => ({
               ...common,

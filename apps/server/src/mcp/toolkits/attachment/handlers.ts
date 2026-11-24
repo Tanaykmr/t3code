@@ -91,7 +91,14 @@ export const layer = McpToolAccess.toLayer(
         (input) => [input.threadId],
         (input) =>
           Effect.gen(function* () {
-            const { caller, projection, scope } = yield* readThread(input.threadId, ["messages"]);
+            const scope = yield* McpInvocationContext.McpInvocationContext;
+            if (scope.bot === true) {
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "Use delegate_task to start coding work in another thread.",
+              });
+            }
+            const { caller, projection } = yield* readThread(input.threadId, ["messages"]);
             // As with plain sends: bot chats are reached through bot deliveries, not here.
             const bots = yield* BotTurnContext.optional;
             if (
@@ -102,20 +109,6 @@ export const layer = McpToolAccess.toLayer(
               return yield* new OrchestratorMcpFailure({
                 code: "invalid_request",
                 message: "That thread belongs to a bot. Agents cannot message it directly.",
-              });
-            }
-            if (
-              scope.bot === true &&
-              scope.thread !== undefined &&
-              Option.isSome(bots) &&
-              !((yield* bots.value.workTargets(scope.thread.threadId)) ?? []).includes(
-                projection.thread.projectId,
-              )
-            ) {
-              return yield* new OrchestratorMcpFailure({
-                code: "invalid_request",
-                message:
-                  "A bot works only in its work targets. Use delegate_task with one of them.",
               });
             }
             if (projection.thread.archivedAt !== null)

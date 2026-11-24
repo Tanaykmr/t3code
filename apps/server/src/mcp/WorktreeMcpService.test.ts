@@ -384,6 +384,23 @@ const runStatus = (harness: ReturnType<typeof makeHarness>) =>
 const decodeHandoffInput = Schema.decodeUnknownEffect(WorktreeMcpHandoffInput);
 
 describe("t3_worktree_handoff", () => {
+  it.effect("requires bots to delegate instead of handing off their chat", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const service = yield* resolveService(harness);
+      const exit = yield* Effect.exit(
+        service.handoff(
+          { ...harness.scope, bot: true },
+          { branch: "feature/continue", continuationPrompt: "Keep going." },
+        ),
+      );
+      expectTypedFailure(exit, {
+        code: "invalid_request",
+        message: expect.stringContaining("delegate_task"),
+      });
+    });
+  });
+
   // regression: #22971 a separate send let the detach settle the run before its follow-up existed
   it.effect("commits the continuation with the thread binding", () => {
     const harness = makeHarness();

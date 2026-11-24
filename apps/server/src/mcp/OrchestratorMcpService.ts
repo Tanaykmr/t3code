@@ -140,6 +140,7 @@ import {
 } from "./delegatedTaskModes.ts";
 import {
   assertBotThreadAccess,
+  assertBotThreadWrite,
   botRoutineAccess,
   assertTargetWithinLimits,
   foreignBotThreads,
@@ -3833,14 +3834,18 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadReadResult;
     }),
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {
+      if (scope.bot === true) {
+        return yield* failure(
+          "invalid_request",
+          "Use delegate_task to start coding work or t3_bot_message to message another bot.",
+        );
+      }
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId, ["runs"]);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* assertTargetWithinLimits(limits, target.thread);
       // A bot's chat or room seat is reached through bot deliveries, which check membership,
       // access and hop limits; a generic send would skip all of them.
       const agentCaller = scope.thread !== undefined || scope.client?.linked === true;
-      // Including the bot itself: a send to its own chat would start a turn with no delivery
-      // provenance and a fresh message budget.
       if (
         agentCaller &&
         Option.isSome(botTurnContext) &&
@@ -3851,20 +3856,6 @@ const make = Effect.gen(function* () {
           "That thread belongs to a bot. Bots reach each other with t3_bot_message; agents cannot send into a bot's chat directly.",
         );
       }
-      if (
-        scope.bot === true &&
-        Option.isSome(botTurnContext) &&
-        scope.thread !== undefined &&
-        !((yield* botTurnContext.value.workTargets(scope.thread.threadId)) ?? []).includes(
-          target.thread.projectId,
-        )
-      ) {
-        return yield* failure(
-          "invalid_request",
-          "A bot works only in its work targets. Use delegate_task with one of them.",
-        );
-      }
-
       const mode = input.mode ?? "auto";
       const key = yield* requestKey(input.clientRequestId);
       const messageId = stableOperationMessageId({
@@ -3977,6 +3968,7 @@ const make = Effect.gen(function* () {
     }),
     interruptThread: Effect.fn("OrchestratorMcpService.interruptThread")(function* (scope, input) {
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId, ["runs"]);
+      yield* assertBotThreadWrite(scope, input.threadId);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* assertTargetWithinLimits(limits, target.thread);
       const key = yield* requestKey(input.clientRequestId);
