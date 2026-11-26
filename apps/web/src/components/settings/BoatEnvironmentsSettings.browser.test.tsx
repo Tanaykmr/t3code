@@ -90,21 +90,20 @@ vi.mock(import("../../state/server"), async (original) => {
       servers: [machine],
     }),
   );
-  const outage = Atom.make(
-    AsyncResult.success<BoatSnapshot>({
-      account: { status: "configured", label: "Boat" },
-      rates: [],
-      providerStale: true,
-      servers: [
-        {
-          ...machine,
-          lifecycle: "running",
-          observedPower: "running",
-          autoStopAt: "2026-11-30T00:00:00.000Z",
-        },
-      ],
-    }),
-  );
+  const running: BoatSnapshot = {
+    account: { status: "configured", label: "Boat" },
+    rates: [{ size: "small", usdPerHour: 0.018, asOf: "2026-11-01T00:00:00.000Z" }],
+    servers: [
+      {
+        ...machine,
+        lifecycle: "running",
+        observedPower: "running",
+        autoStopAt: "2026-11-30T00:00:00.000Z",
+      },
+    ],
+  };
+  const live = Atom.make(AsyncResult.success(running));
+  const outage = Atom.make(AsyncResult.success({ ...running, providerStale: true }));
   return {
     ...actual,
     serverEnvironment: {
@@ -114,7 +113,9 @@ vi.mock(import("../../state/server"), async (original) => {
           ? recovery
           : environmentId === "controller-outage"
             ? outage
-            : snapshot,
+            : environmentId === "controller-running"
+              ? live
+              : snapshot,
     },
   };
 });
@@ -161,6 +162,32 @@ it("marks Boat data stale while the controller is connected", async () => {
   const details = stop.element().closest('[data-slot="settings-row"]')?.textContent;
   expect(details).toContain("Boat data is stale. Showing last known state.");
   expect(details).not.toMatch(/Stops in \d+ min/);
+});
+
+it("warns that automatic stop can discard the workspace before and after creation", async () => {
+  mocks.environments = [
+    {
+      environmentId: EnvironmentId.make("controller-running"),
+      label: "Owner",
+      serverConfig: { boatEnvironments: true },
+      connection: { phase: "connected" },
+    },
+  ];
+  await using screen = await render(
+    <RegistryProvider>
+      <BoatSettings />
+      <BoatCreateForm onCreated={() => {}} />
+    </RegistryProvider>,
+  );
+  const warning =
+    "Boat may discard the workspace at automatic stop, depending on its retention settings.";
+  const stop = screen.getByRole("button", { name: "Stop", exact: true });
+  await expect.element(stop).toBeVisible();
+  expect(stop.element().closest('[data-slot="settings-row"]')?.textContent).toContain(warning);
+  const billing = screen.getByText(/list price, billed by Boat/);
+  await expect.element(billing).toBeVisible();
+  expect(billing.element().textContent).toContain(warning);
+  expect(billing.element().textContent).not.toContain("keeps the disk");
 });
 
 it("requires confirmation before forgetting a Boat record locally", async () => {

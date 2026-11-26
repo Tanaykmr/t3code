@@ -143,6 +143,10 @@ function BoatMachineRow({
     row.stale || server.autoStopAt === null || server.lifecycle !== "running"
       ? null
       : Math.max(0, Math.round((Date.parse(server.autoStopAt) - nowMs) / 60_000));
+  const retentionWarning =
+    server.lifecycle === "running" && server.autoStopAt !== null
+      ? gt("Boat may discard the workspace at automatic stop, depending on its retention settings.")
+      : null;
   const details = [
     server.size === "small" ? gt("Small") : gt("Default"),
     minutesLeft === null ? null : gt("Stops in {minutes} min", { minutes: minutesLeft }),
@@ -230,6 +234,10 @@ function BoatMachineRow({
   );
   const guestId = row.paired ? server.guestEnvironmentId : null;
   const disabled = (actions.length === 0 && guestId === null) || busy;
+  const accessibilityLabel = gt("{name}, {state}", {
+    name: server.displayName,
+    state: labels.lifecycle[server.lifecycle],
+  });
   const openActions = () =>
     Dialog.alert(server.displayName, labels.lifecycle[server.lifecycle], [
       ...actions.map((action) => ({
@@ -254,10 +262,11 @@ function BoatMachineRow({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={gt("{name}, {state}", {
-        name: server.displayName,
-        state: labels.lifecycle[server.lifecycle],
-      })}
+      accessibilityLabel={
+        retentionWarning === null
+          ? accessibilityLabel
+          : `${accessibilityLabel}. ${retentionWarning}`
+      }
       accessibilityHint={actions.length > 0 ? gt("Shows machine actions") : undefined}
       accessibilityState={{ disabled, busy }}
       disabled={disabled}
@@ -274,6 +283,9 @@ function BoatMachineRow({
           {details.length > 0 ? ` · ${details.join(" · ")}` : ""}
         </Text>
         {stale ? <Text className="text-sm text-foreground-muted">{stale}</Text> : null}
+        {retentionWarning ? (
+          <Text className="text-sm text-foreground-muted">{retentionWarning}</Text>
+        ) : null}
         {failure ? <Text className="text-sm text-danger-foreground">{failure}</Text> : null}
       </View>
     </Pressable>
@@ -609,18 +621,23 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
           <Text className="text-sm text-foreground-muted">
             {gt("Boat data is stale. Showing last known state.")}
           </Text>
-        ) : rate ? (
+        ) : (
           <Text className="text-sm leading-normal text-foreground-muted">
+            {rate
+              ? `${gt(
+                  "{rate}/hour list price, billed by Boat to {account}. Boat stops it {hours} h after each start, interrupting running work.",
+                  {
+                    rate: `$${rate.usdPerHour.toFixed(3)}`,
+                    account: controller.snapshot.account.label ?? "Boat",
+                    hours: ttlSeconds / 3600,
+                  },
+                )} `
+              : null}
             {gt(
-              "{rate}/hour list price, billed by Boat to {account}. Boat stops it {hours} h after each start; stopping interrupts running work and keeps the disk.",
-              {
-                rate: `$${rate.usdPerHour.toFixed(3)}`,
-                account: controller.snapshot.account.label ?? "Boat",
-                hours: ttlSeconds / 3600,
-              },
+              "Boat may discard the workspace at automatic stop, depending on its retention settings.",
             )}
           </Text>
-        ) : null}
+        )}
         <Button
           label={gt("Create machine")}
           tone="primary"

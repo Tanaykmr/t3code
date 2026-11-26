@@ -164,6 +164,10 @@ function BoatRowView({
     row.stale || server.autoStopAt === null || server.lifecycle !== "running"
       ? null
       : Math.max(0, Math.round((Date.parse(server.autoStopAt) - nowMs) / 60_000));
+  const retentionWarning =
+    server.lifecycle === "running" && server.autoStopAt !== null
+      ? gt("Boat may discard the workspace at automatic stop, depending on its retention settings.")
+      : null;
 
   const act = async (action: BoatAction) => {
     if (action === "stop") {
@@ -252,6 +256,9 @@ function BoatRowView({
       </span>
       {failure ? <span className="text-destructive-foreground">{failure}</span> : null}
       <span className="text-muted-foreground/80">{details.join(" · ")}</span>
+      {retentionWarning ? (
+        <span className="text-muted-foreground/80">{retentionWarning}</span>
+      ) : null}
     </span>
   );
   const actions = (["resume", "stop", "delete", "forget"] as const)
@@ -714,18 +721,25 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
         </label>
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">
-        {controller.subscriptionStale
-          ? gt("Boat data is stale. Showing last known state.")
-          : rate
-            ? gt(
-                "{rate}/hour list price, billed by Boat to {account}. Boat stops it {hours} h after each start; stopping interrupts running work and keeps the disk.",
-                {
-                  rate: `$${rate.usdPerHour.toFixed(3)}`,
-                  account: controller.snapshot.account.label ?? "Boat",
-                  hours,
-                },
-              )
-            : null}
+        {controller.subscriptionStale ? (
+          gt("Boat data is stale. Showing last known state.")
+        ) : (
+          <>
+            {rate
+              ? `${gt(
+                  "{rate}/hour list price, billed by Boat to {account}. Boat stops it {hours} h after each start, interrupting running work.",
+                  {
+                    rate: `$${rate.usdPerHour.toFixed(3)}`,
+                    account: controller.snapshot.account.label ?? "Boat",
+                    hours,
+                  },
+                )} `
+              : null}
+            {gt(
+              "Boat may discard the workspace at automatic stop, depending on its retention settings.",
+            )}
+          </>
+        )}
       </p>
       <div className="flex flex-wrap justify-end gap-2">
         {discard}

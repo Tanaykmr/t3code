@@ -118,14 +118,14 @@ function BoatSettings({ controllerSnapshot }: { readonly controllerSnapshot?: Bo
   );
 }
 
-it("marks Boat data stale while the controller is connected", () => {
+it.each([false, true])("warns about automatic stop when providerStale is %s", (providerStale) => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const element = document.createElement("div");
   const root = createRoot(element);
   const controllerSnapshot: BoatSnapshot = {
     account: { status: "configured", label: "Boat" },
     rates: [],
-    providerStale: true,
+    providerStale,
     servers: [
       {
         managedId: BoatManagedId.make("boat_machine"),
@@ -159,8 +159,16 @@ it("marks Boat data stale while the controller is connected", () => {
     const warning = Array.from(element.querySelectorAll("span")).find(
       (node) => node.textContent === "Boat data is stale. Showing last known state.",
     );
-    expect(warning?.getAttribute("data-number-of-lines")).toBeNull();
-    expect(element.textContent).not.toContain("Stops in");
+    if (providerStale) {
+      expect(warning?.getAttribute("data-number-of-lines")).toBeNull();
+      expect(element.textContent).not.toContain("Stops in");
+    } else {
+      expect(element.textContent).toContain("Stops in 30 min");
+    }
+    const retentionWarning = Array.from(element.querySelectorAll("span")).find((node) =>
+      node.textContent?.includes("Boat may discard the workspace at automatic stop"),
+    );
+    expect(retentionWarning?.getAttribute("data-number-of-lines")).toBeNull();
   } finally {
     act(() => root.unmount());
   }
