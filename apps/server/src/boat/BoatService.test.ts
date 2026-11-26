@@ -348,6 +348,50 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("lets Stop take over while an allocated sandbox is still provisioning", () => {
+    const firstPoll = Deferred.makeUnsafe<void>();
+    const continuePoll = Deferred.makeUnsafe<void>();
+    let readsUntilReady = 2;
+    let stoppedWhileProvisioning = false;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      get: Effect.fnUntraced(function* (key, id) {
+        const sandbox = yield* api.get(key, id);
+        if (sandbox.state !== "ready") return sandbox;
+        if (readsUntilReady === 2) {
+          yield* Deferred.succeed(firstPoll, undefined);
+          yield* Deferred.await(continuePoll);
+        }
+        readsUntilReady--;
+        return readsUntilReady >= 0 ? { ...sandbox, state: "provisioning" as const } : sandbox;
+      }),
+      stop: Effect.fnUntraced(function* (key, id) {
+        stoppedWhileProvisioning = readsUntilReady >= 0;
+        return yield* api.stop(key, id);
+      }),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* Deferred.await(firstPoll);
+      expect((yield* server(managedId))?.sandboxId).not.toBeNull();
+
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* Deferred.succeed(continuePoll, undefined);
+      yield* TestClock.adjust("6 seconds");
+      yield* settle;
+
+      expect(stoppedWhileProvisioning).toBe(true);
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "stopped",
+        guestEnvironmentId: null,
+        operation: { kind: "stop", stage: "completed" },
+      });
+      expect(fake.calls).not.toContain("bootstrap");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("stops, resumes the same guest, and deletes only a stopped machine", () => {
     const { layer, fake } = setup();
     return Effect.gen(function* () {
@@ -802,6 +846,45 @@ describe("BoatService", () => {
       yield* settle;
       expect(fake.calls).not.toContain("resume");
       expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("lets Stop take over when the resumed sandbox becomes live", () => {
+    const resumed = Deferred.makeUnsafe<void>();
+    const continuePoll = Deferred.makeUnsafe<void>();
+    let holdLiveRead = false;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      get: Effect.fnUntraced(function* (key, id) {
+        const sandbox = yield* api.get(key, id);
+        if (holdLiveRead && sandbox.state === "running") {
+          holdLiveRead = false;
+          yield* Deferred.succeed(resumed, undefined);
+          yield* Deferred.await(continuePoll);
+        }
+        return sandbox;
+      }),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+
+      holdLiveRead = true;
+      yield* boat.resume({ requestId: requestId(), managedId });
+      yield* Deferred.await(resumed);
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* Deferred.succeed(continuePoll, undefined);
+      yield* settle;
+
+      expect(fake.calls.filter((call) => call === "bootstrap")).toHaveLength(1);
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "stopped",
+        operation: { kind: "stop", stage: "completed" },
+      });
     }).pipe(Effect.provide(layer));
   });
 

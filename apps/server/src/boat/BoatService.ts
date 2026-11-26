@@ -818,6 +818,7 @@ export const make = Effect.gen(function* () {
       server.managed_id,
       sandboxId,
       (s) => isLiveState(s.state) || s.state === "archived",
+      { yieldTo: hasPendingStop(server.managed_id) },
     );
     if (Option.isNone(settledState)) return false;
     // A stop requested during provisioning wins before the guest is exposed.
@@ -1110,6 +1111,7 @@ export const make = Effect.gen(function* () {
     if (!isLiveState(live.value.state)) {
       return yield* new OperationRefused({ code: "provider-unavailable" });
     }
+    if (yield* hasPendingStop(server.managed_id)) return true;
     // This build cannot verify a guest. Nothing proves this controller woke it (it may have been
     // started from Boat's dashboard), so refuse without a cleanup stop; the row shows it live.
     if (!bootstrap.available) return yield* new OperationRefused({ code: "bootstrap-unavailable" });
