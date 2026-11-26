@@ -510,12 +510,27 @@ export const make = Effect.gen(function* () {
       yield* setStage(op.request_id, "allocating", { provider_operation_id: NO_ALLOCATION });
       return yield* new OperationRefused({ code: "bootstrap-unavailable" });
     }
-    yield* setStage(op.request_id, "allocating");
     let sandboxId = server.sandbox_id;
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
+    const canReplay =
+      sandboxId === null &&
+      !discoverOnly &&
+      now - Date.parse(op.created_at) < IDEMPOTENCY_WINDOW_MS;
+    const retention = canReplay ? yield* ensureDiskRetention(key).pipe(Effect.result) : null;
+    const canAllocate = retention?._tag === "Success";
+    if (canReplay && !canAllocate && op.stage === "queued") {
+      const error =
+        retention?._tag === "Failure"
+          ? retention.failure
+          : new OperationRefused({ code: "provider-rejected" });
+      if (error._tag === "BoatApiError" && isTransient(error)) return false;
+      yield* setStage(op.request_id, "allocating", { provider_operation_id: NO_ALLOCATION });
+      return yield* error;
+    }
+    yield* setStage(op.request_id, "allocating");
     if (sandboxId === null) {
-      const now = DateTime.toEpochMillis(yield* DateTime.now);
       let sandbox: BoatSandbox;
-      if (!discoverOnly && now - Date.parse(op.created_at) < IDEMPOTENCY_WINDOW_MS) {
+      if (canAllocate) {
         const created = yield* api
           .create(key, {
             idempotencyKey: op.request_id,
@@ -538,7 +553,7 @@ export const make = Effect.gen(function* () {
         }
         sandbox = created.success;
       } else {
-        // The key no longer fences allocation: adopt exactly one labeled match, never create.
+        // If sending is unsafe, only adopt an exact match from an earlier attempt.
         const listed = yield* findAllocation(key, server.managed_id).pipe(
           Effect.asSome,
           Effect.catchIf(isTransient, () => Effect.succeedNone),
@@ -573,6 +588,31 @@ export const make = Effect.gen(function* () {
     yield* bootstrapGuest(key, op, server, sandboxId);
     return true;
   });
+
+  const refuseForbidden = <A>(request: Effect.Effect<A, BoatApiError>) =>
+    request.pipe(
+      Effect.catchIf(
+        (error) => error.category === "forbidden",
+        () => new OperationRefused({ code: "provider-rejected" }),
+      ),
+    );
+
+  const ensureDiskRetention = Effect.fn("BoatService.ensureDiskRetention")(function* (
+    key: BoatKey,
+  ) {
+    const policy = yield* refuseForbidden(api.account(key));
+    if (policy.zeroDataRetention !== false) {
+      return yield* new OperationRefused({ code: "provider-rejected" });
+    }
+  });
+
+  const cleanupStop = Effect.fn("BoatService.cleanupStop")(
+    function* (key: BoatKey, sandboxId: string) {
+      yield* ensureDiskRetention(key);
+      yield* api.stop(key, sandboxId);
+    },
+    (effect) => Effect.ignore(effect),
+  );
 
   const runStop = Effect.fn("BoatService.runStop")(function* (
     key: BoatKey,
@@ -622,16 +662,13 @@ export const make = Effect.gen(function* () {
         ourStopId = seen.stopId;
         yield* record(ourStopId);
       } else if (seen.state !== "archived") {
-        const policy = yield* api.account(key);
-        if (policy.zeroDataRetention !== false) {
-          return yield* new OperationRefused({ code: "provider-rejected" });
-        }
+        yield* ensureDiskRetention(key);
         before = seen.stopId;
         yield* setStage(op.request_id, "stopping", {
           provider_operation_id: SENDING + (before ?? ""),
         });
         // Sent once per pass: a lost reply leaves the operation pending for the next look.
-        ourStopId = yield* api.stop(key, sandboxId);
+        ourStopId = yield* refuseForbidden(api.stop(key, sandboxId));
         yield* record(ourStopId);
       }
     }
@@ -711,6 +748,7 @@ export const make = Effect.gen(function* () {
       return yield* new OperationRefused({ code: "bootstrap-unavailable" });
     }
     if (current.state === "archived") {
+      yield* ensureDiskRetention(key);
       // Last look before waking it: a stop accepted since the check above still wins.
       if (yield* hasPendingStop(server.managed_id)) {
         return yield* new OperationRefused({ code: "provider-unavailable" });
@@ -725,6 +763,7 @@ export const make = Effect.gen(function* () {
             (error) => error.category === "conflict",
             () => Effect.succeed("refused" as const),
           ),
+          refuseForbidden,
         );
       if (sent === "sent") {
         yield* setStage(op.request_id, "resuming", { provider_operation_id: ACKNOWLEDGED });
@@ -854,10 +893,10 @@ export const make = Effect.gen(function* () {
               { lifecycle: "running" }
             : { lifecycle: "failed" },
       );
-      // A failed create or resume must not keep billing: ask Boat to stop what this server owns.
+      // Stop billing for a failed create or resume when Boat can keep its disk.
       if ((op.kind === "create" || op.kind === "resume") && server.sandbox_id !== null) {
         const key = yield* readKey;
-        if (Option.isSome(key)) yield* api.stop(key.value, server.sandbox_id).pipe(Effect.ignore);
+        if (Option.isSome(key)) yield* cleanupStop(key.value, server.sandbox_id);
       }
     }
     yield* setStage(op.request_id, "failed", { failure });
@@ -1129,24 +1168,7 @@ export const make = Effect.gen(function* () {
   const replaceApiKey = Effect.fn("BoatService.replaceApiKey")(function* (
     input: BoatSetApiKeyInput,
   ) {
-    if (input.apiKey !== null) {
-      // Check before reading sandbox IDs. The account lock prevents new creates from being queued.
-      const allocating = yield* persistence(sql`
-        SELECT 1 FROM boat_operations
-        JOIN boat_servers USING (managed_id)
-        WHERE kind = 'create' AND stage NOT IN ('completed', 'failed')
-          AND sandbox_id IS NULL AND deleted_at IS NULL
-        LIMIT 1
-      `);
-      if (allocating.length > 0) {
-        return yield* fail(
-          "conflict",
-          "Wait for Boat to finish allocating machines before replacing the key.",
-        );
-      }
-    }
     const servers = yield* persistence(readServers);
-    const current = yield* persistence(readAccount);
     if (input.apiKey === null) {
       if (servers.length > 0) {
         return yield* fail(
@@ -1157,6 +1179,16 @@ export const make = Effect.gen(function* () {
       yield* storeCredentials(null, sql`DELETE FROM boat_account WHERE id = 1`);
       yield* publish;
       return { status: "missing" as const };
+    }
+    if (servers.length > 0) {
+      // Boat's read endpoints cannot prove cleanup rights for a different secret.
+      const stored = yield* persistence(readKey);
+      if (Option.isNone(stored) || Redacted.value(stored.value) !== input.apiKey) {
+        return yield* fail(
+          "conflict",
+          "Delete this server's Boat machines before replacing the key that manages them.",
+        );
+      }
     }
     const account = yield* api.account(Redacted.make(input.apiKey)).pipe(
       Effect.asSome,
@@ -1169,19 +1201,14 @@ export const make = Effect.gen(function* () {
       ),
     );
     if (Option.isNone(account)) return { status: "invalid" as const };
-    // A key for another account could not inspect or clean up the machines the old one made.
-    if (current !== null && current.account_id !== account.value.accountId && servers.length > 0) {
+    const next = account.value;
+    if (servers.some((server) => server.account_id !== next.accountId)) {
       return yield* fail(
         "conflict",
         "This key belongs to a different Boat account than the machines this server manages.",
       );
     }
-    if (!(yield* seesAllMachines(Redacted.make(input.apiKey), servers))) {
-      return yield* fail(
-        "conflict",
-        "Use a key that can access every Boat machine this server manages.",
-      );
-    }
+    const current = yield* persistence(readAccount);
     const environment =
       input.environment === undefined ? (current?.boat_environment ?? null) : input.environment;
     // 0 only when Boat says it keeps stopped disks; an unreported policy blocks create like 1.
@@ -1189,8 +1216,8 @@ export const make = Effect.gen(function* () {
       input.apiKey,
       sql`
       INSERT INTO boat_account (id, account_id, label, status, zero_data_retention, boat_environment)
-      VALUES (1, ${account.value.accountId}, ${account.value.label}, 'configured', ${
-        account.value.zeroDataRetention === false ? 0 : 1
+      VALUES (1, ${next.accountId}, ${next.label}, 'configured', ${
+        next.zeroDataRetention === false ? 0 : 1
       }, ${environment})
       ON CONFLICT (id) DO UPDATE SET account_id = excluded.account_id, label = excluded.label,
         status = excluded.status, zero_data_retention = excluded.zero_data_retention,
@@ -1199,34 +1226,6 @@ export const make = Effect.gen(function* () {
     );
     yield* publish;
     return { status: "configured" as const };
-  });
-
-  const seesAllMachines = Effect.fn("BoatService.seesAllMachines")(function* (
-    key: BoatKey,
-    servers: ReadonlyArray<ServerRow>,
-  ) {
-    for (const server of servers) {
-      if (server.sandbox_id === null) {
-        const create = yield* readCreate(server.managed_id).pipe(persistence);
-        if (create?.provider_operation_id !== NO_ALLOCATION) return false;
-        continue;
-      }
-      const seen = yield* api.get(key, server.sandbox_id).pipe(
-        Effect.as(true),
-        Effect.catchIf(
-          (error) =>
-            error.category === "not-found" ||
-            error.category === "unauthorized" ||
-            error.category === "forbidden",
-          () => Effect.succeed(false),
-        ),
-        Effect.mapError(
-          () => new BoatError({ code: "provider-unavailable", message: "Could not reach Boat." }),
-        ),
-      );
-      if (!seen) return false;
-    }
-    return true;
   });
 
   /** Refreshes one settled machine: an external archive, restart, or deletion shows up here. */
@@ -1243,7 +1242,7 @@ export const make = Effect.gen(function* () {
         if (recovered === null) return;
         yield* setServer(managedId, { sandbox_id: recovered.id });
         yield* observe(managedId, recovered);
-        if (isLiveState(recovered.state)) yield* api.stop(key, recovered.id).pipe(Effect.ignore);
+        if (isLiveState(recovered.state)) yield* cleanupStop(key, recovered.id);
         return;
       }
       const latest = (yield* latestOperations).get(managedId);
@@ -1263,7 +1262,7 @@ export const make = Effect.gen(function* () {
           (latest.kind === "delete" && latest.failure === "unresolved-create"))
       ) {
         // A failed create or resume left it billing and the first cleanup did not land.
-        yield* api.stop(key, server.sandbox_id).pipe(Effect.ignore);
+        yield* cleanupStop(key, server.sandbox_id);
       } else if (server.lifecycle === "stopped" && isLiveState(sandbox.state)) {
         // Restarted outside T3; show it with its new deadline rather than hiding it.
         yield* setServer(server.managed_id, { lifecycle: "running" });
