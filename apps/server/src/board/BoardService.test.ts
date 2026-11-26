@@ -290,14 +290,20 @@ describe("BoardService subscriptions", () => {
     Effect.gen(function* () {
       const boards = yield* BoardService.BoardService;
       const ready = yield* Deferred.make<void>();
+      const created = yield* Deferred.make<void>();
       const fiber = yield* boards.subscribe(threadId).pipe(
-        Stream.tap(() => Deferred.succeed(ready, undefined)),
+        Stream.tap((event) =>
+          event.type === "snapshot"
+            ? Deferred.succeed(created, undefined)
+            : Deferred.succeed(ready, undefined),
+        ),
         Stream.take(4),
         Stream.runCollect,
         Effect.forkChild,
       );
       yield* Deferred.await(ready);
       const board = yield* boards.create(threadId);
+      yield* Deferred.await(created);
       yield* boards.apply({
         actor: "session-a",
         batch: batch(board, "s1", [{ type: "create", element: element("one", { index: "a0" }) }]),
@@ -316,6 +322,47 @@ describe("BoardService subscriptions", () => {
       const [initial] = late;
       assert(initial?.type === "snapshot");
       expect(initial.snapshot.elements.map((entry) => entry.id)).toEqual(["one", "two"]);
+    }).pipe(
+      Effect.provide(
+        BoardService.layer.pipe(
+          Layer.provide(SqlitePersistence.layerMemory),
+          Layer.provide(layerThreads),
+          Layer.provide(SecureRandom.layerWebCrypto),
+        ),
+      ),
+    ),
+  );
+  it.effect("drops old deltas for a lagging subscriber and can reopen at the latest revision", () =>
+    Effect.gen(function* () {
+      const boards = yield* BoardService.BoardService;
+      const board = yield* boards.create(threadId);
+      const ready = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      const fiber = yield* boards.subscribe(threadId).pipe(
+        Stream.tap((event) =>
+          event.type === "snapshot"
+            ? Deferred.succeed(ready, undefined).pipe(Effect.andThen(Deferred.await(resume)))
+            : Effect.void,
+        ),
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Deferred.await(ready);
+      for (const revision of [1, 2, 3]) {
+        const id = `shape-${revision}`;
+        yield* boards.apply({
+          actor: "session-a",
+          batch: batch(board, id, [{ type: "create", element: element(id) }]),
+        });
+      }
+      yield* Deferred.succeed(resume, undefined);
+      const events = yield* Fiber.join(fiber);
+      expect(
+        events.flatMap((event) => (event.type === "delta" ? [event.delta.revision] : [])),
+      ).toEqual([2, 3]);
+      const [snapshot] = yield* boards.subscribe(threadId).pipe(Stream.take(1), Stream.runCollect);
+      expect(snapshot).toMatchObject({ type: "snapshot", snapshot: { board: { revision: 3 } } });
     }).pipe(
       Effect.provide(
         BoardService.layer.pipe(

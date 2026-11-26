@@ -81,8 +81,9 @@ export class BoardService extends Context.Service<
 const boardOwnerKey = (threadId: ThreadId): string => threadId;
 
 const DEFAULT_SETTINGS: BoardSettings = { viewBackgroundColor: "#ffffff" };
-// A subscriber that falls this far behind sees a revision gap and reopens with a snapshot.
-const SUBSCRIBER_BUFFER = 64;
+// A delta can carry the board's entire element payload. Keep at most two in the backlog;
+// a subscriber that falls behind sees a revision gap and reopens with a snapshot.
+const SUBSCRIBER_BUFFER = 2;
 // Leaves room below the largest safe integer for many stamped successors.
 const MAX_PROPOSAL_VERSION = Number.MAX_SAFE_INTEGER - 2 ** 20;
 const MAX_VERSION_NONCE = 2 ** 31;
