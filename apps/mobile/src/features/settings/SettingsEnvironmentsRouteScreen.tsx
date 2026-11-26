@@ -9,10 +9,11 @@ import { RefreshControl } from "../../components/ui/RefreshControl";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SettingsScreen } from "./components/SettingsScreen";
+import { BoatMachinesSection, useBoatControllers } from "../connection/BoatMachines";
 import { CloudEnvironmentRows } from "../connection/CloudEnvironmentRows";
 import { LocalEnvironmentList } from "../connection/LocalEnvironmentList";
 import { PullRequestRoutingSettings } from "../connection/PullRequestRoutingSettings";
-import { splitEnvironmentSections } from "../connection/environmentSections";
+import { splitEnvironmentSections, withoutBoatGuests } from "../connection/environmentSections";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
 import { relayEnvironmentDiscovery } from "../../state/relay";
@@ -37,8 +38,9 @@ export function SettingsEnvironmentsRouteScreen() {
   } = useRemoteConnections();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  const boat = useBoatControllers();
   const environmentSections = splitEnvironmentSections({
-    connectedEnvironments,
+    connectedEnvironments: withoutBoatGuests(connectedEnvironments, boat.controllers),
     cloudEnvironments: null,
   });
   const localEnvironments = SHOWCASE_ENABLED
@@ -154,6 +156,7 @@ export function SettingsEnvironmentsRouteScreen() {
               }
             : {})}
         />
+        <BoatMachinesSection boat={boat} onOpenEnvironment={openEnvironment} />
         <PullRequestRoutingSettings />
       </ScrollView>
     </SettingsScreen>

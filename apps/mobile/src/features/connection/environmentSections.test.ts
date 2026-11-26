@@ -1,8 +1,9 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { BoatSnapshot, EnvironmentId } from "@t3tools/contracts";
 import type { RelayClientEnvironmentRecord } from "@t3tools/contracts/relay";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
-import { splitEnvironmentSections } from "./environmentSections";
+import { splitEnvironmentSections, withoutBoatGuests } from "./environmentSections";
 
 function connectedEnvironment(
   input: Omit<Partial<ConnectedEnvironmentSummary>, "environmentId"> & {
@@ -21,6 +22,8 @@ function connectedEnvironment(
     connectionErrorTraceId: input.connectionErrorTraceId ?? null,
   };
 }
+
+const decodeBoatSnapshot = Schema.decodeUnknownSync(BoatSnapshot);
 
 function cloudEnvironment(environmentId: string): RelayClientEnvironmentRecord {
   return {
@@ -95,5 +98,44 @@ describe("mobile environment settings sections", () => {
     expect(
       sections.availableCloudEnvironments.map((environment) => environment.environmentId),
     ).toEqual([EnvironmentId.make("environment-cloud")]);
+  });
+
+  it("lists a paired Boat guest only under Boat machines", () => {
+    const controller = connectedEnvironment({
+      environmentId: "environment-controller",
+      isRelayManaged: false,
+    });
+    const guest = connectedEnvironment({
+      environmentId: "environment-boat-guest",
+      isRelayManaged: false,
+    });
+    const server = {
+      displayName: "Scratch",
+      size: "small",
+      ttlSeconds: 3600,
+      lifecycle: "running",
+      operation: null,
+      sandboxId: "bx_1",
+      origin: "https://bx_1.boat.dev",
+      observedPower: "running",
+      observedAt: null,
+      autoStopAt: null,
+      retention: "unknown",
+      usage: null,
+      createdAt: "2026-11-23T10:00:00.000Z",
+      lastStartedAt: null,
+      lastStoppedAt: null,
+    };
+    const snapshot = decodeBoatSnapshot({
+      account: { status: "configured", label: null },
+      rates: [],
+      servers: [
+        { ...server, managedId: "boat_guest", guestEnvironmentId: guest.environmentId },
+        { ...server, managedId: "boat_starting", guestEnvironmentId: null },
+      ],
+    });
+
+    expect(withoutBoatGuests([controller, guest], [{ snapshot }])).toEqual([controller]);
+    expect(withoutBoatGuests([controller, guest], [])).toEqual([controller, guest]);
   });
 });

@@ -1,0 +1,396 @@
+import {
+  BoatSnapshot,
+  BoatOperationReceipt,
+  BoatRequestId,
+  EnvironmentAuthorizationError,
+  EnvironmentId,
+  type BoatServer,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import { describe, expect, it } from "vite-plus/test";
+
+import {
+  boatCost,
+  boatKeyRouteIsPrivate,
+  boatRequestAnswered,
+  boatRows,
+  createBoatCreateJournal,
+  type SavedBoatCreate,
+} from "./boat.ts";
+
+// Wire JSON as a controller sends it; web and mobile both read rows through boatRows.
+const CONTROLLER = EnvironmentId.make("env-controller");
+const base = {
+  displayName: "Scratch",
+  size: "small",
+  ttlSeconds: 3600,
+  operation: null,
+  sandboxId: "bx_22222222",
+  guestEnvironmentId: "env-guest",
+  origin: "https://bx_22222222.boat.dev",
+  observedPower: "running",
+  observedAt: "2026-11-23T10:00:00.000Z",
+  autoStopAt: "2026-11-23T11:00:00.000Z",
+  retention: "unknown",
+  usage: null,
+  createdAt: "2026-11-23T09:59:00.000Z",
+  lastStartedAt: "2026-11-23T10:00:00.000Z",
+  lastStoppedAt: null,
+};
+const wireSnapshot = {
+  account: { status: "configured", label: "me@boat.dev" },
+  rates: [{ size: "small", usdPerHour: 0.018, asOf: "2026-11-23" }],
+  servers: [
+    {
+      ...base,
+      managedId: "boat_provisioning",
+      lifecycle: "provisioning",
+      sandboxId: null,
+      guestEnvironmentId: null,
+      origin: null,
+      observedPower: null,
+      observedAt: null,
+      autoStopAt: null,
+      lastStartedAt: null,
+      operation: {
+        kind: "create",
+        requestId: "00000000-0000-4000-8000-000000000001",
+        stage: "allocating",
+        failure: null,
+        updatedAt: "2026-11-23T09:59:00.000Z",
+      },
+    },
+    { ...base, managedId: "boat_running", lifecycle: "running" },
+    {
+      ...base,
+      managedId: "boat_stopped",
+      lifecycle: "stopped",
+      observedPower: "stopped",
+      retention: "available",
+      autoStopAt: null,
+      lastStoppedAt: "2026-11-23T10:30:00.000Z",
+      usage: {
+        machineSeconds: 900,
+        listPriceUsd: 0.009,
+        windowStart: "2026-11-23T10:00:00.000Z",
+        windowEnd: "2026-11-23T10:30:00.000Z",
+        observedAt: "2026-11-23T10:31:00.000Z",
+      },
+    },
+    {
+      ...base,
+      managedId: "boat_failed",
+      lifecycle: "failed",
+      guestEnvironmentId: null,
+      operation: {
+        kind: "create",
+        requestId: "00000000-0000-4000-8000-000000000002",
+        stage: "failed",
+        failure: "bootstrap-failed",
+        updatedAt: "2026-11-23T10:01:00.000Z",
+      },
+    },
+    // A row from a newer controller with a lifecycle this client does not know is dropped.
+    { ...base, managedId: "boat_future", lifecycle: "hibernating" },
+  ],
+};
+
+const snapshot = Schema.decodeUnknownSync(BoatSnapshot)(wireSnapshot);
+const decodeReceipt = Schema.decodeUnknownSync(BoatOperationReceipt);
+const nowMs = Date.parse("2026-11-23T10:30:00.000Z");
+const rows = (
+  connected: boolean,
+  canManage = true,
+  current = snapshot,
+  subscriptionStale = false,
+) =>
+  boatRows({
+    controllers: [{ environmentId: CONTROLLER, snapshot: current, connected, subscriptionStale }],
+    pairedEnvironmentIds: new Set([EnvironmentId.make("env-guest")]),
+    canManage: () => canManage,
+    nowMs,
+  });
+const byId = (list: ReturnType<typeof rows>, id: string) =>
+  list.find((row) => row.server.managedId === id);
+
+describe("boatRows", () => {
+  it("keys rows by controller and managed ID, including a row before its guest exists", () => {
+    const list = rows(true);
+    expect(list.map((row) => row.key)).toEqual([
+      "env-controller:boat_provisioning",
+      "env-controller:boat_running",
+      "env-controller:boat_stopped",
+      "env-controller:boat_failed",
+    ]);
+    expect(byId(list, "boat_provisioning")).toMatchObject({ tone: "progress", paired: false });
+  });
+
+  it("offers each state's actions and joins rows to guests already paired", () => {
+    const list = rows(true);
+    expect([...(byId(list, "boat_provisioning")?.actions ?? [])]).toEqual(["stop"]);
+    expect([...(byId(list, "boat_running")?.actions ?? [])]).toEqual(["stop"]);
+    expect([...(byId(list, "boat_stopped")?.actions ?? [])].sort()).toEqual(["delete", "resume"]);
+    expect([...(byId(list, "boat_failed")?.actions ?? [])].sort()).toEqual(["delete", "stop"]);
+    expect(byId(list, "boat_running")?.paired).toBe(true);
+    expect(byId(list, "boat_failed")?.paired).toBe(false);
+  });
+
+  it("keeps a disconnected controller's rows as stale, with no actions", () => {
+    const list = rows(false);
+    expect(list).toHaveLength(4);
+    expect(list.every((row) => row.stale && row.actions.size === 0)).toBe(true);
+  });
+
+  it("shows stale provider state on a connected controller and stops extrapolating running cost", () => {
+    const running = byId(rows(true), "boat_running")!.server;
+    const usage = byId(rows(true), "boat_stopped")!.server.usage;
+    const row = rows(true, true, {
+      ...snapshot,
+      providerStale: true,
+      servers: [{ ...running, usage }],
+    })[0];
+    expect(row).toMatchObject({ stale: true, staleReason: "provider", cost: { source: "usage" } });
+    expect(row?.actions.has("stop")).toBe(true);
+    expect(
+      byId(rows(true, true, { ...snapshot, providerStale: true }), "boat_running")?.cost,
+    ).toBeNull();
+    expect(
+      rows(true, true, {
+        ...snapshot,
+        providerStale: false,
+        servers: [{ ...running, observedPower: "missing" }],
+      })[0]?.stale,
+    ).toBe(true);
+    expect(byId(rows(true), "boat_running")?.stale).toBe(false);
+    expect(byId(rows(true, true, snapshot, true), "boat_running")?.stale).toBe(true);
+  });
+
+  it("offers no actions to a session without the management permission", () => {
+    expect(rows(true, false).every((row) => row.actions.size === 0)).toBe(true);
+  });
+
+  it("offers local recovery to managers on controllers that support it", () => {
+    const recovery = {
+      ...snapshot,
+      account: { status: "invalid" as const, label: null },
+      forgetAvailable: true,
+    };
+    const canForget = (list: ReturnType<typeof rows>) =>
+      list.every((row) => row.actions.has("forget"));
+    expect(canForget(rows(true, true, recovery))).toBe(true);
+    expect(canForget(rows(false, true, recovery))).toBe(false);
+    expect(canForget(rows(true, false, recovery))).toBe(false);
+    expect(canForget(rows(true, true, { ...recovery, forgetAvailable: false }))).toBe(false);
+  });
+
+  it("disables Resume once the snapshot expired", () => {
+    const expired = { ...byId(rows(true), "boat_stopped")!.server, retention: "expired" as const };
+    const list = boatRows({
+      controllers: [
+        {
+          environmentId: CONTROLLER,
+          snapshot: { ...snapshot, servers: [expired] },
+          connected: true,
+        },
+      ],
+      pairedEnvironmentIds: new Set(),
+      canManage: () => true,
+      nowMs,
+    });
+    expect([...(list[0]?.actions ?? [])]).toEqual(["delete"]);
+  });
+});
+
+describe("boatRows on a controller that cannot install T3", () => {
+  it("offers no Resume", () => {
+    const list = boatRows({
+      controllers: [
+        {
+          environmentId: CONTROLLER,
+          snapshot: { ...snapshot, createAvailable: false },
+          connected: true,
+        },
+      ],
+      pairedEnvironmentIds: new Set(),
+      canManage: () => true,
+      nowMs,
+    });
+    expect([...(byId(list, "boat_stopped")?.actions ?? [])]).toEqual(["delete"]);
+  });
+});
+
+describe("boatKeyRouteIsPrivate", () => {
+  it("allows TLS and this machine, and refuses plain HTTP to another machine", () => {
+    expect(boatKeyRouteIsPrivate("wss://box.tailnet.ts.net/ws")).toBe(true);
+    expect(boatKeyRouteIsPrivate("ws://127.0.0.1:41234/ws")).toBe(true);
+    expect(boatKeyRouteIsPrivate("ws://192.168.1.20:3773/ws")).toBe(false);
+    expect(boatKeyRouteIsPrivate(null)).toBe(false);
+  });
+});
+
+describe("boatCost", () => {
+  it("prefers Boat's reported usage, else estimates wall time at the list rate", () => {
+    const stopped = byId(rows(true), "boat_stopped")!.server;
+    expect(boatCost(stopped, snapshot.rates, nowMs)).toEqual({
+      usd: 0.009,
+      source: "usage",
+      asOf: "2026-11-23T10:31:00.000Z",
+    });
+    const running = byId(rows(true), "boat_running")!.server as BoatServer;
+    const estimate = boatCost(running, snapshot.rates, nowMs);
+    expect(estimate?.source).toBe("estimate");
+    expect(estimate?.usd).toBeCloseTo(0.009, 6);
+  });
+
+  it("extends the last usage sample while a machine is running", () => {
+    const stopped = byId(rows(true), "boat_stopped")!.server;
+    const running = { ...stopped, lifecycle: "running" as const };
+    const later = Date.parse("2026-11-23T10:51:00.000Z");
+
+    const cost = boatCost(running, snapshot.rates, later);
+    expect(cost?.source).toBe("estimate");
+    expect(cost?.usd).toBeCloseTo(0.0153, 6);
+  });
+
+  it.each([false, true])("keeps the unreported usage through Stop (stale: %s)", (stale) => {
+    const stopped = byId(rows(true), "boat_stopped")!.server;
+    const lastStartedAt = "2026-11-23T10:10:00.000Z";
+    const retained = {
+      ...stopped,
+      createdAt: "2026-11-23T09:30:00.000Z",
+      lastStartedAt,
+      usage: {
+        ...stopped.usage!,
+        windowStart: "2026-11-23T09:30:00.000Z",
+        windowEnd: "2026-11-23T10:00:00.000Z",
+        observedAt: "2026-11-23T10:01:00.000Z",
+      },
+    };
+    const stopTime = Date.parse(stopped.lastStoppedAt!);
+    const live = boatCost({ ...retained, lifecycle: "running" }, snapshot.rates, stopTime);
+    const afterStop = boatCost(retained, snapshot.rates, stopTime + 3_600_000, stale);
+
+    expect(live?.usd).toBeCloseTo(0.015, 6);
+    expect(afterStop).toEqual(live);
+    expect(afterStop?.source).toBe("estimate");
+  });
+});
+
+describe("Boat create journal", () => {
+  it("reflects a discard in another tab during overlapping refreshes", async () => {
+    const stale = Promise.withResolvers<ReadonlyArray<SavedBoatCreate>>();
+    const fresh = Promise.withResolvers<ReadonlyArray<SavedBoatCreate>>();
+    const reads = [stale.promise, fresh.promise];
+    const journal = createBoatCreateJournal(
+      () => reads.shift()!,
+      () => "Storage failed",
+      () => nowMs,
+    );
+    const first = journal.refresh();
+    const second = journal.refresh();
+    stale.resolve([
+      {
+        kind: "create",
+        environmentId: CONTROLLER,
+        input: {
+          requestId: BoatRequestId.make("00000000-0000-4000-8000-000000000012"),
+          displayName: "Scratch",
+          size: "small",
+          ttlSeconds: 3600,
+        },
+        savedAt: nowMs,
+      },
+    ]);
+    await first;
+    fresh.resolve([]);
+    await second;
+    expect(journal.getSnapshot()).toEqual({ entries: [], busy: false });
+  });
+
+  it("discards only the confirmed unanswered create and unblocks a different controller", async () => {
+    let saved: ReadonlyArray<SavedBoatCreate> = [];
+    let writable = true;
+    const journal = createBoatCreateJournal(
+      async (change) => {
+        const next = change(saved);
+        if (!writable && next !== saved) throw new Error("Storage failed");
+        return (saved = next);
+      },
+      () => "Storage failed",
+      () => nowMs,
+    );
+    const original = {
+      kind: "create" as const,
+      environmentId: CONTROLLER,
+      input: {
+        requestId: BoatRequestId.make("00000000-0000-4000-8000-000000000005"),
+        displayName: "Scratch",
+        size: "small" as const,
+        ttlSeconds: 3600,
+      },
+    };
+    const replacement = {
+      ...original,
+      environmentId: EnvironmentId.make("reinstalled-controller"),
+    };
+    const unanswered = async () => ({ ok: false as const, error: null, answered: false });
+    await journal.submit(original, false, unanswered);
+    const [orphan] = saved;
+    expect(await journal.submit(replacement, false, unanswered)).toBeUndefined();
+
+    writable = false;
+    expect(await journal.discard(orphan!)).toEqual({ ok: false, error: "Storage failed" });
+    expect(journal.getSnapshot()).toEqual({ entries: [orphan], busy: false });
+    writable = true;
+    expect(await journal.discard(orphan!)).toEqual({ ok: true });
+    expect(saved).toEqual([]);
+    expect(await journal.submit(replacement, false, unanswered)).toMatchObject({ answered: false });
+    await journal.discard(orphan!);
+    expect(saved).toEqual([{ ...replacement, savedAt: nowMs }]);
+    expect(journal.getSnapshot()).toEqual({ entries: saved, busy: false });
+  });
+
+  it("clears a persisted create after the server rejects its authorization", async () => {
+    let saved: ReadonlyArray<SavedBoatCreate> = [];
+    const journal = createBoatCreateJournal(
+      async (change) => (saved = change(saved)),
+      () => "Storage failed",
+      () => nowMs,
+    );
+    const error = new EnvironmentAuthorizationError({
+      message: "Permission denied",
+      requiredScope: "environment:maintain",
+    });
+    await journal.submit(
+      {
+        kind: "create",
+        environmentId: CONTROLLER,
+        input: {
+          requestId: BoatRequestId.make("00000000-0000-4000-8000-000000000004"),
+          displayName: "Scratch",
+          size: "small",
+          ttlSeconds: 3600,
+        },
+      },
+      false,
+      async () => {
+        expect(saved).toHaveLength(1);
+        return { ok: false, error: error.message, answered: boatRequestAnswered(error) };
+      },
+    );
+
+    expect(saved).toEqual([]);
+    expect(journal.getSnapshot()).toEqual({ entries: [], busy: false });
+  });
+});
+
+describe("Boat wire compatibility", () => {
+  it("round-trips a receipt", () => {
+    const receipt = {
+      managedId: "boat_x",
+      requestId: "00000000-0000-4000-8000-000000000003",
+      kind: "stop",
+    };
+    expect(decodeReceipt(receipt)).toEqual(receipt);
+  });
+});

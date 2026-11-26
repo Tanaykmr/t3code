@@ -1,0 +1,2009 @@
+import { describe, expect, it } from "@effect/vitest";
+import {
+  BoatOperationReceipt,
+  BoatRequestId,
+  type BoatSnapshot,
+  EnvironmentId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
+import { McpSchema, McpServer } from "effect/ai";
+
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
+import * as McpHttpServer from "../mcp/McpHttpServer.ts";
+import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import { liveThreadShell, liveThreadsLayer } from "../mcp/McpToolAccess.testkit.ts";
+import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import { BoatApi, BoatApiError, type BoatKey } from "./BoatApi.ts";
+import {
+  FAKE_BOAT_KEY,
+  FAKE_OTHER_WALLET_KEY,
+  type FakeBoatOptions,
+  makeFakeBoat,
+} from "./BoatApiFake.ts";
+import * as BoatService from "./BoatService.ts";
+
+let requestCounter = 0;
+const requestId = () =>
+  BoatRequestId.make(`00000000-0000-4000-8000-${String(++requestCounter).padStart(12, "0")}`);
+
+function setup(
+  options: FakeBoatOptions = {},
+  decorateApi?: (api: BoatApi["Service"]) => BoatApi["Service"],
+) {
+  const fake = makeFakeBoat(options);
+  const fakeLayer = decorateApi
+    ? Layer.effect(BoatApi, Effect.map(BoatApi, decorateApi)).pipe(Layer.provideMerge(fake.layer))
+    : fake.layer;
+  const secrets = new Map<string, Uint8Array>();
+  const layer = Layer.effect(BoatService.BoatService, BoatService.make).pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        fakeLayer,
+        SqlitePersistence.layerMemory,
+        Layer.mock(ServerSecretStore.ServerSecretStore)({
+          get: (name) => Effect.sync(() => Option.fromNullishOr(secrets.get(name))),
+          set: (name, value) => Effect.sync(() => void secrets.set(name, value)),
+          remove: (name) => Effect.sync(() => void secrets.delete(name)),
+        }),
+        Layer.mock(ServerEnvironment)({
+          getEnvironmentId: Effect.succeed(EnvironmentId.make("env-controller")),
+        }),
+      ),
+    ),
+  );
+  return { fake, secrets, layer };
+}
+
+const snapshot = BoatService.BoatService.use((boat) =>
+  boat.snapshots.pipe(Stream.take(1), Stream.runHead, Effect.map(Option.getOrThrow)),
+);
+const server = (managedId: string) =>
+  snapshot.pipe(
+    Effect.map((value: BoatSnapshot) => value.servers.find((row) => row.managedId === managedId)),
+  );
+const configure = BoatService.BoatService.use((boat) => boat.setApiKey({ apiKey: FAKE_BOAT_KEY }));
+const settle = BoatService.BoatService.use((boat) => boat.reconcile);
+
+const createSmall = BoatService.BoatService.use((boat) =>
+  boat.create({ requestId: requestId(), displayName: "Scratch", size: "small", ttlSeconds: 3600 }),
+);
+
+const boatCaller: McpInvocationContext.McpInvocationScope = {
+  environmentId: EnvironmentId.make("env-controller"),
+  requestNamespace: "provider:boat",
+  capabilities: new Set(["orchestration"]),
+  thread: {
+    threadId: ThreadId.make("thread:boat"),
+    providerSessionId: "provider:boat",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+  },
+  client: undefined,
+  issuedAt: 0,
+};
+const mcpClient = McpSchema.McpServerClient.of({
+  clientId: 1,
+  protocolVersion: "2025-06-18",
+  clientCapabilities: {},
+  clientInfo: { name: "mcp-test", version: "1" },
+  initializePayload: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "mcp-test", version: "1" },
+  },
+  getClient: Effect.die("unused"),
+});
+const boatTools = (threads = liveThreadsLayer) =>
+  McpHttpServer.layerBoatToolkit.pipe(
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provide(threads),
+  );
+const callBoatTool = (name: string, args: Record<string, unknown>, caller = boatCaller) =>
+  McpServer.McpServer.use((mcp) => mcp.callTool({ name, arguments: args })).pipe(
+    Effect.provideService(McpInvocationContext.McpInvocationContext, caller),
+    Effect.provideService(McpSchema.McpServerClient, mcpClient),
+  );
+const decodeBoatReceipt = Schema.decodeUnknownEffect(BoatOperationReceipt);
+
+describe("Boat MCP lifecycle", () => {
+  it.effect("lets a full-access thread discover and stop a running Boat machine", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      yield* configure;
+      const created = yield* callBoatTool("t3_boat_lifecycle", {
+        action: "create",
+        requestId: requestId(),
+        displayName: "Scratch",
+        size: "small",
+        ttlSeconds: 3600,
+      });
+      const { managedId } = yield* decodeBoatReceipt(created.structuredContent);
+      yield* settle;
+      const list = yield* callBoatTool("t3_boat_list", {});
+      expect(list.structuredContent).toMatchObject({
+        servers: [{ managedId, lifecycle: "running" }],
+      });
+      const input = { action: "stop", managedId, requestId: requestId() };
+      const foreign = yield* callBoatTool("t3_boat_lifecycle", input, {
+        ...boatCaller,
+        environmentId: EnvironmentId.make("other-controller"),
+      });
+      expect(foreign).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining('"capability_denied"') }],
+      });
+      expect(fake.calls).not.toContain("stop");
+      const result = yield* callBoatTool("t3_boat_lifecycle", input);
+      expect(result.structuredContent).toMatchObject({
+        managedId,
+        requestId: input.requestId,
+        kind: "stop",
+      });
+      yield* settle;
+      const replay = yield* callBoatTool("t3_boat_lifecycle", input);
+      expect(replay.structuredContent).toEqual(result.structuredContent);
+      expect(fake.calls.filter((call) => call === "stop")).toHaveLength(1);
+      expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+      const wake = yield* callBoatTool("t3_boat_lifecycle", {
+        action: "resume",
+        managedId,
+        requestId: requestId(),
+      });
+      expect(wake.structuredContent).toMatchObject({ managedId, kind: "resume" });
+      yield* settle;
+      expect((yield* server(managedId))?.lifecycle).toBe("running");
+      yield* callBoatTool("t3_boat_lifecycle", { ...input, requestId: requestId() });
+      yield* settle;
+      const removal = { action: "delete", managedId, requestId: requestId() };
+      expect(yield* Effect.flip(callBoatTool("t3_boat_lifecycle", removal))).toMatchObject({
+        _tag: "InvalidParams",
+      });
+      const deleted = yield* callBoatTool("t3_boat_lifecycle", { ...removal, confirmed: true });
+      expect(deleted.structuredContent).toMatchObject({ managedId, kind: "delete" });
+      yield* settle;
+      expect(fake.sandboxes.size).toBe(0);
+    }).pipe(Effect.provide(boatTools().pipe(Layer.provideMerge(layer))));
+  });
+
+  it.effect.each(["approval-required", "auto"] as const)(
+    "lets a local %s thread list Boat machines while keeping lifecycle writes gated",
+    (runtimeMode) => {
+      const { layer, fake } = setup();
+      const threads = Layer.mock(ThreadManagementService)({
+        getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId, { runtimeMode })),
+      });
+      return Effect.gen(function* () {
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+
+        const list = yield* callBoatTool("t3_boat_list", {});
+        expect(list.structuredContent).toMatchObject({
+          servers: [{ managedId, lifecycle: "running" }],
+        });
+        const denied = {
+          isError: true,
+          content: [{ type: "text", text: expect.stringContaining('"capability_denied"') }],
+        };
+        expect(
+          yield* callBoatTool(
+            "t3_boat_list",
+            {},
+            {
+              ...boatCaller,
+              environmentId: EnvironmentId.make("other-controller"),
+            },
+          ),
+        ).toMatchObject(denied);
+        expect(
+          yield* callBoatTool("t3_boat_lifecycle", {
+            action: "stop",
+            managedId,
+            requestId: requestId(),
+          }),
+        ).toMatchObject(denied);
+        expect(fake.calls).not.toContain("stop");
+      }).pipe(Effect.provide(boatTools(threads).pipe(Layer.provideMerge(layer))));
+    },
+  );
+
+  it.effect.each([true, null, "invalid-key"] as const)(
+    "refuses a stop from an agent when retention or the key is unsafe (%s)",
+    (blocked) => {
+      let policy: boolean | null = false;
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        account: (key) =>
+          api.account(key).pipe(
+            Effect.map((account) => ({
+              ...account,
+              zeroDataRetention: policy,
+            })),
+          ),
+      }));
+      return Effect.gen(function* () {
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        if (blocked === "invalid-key") {
+          fake.failNext("account", new BoatApiError({ category: "unauthorized" }));
+        } else {
+          policy = blocked;
+        }
+        const result = yield* callBoatTool("t3_boat_lifecycle", {
+          action: "stop",
+          managedId,
+          requestId: requestId(),
+        });
+        // The UI and MCP acknowledge admission; the durable worker reports the refusal.
+        expect(result.structuredContent).toMatchObject({ managedId, kind: "stop" });
+        yield* settle;
+        expect(fake.calls).not.toContain("stop");
+        expect((yield* server(managedId))?.operation).toMatchObject({
+          kind: "stop",
+          stage: "failed",
+          failure: blocked === "invalid-key" ? "unauthorized" : "provider-rejected",
+        });
+      }).pipe(Effect.provide(boatTools().pipe(Layer.provideMerge(layer))));
+    },
+  );
+});
+
+describe("BoatService", () => {
+  it.effect("stores only a key Boat accepts and shows its account, never the key", () => {
+    const { layer, secrets } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      expect(yield* boat.setApiKey({ apiKey: "boat_wrong" })).toEqual({ status: "invalid" });
+      expect(secrets.size).toBe(0);
+      expect((yield* snapshot).account).toEqual({ status: "missing", label: null });
+
+      expect(yield* configure).toEqual({ status: "configured" });
+      const shown = yield* snapshot;
+      expect(shown.account).toEqual({ status: "configured", label: "fake@boat.dev" });
+      expect(JSON.stringify(shown)).not.toContain(FAKE_BOAT_KEY);
+
+      expect(yield* boat.setApiKey({ apiKey: null })).toEqual({ status: "missing" });
+      expect(secrets.size).toBe(0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refuses to create without a configured key", () => {
+    const { layer } = setup();
+    return Effect.gen(function* () {
+      const error = yield* Effect.flip(createSmall);
+      expect(error.code).toBe("not-configured");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refuses to create when the saved key disappears from the secret store", () => {
+    const { layer, fake, secrets } = setup();
+    return Effect.gen(function* () {
+      yield* configure;
+      secrets.clear();
+
+      const error = yield* Effect.flip(createSmall);
+      expect(error).toMatchObject({
+        code: "not-configured",
+        message: expect.stringContaining("Enter it again in Settings"),
+      });
+      expect(yield* snapshot).toMatchObject({ account: { status: "missing" }, servers: [] });
+      expect(fake.calls).not.toContain("create");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("publishes an invalid account when Boat rejects the saved key during create", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      yield* configure;
+
+      fake.failNext("account", new BoatApiError({ category: "unavailable" }));
+      expect((yield* Effect.flip(createSmall)).code).toBe("provider-unavailable");
+      expect((yield* snapshot).account.status).toBe("configured");
+
+      fake.failNext("account", new BoatApiError({ category: "unauthorized" }));
+      expect((yield* Effect.flip(createSmall)).code).toBe("unauthorized");
+      expect(yield* snapshot).toMatchObject({ account: { status: "invalid" }, servers: [] });
+      expect(fake.calls).not.toContain("create");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("creates one machine per request ID and reaches Running with a verified guest", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const input = {
+        requestId: requestId(),
+        displayName: "Scratch",
+        size: "small" as const,
+        ttlSeconds: 3600,
+      };
+      const receipt = yield* boat.create(input);
+      expect(yield* boat.create(input)).toEqual(receipt);
+      expect((yield* Effect.flip(boat.create({ ...input, size: "default" }))).code).toBe(
+        "conflict",
+      );
+      yield* settle;
+
+      const row = yield* server(receipt.managedId);
+      expect(row).toMatchObject({
+        lifecycle: "running",
+        guestEnvironmentId: "env-guest-1",
+        origin: "https://bx_22222221.fake.boat.dev",
+        observedPower: "running",
+        operation: { kind: "create", stage: "completed", failure: null },
+      });
+      expect(row?.autoStopAt).not.toBeNull();
+      expect(row?.usage).not.toBeNull();
+      expect(fake.sandboxes.size).toBe(1);
+      expect([...fake.sandboxes.values()][0]?.sandbox.labels).toEqual({
+        "t3.role": "environment",
+        "t3.controller": "env-controller",
+        "t3.managed": receipt.managedId,
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  // Live clock: the retry waits out its one-second backoff for real.
+  it.live("retries a create whose reply was lost with the same key and gets one machine", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      yield* configure;
+      fake.loseNextResponse("create");
+      const receipt = yield* createSmall;
+      yield* settle;
+      expect(fake.calls.filter((name) => name === "create")).toHaveLength(2);
+      expect(fake.sandboxes.size).toBe(1);
+      expect((yield* server(receipt.managedId))?.lifecycle).toBe("running");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("stops a machine stopped during provisioning before exposing its guest", () => {
+    const gate = Deferred.makeUnsafe<void>();
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      create: (key, input) => Deferred.await(gate).pipe(Effect.andThen(api.create(key, input))),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      expect((yield* server(managedId))?.lifecycle).toBe("stopping");
+      yield* Deferred.succeed(gate, undefined);
+      yield* settle;
+      const row = yield* server(managedId);
+      expect(row?.lifecycle).toBe("stopped");
+      expect(row?.guestEnvironmentId).toBeNull();
+      expect(fake.calls).not.toContain("bootstrap");
+      expect([...fake.sandboxes.values()][0]?.sandbox.state).toBe("archived");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("lets Stop take over while an allocated sandbox is still provisioning", () => {
+    const firstPoll = Deferred.makeUnsafe<void>();
+    const continuePoll = Deferred.makeUnsafe<void>();
+    let readsUntilReady = 2;
+    let stoppedWhileProvisioning = false;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      get: Effect.fnUntraced(function* (key, id) {
+        const sandbox = yield* api.get(key, id);
+        if (sandbox.state !== "ready") return sandbox;
+        if (readsUntilReady === 2) {
+          yield* Deferred.succeed(firstPoll, undefined);
+          yield* Deferred.await(continuePoll);
+        }
+        readsUntilReady--;
+        return readsUntilReady >= 0 ? { ...sandbox, state: "provisioning" as const } : sandbox;
+      }),
+      stop: Effect.fnUntraced(function* (key, id) {
+        stoppedWhileProvisioning = readsUntilReady >= 0;
+        return yield* api.stop(key, id);
+      }),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* Deferred.await(firstPoll);
+      expect((yield* server(managedId))?.sandboxId).not.toBeNull();
+
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* Deferred.succeed(continuePoll, undefined);
+      yield* TestClock.adjust("6 seconds");
+      yield* settle;
+
+      expect(stoppedWhileProvisioning).toBe(true);
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "stopped",
+        guestEnvironmentId: null,
+        operation: { kind: "stop", stage: "completed" },
+      });
+      expect(fake.calls).not.toContain("bootstrap");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("stops, resumes the same guest, and deletes only a stopped machine", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId;
+
+      expect((yield* Effect.flip(boat.delete({ requestId: requestId(), managedId }))).code).toBe(
+        "invalid-state",
+      );
+
+      const stop = { requestId: requestId(), managedId };
+      yield* boat.stop(stop);
+      // A lost reply is resolved by sending the same request again.
+      expect(yield* boat.stop(stop)).toEqual({ ...stop, kind: "stop" });
+      yield* settle;
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "stopped",
+        observedPower: "stopped",
+        retention: "available",
+        autoStopAt: null,
+      });
+
+      yield* boat.resume({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "running",
+        sandboxId,
+        guestEnvironmentId: "env-guest-1",
+      });
+
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toBeUndefined();
+      expect(fake.sandboxes.size).toBe(0);
+      const sql = yield* SqlClient.SqlClient;
+      const tombstone = yield* sql<{ readonly deleted_at: string | null }>`
+        SELECT deleted_at FROM boat_servers WHERE managed_id = ${managedId}
+      `;
+      expect(tombstone[0]?.deleted_at).not.toBeNull();
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each([
+    { policy: true, label: "enabled" },
+    { policy: null, label: "unknown" },
+  ])("refuses to stop a running machine when zero-data retention is $label", ({ policy }) => {
+    let zeroDataRetention: boolean | null = false;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      account: (key) =>
+        api.account(key).pipe(Effect.map((account) => ({ ...account, zeroDataRetention }))),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+
+      zeroDataRetention = policy;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+
+      expect(fake.calls).not.toContain("stop");
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "running",
+        operation: { kind: "stop", stage: "failed", failure: "provider-rejected" },
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each([
+    { recovery: null, original: false, lifecycle: "stopped" },
+    { recovery: null, original: true, lifecycle: "running" },
+    { recovery: null, original: null, lifecycle: "running" },
+    { recovery: true, original: false, lifecycle: "running" },
+    { recovery: false, original: null, lifecycle: "stopped" },
+    { recovery: false, original: true, lifecycle: "running" },
+  ])(
+    "checks Stop with recovery retention $recovery and original retention $original",
+    ({ recovery, original, lifecycle }) => {
+      const recoveryKey = `${FAKE_BOAT_KEY}_recovery`;
+      const walletKey = Redacted.make(FAKE_BOAT_KEY);
+      const denied = new BoatApiError({ category: "forbidden", code: "api_key_action_forbidden" });
+      let originalPolicy: boolean | null = false;
+      let originalStopDenied = true;
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        account: (key) =>
+          api.account(walletKey).pipe(
+            Effect.map((account) => ({
+              ...account,
+              zeroDataRetention: Redacted.value(key) === recoveryKey ? recovery : originalPolicy,
+            })),
+          ),
+        get: (_, id) => api.get(walletKey, id),
+        list: (_, labels) => api.list(walletKey, labels),
+        stop: (key, id) =>
+          Redacted.value(key) === recoveryKey || originalStopDenied
+            ? Effect.fail(denied)
+            : api.stop(key, id),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+
+        yield* boat.setApiKey({ apiKey: recoveryKey });
+        originalPolicy = original;
+        originalStopDenied = false;
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+
+        expect((yield* server(managedId))?.lifecycle).toBe(lifecycle);
+        expect(fake.calls.filter((call) => call === "stop")).toHaveLength(
+          lifecycle === "stopped" ? 1 : 0,
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("fails a resume that finds another identity and asks Boat to stop it", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+      fake.replaceGuestIdentity(sandboxId);
+
+      yield* boat.resume({ requestId: requestId(), managedId });
+      yield* settle;
+      const row = yield* server(managedId);
+      expect(row?.lifecycle).toBe("failed");
+      expect(row?.operation).toMatchObject({ kind: "resume", failure: "bootstrap-failed" });
+      expect(row?.guestEnvironmentId).toBe("env-guest-1");
+      expect(fake.sandboxes.get(sandboxId)?.sandbox.state).toBe("archived");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("reconciles Boat’s TTL archive and retains ownership after an unverified 404", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+
+      fake.archiveExternally(sandboxId, 0);
+      yield* settle;
+      expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+
+      fake.deleteExternally(sandboxId);
+      yield* settle;
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "stopped",
+        observedPower: "missing",
+      });
+      yield* boat.resume({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toMatchObject({
+        operation: { kind: "resume", stage: "failed", failure: "not-found" },
+      });
+      expect(fake.calls).not.toContain("resume");
+
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toMatchObject({
+        operation: { kind: "delete", stage: "failed", failure: "not-found" },
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("past Boat's idempotency window, adopts one labeled match and never creates", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId;
+
+      // As if the create reply was lost and the controller stayed down for a day.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE boat_operations SET stage = 'allocating'`;
+      yield* sql`UPDATE boat_servers SET lifecycle = 'provisioning', sandbox_id = NULL`;
+      yield* TestClock.adjust("25 hours");
+      yield* settle;
+      expect(yield* server(managedId)).toMatchObject({ lifecycle: "running", sandboxId });
+      expect(fake.calls.filter((name) => name === "create")).toHaveLength(1);
+      expect(fake.calls).toContain("list");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("retains an unresolved create until owned inventory can identify and stop it", () => {
+    let visible = true;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      list: (key, labels) => (visible ? api.list(key, labels) : Effect.succeed([])),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId;
+
+      // The create reply was lost and the active scope cannot list the accepted sandbox.
+      visible = false;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE boat_operations SET stage = 'allocating'`;
+      yield* sql`UPDATE boat_servers SET lifecycle = 'provisioning', sandbox_id = NULL`;
+      yield* TestClock.adjust("25 hours");
+      yield* settle;
+      expect((yield* server(managedId))?.operation?.failure).toBe("unresolved-create");
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toMatchObject({
+        sandboxId: null,
+        operation: { kind: "delete", stage: "failed", failure: "unresolved-create" },
+      });
+      expect((yield* Effect.flip(boat.setApiKey({ apiKey: null }))).code).toBe("invalid-state");
+      expect((yield* Effect.flip(boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY }))).code).toBe(
+        "conflict",
+      );
+
+      visible = true;
+      yield* settle;
+      expect((yield* server(managedId))?.sandboxId).toBe(sandboxId);
+      expect(fake.sandboxes.get(sandboxId ?? "")?.sandbox.state).toBe("archived");
+      expect(fake.calls.filter((call) => call === "create")).toHaveLength(1);
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toBeUndefined();
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refuses Create and Resume while this server cannot install T3 on a machine", () => {
+    const { layer, fake } = setup({ bootstrapAvailable: false });
+    return Effect.gen(function* () {
+      yield* configure;
+      expect((yield* Effect.flip(createSmall)).code).toBe("invalid-state");
+      expect((yield* snapshot).createAvailable).toBe(false);
+      expect(fake.sandboxes.size).toBe(0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refuses to purge a machine Boat reports running, and shows it running", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+      fake.resumeExternally(sandboxId);
+
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "running",
+        observedPower: "running",
+        operation: { kind: "delete", failure: "machine-running" },
+      });
+      expect(fake.calls).not.toContain("delete");
+      expect(fake.sandboxes.has(sandboxId)).toBe(true);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("after a restart, does not stop again a machine that already archived", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      // As if the controller restarted before recording that the stop finished.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE boat_operations SET stage = 'stopping' WHERE kind = 'stop'`;
+      yield* settle;
+      expect(fake.calls.filter((name) => name === "stop")).toHaveLength(1);
+      expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each([
+    { bootstrapAvailable: false, zeroDataRetention: false, failure: "bootstrap-unavailable" },
+    { bootstrapAvailable: true, zeroDataRetention: true, failure: "provider-rejected" },
+  ])(
+    "does not allocate a queued create after its prerequisites change ($failure)",
+    ({ bootstrapAvailable, zeroDataRetention, failure }) => {
+      const { layer, fake } = setup({ bootstrapAvailable, zeroDataRetention });
+      return Effect.gen(function* () {
+        yield* configure;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+        INSERT INTO boat_servers (managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at)
+        VALUES ('boat_queued', 'acct_fake', 'Queued', 'small', 3600, 'provisioning', 'unknown', '1970-01-01T00:00:00.000Z')
+      `;
+        yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+        VALUES ('00000000-0000-4000-8000-0000000000ff', 'boat_queued', 'create', '', 'queued', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z')
+      `;
+        yield* settle;
+        const queued = (yield* server("boat_queued"))!;
+        expect(queued.operation?.failure).toBe(failure);
+        expect(fake.calls).not.toContain("create");
+        const boat = yield* BoatService.BoatService;
+        yield* boat.delete({ requestId: requestId(), managedId: queued.managedId });
+        yield* settle;
+        expect(yield* server(queued.managedId)).toBeUndefined();
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("keeps stopping a machine a failed create left running", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      yield* configure;
+      fake.failNext("bootstrap", new BoatApiError({ category: "rejected" }));
+      fake.failNext("stop", new BoatApiError({ category: "rejected" }));
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+      // The cleanup stop failed once; the reconcile pass sent it again.
+      expect(fake.calls.filter((name) => name === "stop")).toHaveLength(2);
+      expect(fake.sandboxes.get(sandboxId)?.sandbox.state).toBe("archived");
+      expect((yield* server(managedId))?.lifecycle).toBe("failed");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refuses a queued resume it cannot finish without stopping the machine", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+      // Accepted by the old build, then the controller restarts on one that cannot install T3,
+      // while someone resumes the machine from Boat's dashboard.
+      const sql = yield* SqlClient.SqlClient;
+      const resumeId = requestId();
+      yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+        VALUES (${resumeId}, ${managedId}, 'resume', ${managedId}, 'queued', '1970-01-01T00:00:01.000Z', '1970-01-01T00:00:01.000Z')
+      `;
+      fake.setBootstrapAvailable(false);
+      fake.resumeExternally(sandboxId);
+      const stopsBefore = fake.calls.filter((name) => name === "stop").length;
+      yield* settle;
+      expect((yield* server(managedId))?.operation).toMatchObject({
+        kind: "resume",
+        failure: "bootstrap-unavailable",
+      });
+      expect(fake.calls.filter((name) => name === "stop")).toHaveLength(stopsBefore);
+      expect(fake.calls).not.toContain("resume");
+      expect(fake.sandboxes.get(sandboxId)?.sandbox.state).toBe("running");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("settles a resume Boat refuses while the machine stays archived", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      fake.failNext("resume", new BoatApiError({ category: "conflict", code: "busy" }));
+      yield* boat.resume({ requestId: requestId(), managedId });
+      yield* settle;
+      expect((yield* server(managedId))?.operation).toMatchObject({
+        kind: "resume",
+        failure: "provider-rejected",
+      });
+      // The queue is clear, so the next request runs.
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toBeUndefined();
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("keeps looking for a create that may have reached Boat instead of dropping it", () => {
+    const { layer, fake } = setup({ bootstrapAvailable: false });
+    return Effect.gen(function* () {
+      yield* configure;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO boat_servers (managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at)
+        VALUES ('boat_sent', 'acct_fake', 'Sent', 'small', 3600, 'provisioning', 'unknown', '1970-01-01T00:00:00.000Z')
+      `;
+      // It left "queued", so an earlier build may have sent it before restarting.
+      yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+        VALUES ('00000000-0000-4000-8000-0000000000fe', 'boat_sent', 'create', '', 'allocating', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z')
+      `;
+      yield* settle;
+      const [operation] = yield* sql`
+        SELECT stage, failure FROM boat_operations WHERE managed_id = 'boat_sent'
+      `;
+      expect(operation).toEqual({ stage: "allocating", failure: null });
+      expect(fake.calls).toContain("list");
+      expect(fake.calls).not.toContain("create");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("lets a stop queued behind a resume win without waking the machine", () => {
+    const gate = Deferred.makeUnsafe<void>();
+    let hold = false;
+    const { layer, fake } = setup({
+      latency: Effect.suspend(() => (hold ? Deferred.await(gate) : Effect.void)),
+    });
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      hold = true;
+      // The resume's worker is parked on the account read; the stop queues behind it.
+      const sql = yield* SqlClient.SqlClient;
+      const resumeId = requestId();
+      yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+        VALUES (${resumeId}, ${managedId}, 'resume', ${managedId}, 'queued', '1970-01-01T00:00:01.000Z', '1970-01-01T00:00:01.000Z')
+      `;
+      yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+        VALUES (${requestId()}, ${managedId}, 'stop', ${managedId}, 'queued', '1970-01-01T00:00:02.000Z', '1970-01-01T00:00:02.000Z')
+      `;
+      hold = false;
+      yield* Deferred.succeed(gate, undefined);
+      yield* settle;
+      expect(fake.calls).not.toContain("resume");
+      expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("lets Stop take over when the resumed sandbox becomes live", () => {
+    const resumed = Deferred.makeUnsafe<void>();
+    const continuePoll = Deferred.makeUnsafe<void>();
+    let holdLiveRead = false;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      get: Effect.fnUntraced(function* (key, id) {
+        const sandbox = yield* api.get(key, id);
+        if (holdLiveRead && sandbox.state === "running") {
+          holdLiveRead = false;
+          yield* Deferred.succeed(resumed, undefined);
+          yield* Deferred.await(continuePoll);
+        }
+        return sandbox;
+      }),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+
+      holdLiveRead = true;
+      yield* boat.resume({ requestId: requestId(), managedId });
+      yield* Deferred.await(resumed);
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* Deferred.succeed(continuePoll, undefined);
+      yield* settle;
+
+      expect(fake.calls.filter((call) => call === "bootstrap")).toHaveLength(1);
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "stopped",
+        operation: { kind: "stop", stage: "completed" },
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect(
+    "settles a stop on a create that never allocated instead of leaving it Stopping",
+    () => {
+      const { layer, fake } = setup({ bootstrapAvailable: false });
+      return Effect.gen(function* () {
+        yield* configure;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+        INSERT INTO boat_servers (managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at)
+        VALUES ('boat_never', 'acct_fake', 'Never', 'small', 3600, 'stopping', 'unknown', '1970-01-01T00:00:00.000Z')
+      `;
+        yield* sql`
+        INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+        VALUES ('00000000-0000-4000-8000-0000000000fa', 'boat_never', 'create', '', 'queued', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z'),
+               ('00000000-0000-4000-8000-0000000000fb', 'boat_never', 'stop', 'boat_never', 'queued', '1970-01-01T00:00:01.000Z', '1970-01-01T00:00:01.000Z')
+      `;
+        yield* settle;
+        expect((yield* server("boat_never"))?.lifecycle).toBe("failed");
+        expect(fake.calls).not.toContain("create");
+        expect(fake.calls).not.toContain("stop");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("does not stop again a machine started outside T3 after Boat took our stop", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+      // As if the confirmation reads failed after Boat took the stop, then someone started it.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE boat_operations SET stage = 'stopping' WHERE kind = 'stop'`;
+      fake.resumeExternally(sandboxId);
+      yield* settle;
+      expect(fake.calls.filter((name) => name === "stop")).toHaveLength(1);
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "running",
+        operation: { kind: "stop", failure: "provider-rejected" },
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("settles as Stopped a resume Boat took whose machine its deadline archived", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      yield* boat.resume({ requestId: requestId(), managedId });
+      yield* settle;
+      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+      // As if the confirmation reads failed after Boat took the resume, then the TTL archived it.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE boat_operations SET stage = 'resuming' WHERE kind = 'resume'`;
+      fake.archiveExternally(sandboxId, 0);
+      yield* settle;
+      expect(fake.calls.filter((name) => name === "resume")).toHaveLength(1);
+      expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect(
+    "recognises its own stop after a lost reply and leaves a dashboard start running",
+    () => {
+      const { layer, fake } = setup();
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+        fake.loseNextResponse("stop");
+        // The worker sends at once; Boat archives it but the reply is lost.
+        yield* boat.stop({ requestId: requestId(), managedId });
+        // Before the next pass, someone starts it again from Boat's dashboard.
+        fake.resumeExternally(sandboxId);
+        yield* settle;
+        expect(fake.calls.filter((name) => name === "stop")).toHaveLength(1);
+        expect(fake.sandboxes.get(sandboxId)?.sandbox.state).toBe("running");
+        expect(yield* server(managedId)).toMatchObject({
+          lifecycle: "running",
+          operation: { kind: "stop", failure: "provider-rejected" },
+        });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("completes a delete for an organization key that cannot read deletion status", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      // Boat answers organization keys this way on GET /deletion-operations (seen live).
+      fake.failNext(
+        "deletion",
+        new BoatApiError({ category: "forbidden", code: "api_key_org_forbidden" }),
+      );
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toBeUndefined();
+      expect((yield* snapshot).account.status).toBe("configured");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each(["get", "delete"] as const)(
+    "keeps a sandbox when %s returns a scope-masked 404 even though /me works",
+    (masked) => {
+      const { layer, fake } = setup();
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        const sandboxId = (yield* server(managedId))!.sandboxId!;
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+        if (masked === "get") fake.resumeExternally(sandboxId);
+        fake.failNext(masked, new BoatApiError({ category: "not-found", code: "not_found" }));
+
+        yield* boat.delete({ requestId: requestId(), managedId });
+        yield* settle;
+
+        expect(fake.sandboxes.has(sandboxId)).toBe(true);
+        expect(yield* server(managedId)).toBeDefined();
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: null }))).code).toBe("invalid-state");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("keeps the key while it still manages machines", () => {
+    const { layer } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      yield* createSmall;
+      const error = yield* Effect.flip(boat.setApiKey({ apiKey: null }));
+      expect(error.code).toBe("invalid-state");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("deletes a rejected create without a sandbox and allows key removal", () => {
+    const { layer, fake, secrets } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      fake.failNext("create", new BoatApiError({ category: "rejected" }));
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "failed",
+        sandboxId: null,
+        operation: { kind: "create", stage: "failed", failure: "provider-rejected" },
+      });
+
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* server(managedId)).toBeUndefined();
+      expect(fake.calls).not.toContain("delete");
+      expect(yield* boat.setApiKey({ apiKey: null })).toEqual({ status: "missing" });
+      expect(secrets.has("boat-api-key")).toBe(false);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refuses a same-user key for another wallet while it manages machines", () => {
+    const { layer, secrets } = setup();
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const stored = secrets.get("boat-api-key");
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      const error = yield* Effect.flip(boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY }));
+      expect(error.code).toBe("conflict");
+      expect(secrets.get("boat-api-key")).toEqual(stored);
+
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(yield* boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY })).toEqual({
+        status: "configured",
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each(["replacement", "removal"] as const)(
+    "restores the prior secret when SQLite rejects key %s",
+    (operation) => {
+      const { layer, secrets } = setup();
+      return Effect.gen(function* () {
+        yield* configure;
+        const stored = Buffer.from(secrets.get("boat-api-key")!);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          CREATE TRIGGER reject_boat_account_insert BEFORE INSERT ON boat_account
+          BEGIN SELECT RAISE(ABORT, 'test account write failure'); END
+        `;
+        yield* sql`
+          CREATE TRIGGER reject_boat_account_delete BEFORE DELETE ON boat_account
+          BEGIN SELECT RAISE(ABORT, 'test account write failure'); END
+        `;
+        const boat = yield* BoatService.BoatService;
+        const error = yield* Effect.flip(
+          boat.setApiKey({
+            apiKey: operation === "replacement" ? FAKE_OTHER_WALLET_KEY : null,
+          }),
+        );
+        expect(error.code).toBe("persistence");
+        expect(stored.equals(secrets.get("boat-api-key") ?? new Uint8Array())).toBe(true);
+        expect((yield* snapshot).account.status).toBe("configured");
+        yield* createSmall;
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("keeps the cleanup key when a same-wallet replacement can only inspect", () => {
+    const replacement = `${FAKE_BOAT_KEY}_scoped`;
+    const sameWallet = (key: BoatKey) =>
+      Redacted.value(key) === replacement ? Redacted.make(FAKE_BOAT_KEY) : key;
+    const denied = new BoatApiError({ category: "forbidden", code: "api_key_action_forbidden" });
+    const { layer, secrets, fake } = setup({}, (api) => ({
+      ...api,
+      account: (key) => api.account(sameWallet(key)),
+      get: (key, id) => api.get(sameWallet(key), id),
+      stop: (key, id) =>
+        Redacted.value(key) === replacement ? Effect.fail(denied) : api.stop(key, id),
+      delete: (key, id) =>
+        Redacted.value(key) === replacement ? Effect.fail(denied) : api.delete(key, id),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const stored = Buffer.from(secrets.get("boat-api-key")!);
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      const result = yield* Effect.result(boat.setApiKey({ apiKey: replacement }));
+      expect(result).toMatchObject({ _tag: "Failure", failure: { code: "conflict" } });
+      expect(stored.equals(secrets.get("boat-api-key") ?? new Uint8Array())).toBe(true);
+      expect((yield* snapshot).account.status).toBe("configured");
+
+      yield* configure;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(fake.sandboxes.size).toBe(0);
+      expect(yield* server(managedId)).toBeUndefined();
+      expect(yield* boat.setApiKey({ apiKey: replacement })).toEqual({ status: "configured" });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect(
+    "keeps cleanup denial and the original key when a recovery key can only inspect",
+    () => {
+      const inspectKey = `${FAKE_BOAT_KEY}_inspect`;
+      const stopKey = `${FAKE_BOAT_KEY}_stop`;
+      const permissionDenied = new BoatApiError({
+        category: "forbidden",
+        code: "api_key_action_forbidden",
+      });
+      const sameWallet = () => Redacted.make(FAKE_BOAT_KEY);
+      const { layer, secrets, fake } = setup({}, (api) => ({
+        ...api,
+        account: () => api.account(sameWallet()),
+        get: (_, id) => api.get(sameWallet(), id),
+        list: (_, labels) => api.list(sameWallet(), labels),
+        stop: (key, id) =>
+          Redacted.value(key) === stopKey
+            ? api.stop(sameWallet(), id)
+            : Effect.fail(permissionDenied),
+        delete: (key, id) =>
+          Redacted.value(key) === FAKE_BOAT_KEY
+            ? api.delete(key, id)
+            : Effect.fail(permissionDenied),
+        deletionCompleted: (key, operationId, id) =>
+          Redacted.value(key) === FAKE_BOAT_KEY
+            ? api.deletionCompleted(key, operationId, id)
+            : Effect.fail(permissionDenied),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const original = Buffer.from(secrets.get("boat-api-key")!);
+        const { managedId } = yield* createSmall;
+        const sql = yield* SqlClient.SqlClient;
+        const cleanupDenied = sql<{ cleanup_denied: number }>`
+        SELECT cleanup_denied FROM boat_servers WHERE managed_id = ${managedId}
+      `.pipe(Effect.map((rows) => rows[0]?.cleanup_denied));
+        yield* settle;
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+        expect((yield* server(managedId))?.lifecycle).toBe("running");
+        const denial = yield* cleanupDenied;
+        expect(denial).toBeGreaterThan(0);
+
+        yield* boat.setApiKey({ apiKey: inspectKey });
+        expect((yield* Effect.flip(createSmall)).code).toBe("invalid-state");
+        expect(yield* cleanupDenied).toBe(denial);
+        expect(original.equals(secrets.get("boat-api-key") ?? new Uint8Array())).toBe(true);
+        expect(fake.calls).not.toContain("stop");
+
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+        expect((yield* server(managedId))?.lifecycle).toBe("running");
+        expect(yield* cleanupDenied).toBe(denial);
+
+        yield* boat.setApiKey({ apiKey: stopKey });
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+        expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+        expect(yield* cleanupDenied).toBe(0);
+        expect((yield* Effect.flip(createSmall)).code).toBe("invalid-state");
+        yield* boat.resume({ requestId: requestId(), managedId });
+        yield* settle;
+        expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+        expect(fake.calls).not.toContain("resume");
+
+        yield* boat.delete({ requestId: requestId(), managedId });
+        yield* settle;
+        expect(fake.sandboxes.size).toBe(0);
+        expect(yield* server(managedId)).toBeUndefined();
+
+        yield* sql`
+          CREATE TRIGGER reject_recovery_key_removal BEFORE DELETE ON boat_account
+          BEGIN SELECT RAISE(ABORT, 'test account write failure'); END
+        `;
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: null }))).code).toBe("persistence");
+        expect(original.equals(secrets.get("boat-api-key") ?? new Uint8Array())).toBe(true);
+        expect(secrets.size).toBe(2);
+        yield* sql`DROP TRIGGER reject_recovery_key_removal`;
+
+        expect(yield* boat.setApiKey({ apiKey: null })).toEqual({ status: "missing" });
+        expect(secrets.size).toBe(0);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect.each(["stop", "stop-unauthorized", "delete", "get", "list", "policy"] as const)(
+    "recovers cleanup when an authenticated key is denied %s",
+    (deniedAction) => {
+      const replacement = `${FAKE_BOAT_KEY}_recovery`;
+      const sameWallet = (key: BoatKey) =>
+        Redacted.value(key) === replacement ? Redacted.make(FAKE_BOAT_KEY) : key;
+      let denied = false;
+      let replacementReadDenied = true;
+      const refuses = (key: BoatKey, action: typeof deniedAction) =>
+        denied && action === deniedAction && Redacted.value(key) === FAKE_BOAT_KEY;
+      const forbidden = new BoatApiError({
+        category: "forbidden",
+        code: "api_key_action_forbidden",
+      });
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        account: (key) =>
+          refuses(key, "policy") ? Effect.fail(forbidden) : api.account(sameWallet(key)),
+        get: (key, id) =>
+          refuses(key, "get") || (replacementReadDenied && Redacted.value(key) === replacement)
+            ? Effect.fail(new BoatApiError({ category: "not-found" }))
+            : api.get(sameWallet(key), id),
+        list: (key, labels) =>
+          refuses(key, "list") ? Effect.succeed([]) : api.list(sameWallet(key), labels),
+        stop: (key, id) =>
+          refuses(key, "stop")
+            ? Effect.fail(forbidden)
+            : refuses(key, "stop-unauthorized")
+              ? Effect.fail(new BoatApiError({ category: "unauthorized" }))
+              : api.stop(sameWallet(key), id),
+        delete: (key, id) =>
+          refuses(key, "delete") ? Effect.fail(forbidden) : api.delete(sameWallet(key), id),
+        deletionCompleted: (key, operationId, id) =>
+          api.deletionCompleted(sameWallet(key), operationId, id),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        if (deniedAction === "delete") {
+          yield* boat.stop({ requestId: requestId(), managedId });
+          yield* settle;
+        }
+        if (deniedAction === "list") {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE boat_servers SET lifecycle = 'failed', sandbox_id = NULL`;
+          yield* sql`UPDATE boat_operations SET stage = 'failed', failure = 'unresolved-create'`;
+        }
+        denied = true;
+        if (deniedAction === "delete") yield* boat.delete({ requestId: requestId(), managedId });
+        else if (deniedAction !== "get" && deniedAction !== "list") {
+          yield* boat.stop({ requestId: requestId(), managedId });
+        }
+        yield* settle;
+        yield* settle;
+        expect((yield* snapshot).account.status).toBe("configured");
+        expect(fake.sandboxes.size).toBe(1);
+        if (deniedAction === "stop") {
+          yield* configure;
+          expect((yield* Effect.flip(createSmall)).code).toBe("invalid-state");
+        }
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY }))).code).toBe(
+          "conflict",
+        );
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: replacement }))).code).toBe("conflict");
+        replacementReadDenied = false;
+        expect(yield* Effect.result(boat.setApiKey({ apiKey: replacement }))).toMatchObject({
+          _tag: "Success",
+          success: { status: "configured" },
+        });
+        if (deniedAction !== "delete") {
+          yield* boat.stop({ requestId: requestId(), managedId });
+          yield* settle;
+        }
+        yield* boat.delete({ requestId: requestId(), managedId });
+        yield* settle;
+        expect(fake.sandboxes.size).toBe(0);
+        expect(yield* boat.setApiKey({ apiKey: null })).toEqual({ status: "missing" });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect.each([
+    ["login:original", "login:renamed", "login:renamed"],
+    ["login:original", "usr_1", "usr_1"],
+    ["usr_1", "login:renamed", "usr_1"],
+  ] as const)(
+    "recovers identity %s → %s only after the candidate proves ownership",
+    ([originalId, renamedId, storedId]) => {
+      const replacement = `${FAKE_BOAT_KEY}_renamed`;
+      const keyForWallet = (key: BoatKey) =>
+        Redacted.value(key) === replacement ? Redacted.make(FAKE_BOAT_KEY) : key;
+      let revoked = false;
+      let access: "owner" | "view" | undefined;
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        account: (key) => {
+          const value = Redacted.value(key);
+          if (revoked && value === FAKE_BOAT_KEY) {
+            return Effect.fail(new BoatApiError({ category: "unauthorized" }));
+          }
+          return api.account(keyForWallet(key)).pipe(
+            Effect.map((account) => ({
+              ...account,
+              accountId: value === FAKE_BOAT_KEY ? originalId : renamedId,
+            })),
+          );
+        },
+        get: (key, id) => api.get(keyForWallet(key), id),
+        list: (key, labels) =>
+          api
+            .list(keyForWallet(key), labels)
+            .pipe(
+              Effect.map((rows) =>
+                rows.map((row) => (access === undefined ? row : { ...row, access })),
+              ),
+            ),
+        stop: (key, id) => api.stop(keyForWallet(key), id),
+        delete: (key, id) => api.delete(keyForWallet(key), id),
+        deletionCompleted: (key, operationId, id) =>
+          api.deletionCompleted(keyForWallet(key), operationId, id),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        revoked = true;
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: replacement }))).code).toBe("conflict");
+        access = "view";
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: replacement }))).code).toBe("conflict");
+        access = "owner";
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY }))).code).toBe(
+          "conflict",
+        );
+        const sql = yield* SqlClient.SqlClient;
+        const sandboxId = (yield* server(managedId))!.sandboxId;
+        yield* sql`UPDATE boat_servers SET sandbox_id = NULL WHERE managed_id = ${managedId}`;
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: replacement }))).code).toBe("conflict");
+        yield* sql`UPDATE boat_servers SET sandbox_id = ${sandboxId} WHERE managed_id = ${managedId}`;
+        expect(yield* Effect.result(boat.setApiKey({ apiKey: replacement }))).toMatchObject({
+          _tag: "Success",
+          success: { status: "configured" },
+        });
+        const ids = yield* sql`
+        SELECT account_id FROM boat_account
+        UNION ALL SELECT account_id FROM boat_servers WHERE managed_id = ${managedId}
+      `;
+        expect(ids).toEqual([{ account_id: storedId }, { account_id: storedId }]);
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+        yield* boat.delete({ requestId: requestId(), managedId });
+        yield* settle;
+        expect(fake.sandboxes.size).toBe(0);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("recovers cleanup with a same-wallet key after Boat rejects the saved key", () => {
+    const replacement = `${FAKE_BOAT_KEY}_recovery`;
+    const sameWallet = (key: BoatKey) =>
+      Redacted.value(key) === replacement ? Redacted.make(FAKE_BOAT_KEY) : key;
+    let revoked = false;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      account: (key) =>
+        revoked && Redacted.value(key) === FAKE_BOAT_KEY
+          ? Effect.fail(new BoatApiError({ category: "forbidden", code: "api_key_expired" }))
+          : api.account(sameWallet(key)),
+      get: (key, id) => api.get(sameWallet(key), id),
+      list: (key, labels) => api.list(sameWallet(key), labels),
+      stop: (key, id) => api.stop(sameWallet(key), id),
+      delete: (key, id) => api.delete(sameWallet(key), id),
+      deletionCompleted: (key, id, sandboxId) =>
+        api.deletionCompleted(sameWallet(key), id, sandboxId),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      fake.failNext(
+        "account",
+        new BoatApiError({ category: "forbidden", code: "api_key_action_forbidden" }),
+      );
+      expect((yield* Effect.flip(boat.setApiKey({ apiKey: replacement }))).code).toBe(
+        "provider-unavailable",
+      );
+      expect((yield* snapshot).account.status).toBe("configured");
+      revoked = true;
+      yield* settle;
+      const invalid = (yield* snapshot).account.status;
+      expect((yield* Effect.flip(boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY }))).code).toBe(
+        "conflict",
+      );
+      expect(yield* Effect.result(boat.setApiKey({ apiKey: replacement }))).toMatchObject({
+        _tag: "Success",
+        success: { status: "configured" },
+      });
+      expect(invalid).toBe("invalid");
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(fake.sandboxes.size).toBe(0);
+      expect(yield* boat.setApiKey({ apiKey: null })).toEqual({ status: "missing" });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each(["queued", "allocating"] as const)(
+    "recovers a %s create only when its persisted state proves it was unsent",
+    (stage) => {
+      let revoked = false;
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        account: (key) =>
+          revoked && Redacted.value(key) === FAKE_BOAT_KEY
+            ? Effect.fail(new BoatApiError({ category: "unauthorized" }))
+            : api.account(key),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const id = requestId();
+        const now = "1970-01-01T00:00:00.000Z";
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO boat_servers (managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at)
+          VALUES ('boat_recovery', 'acct_fake', 'Recovery', 'small', 3600, 'provisioning', 'unknown', ${now})
+        `;
+        yield* sql`
+          INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+          VALUES (${id}, 'boat_recovery', 'create', '', ${stage}, ${now}, ${now})
+        `;
+        yield* TestClock.adjust("25 hours");
+        revoked = true;
+        yield* settle;
+        const recovery = boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY });
+        if (stage === "allocating") {
+          expect((yield* Effect.flip(recovery)).code).toBe("conflict");
+          expect(fake.calls).toContain("list");
+          expect(fake.sandboxes.size).toBe(0);
+          return;
+        }
+        expect(yield* Effect.result(recovery)).toMatchObject({
+          _tag: "Success",
+          success: { status: "configured" },
+        });
+        expect(fake.calls).not.toContain("list");
+        yield* settle;
+        expect(yield* server("boat_recovery")).toMatchObject({
+          lifecycle: "running",
+          operation: { kind: "create", stage: "completed" },
+        });
+        expect(fake.sandboxes.size).toBe(1);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("keeps Create queued when the saved key is revoked before dispatch", () => {
+    let remainingReads = Number.POSITIVE_INFINITY;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      account: (key) =>
+        Effect.suspend(() =>
+          Redacted.value(key) === FAKE_BOAT_KEY && remainingReads-- <= 0
+            ? Effect.fail(new BoatApiError({ category: "unauthorized" }))
+            : api.account(key),
+        ),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      remainingReads = 1;
+      const { managedId } = yield* createSmall;
+      yield* boat.snapshots.pipe(
+        Stream.filter((value) => value.account.status === "invalid"),
+        Stream.runHead,
+      );
+      expect(yield* server(managedId)).toMatchObject({
+        sandboxId: null,
+        operation: { kind: "create", stage: "queued" },
+      });
+      expect(fake.calls).not.toContain("create");
+      yield* boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY });
+      yield* settle;
+      expect((yield* server(managedId))?.lifecycle).toBe("running");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each(["working", "revoked", "missing"] as const)(
+    "can forget a machine deleted in Boat and remove the %s credential binding",
+    (credential) => {
+      let revoked = false;
+      const { layer, fake, secrets } = setup({}, (api) => ({
+        ...api,
+        account: (key) =>
+          revoked ? Effect.fail(new BoatApiError({ category: "unauthorized" })) : api.account(key),
+        get: (key, id) =>
+          revoked ? Effect.fail(new BoatApiError({ category: "unauthorized" })) : api.get(key, id),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        const sandboxId = (yield* server(managedId))!.sandboxId!;
+        const input = { managedId, confirmed: true as const };
+        expect((yield* Effect.flip(boat.forget(input))).code).toBe("invalid-state");
+
+        fake.deleteExternally(sandboxId);
+        revoked = credential === "revoked";
+        if (credential === "missing") secrets.clear();
+        yield* settle;
+        const seen = yield* snapshot;
+        if (credential === "working") expect(seen.servers[0]?.observedPower).toBe("missing");
+        else expect(seen.account.status).toBe(credential === "revoked" ? "invalid" : "missing");
+
+        yield* boat.forget(input);
+        yield* boat.forget(input);
+        expect((yield* snapshot).servers).toEqual([]);
+        expect(yield* boat.setApiKey({ apiKey: null })).toEqual({ status: "missing" });
+        expect(fake.calls).not.toContain("delete");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "allows local recovery when Boat accepts deletion but its status is unavailable",
+    () => {
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        deletionCompleted: () => Effect.fail(new BoatApiError({ category: "not-found" })),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+        yield* boat.delete({ requestId: requestId(), managedId });
+        yield* settle;
+        expect((yield* server(managedId))?.lifecycle).toBe("deleting");
+        yield* boat.forget({ managedId, confirmed: true });
+        expect(fake.calls.filter((name) => name === "delete")).toHaveLength(1);
+        expect((yield* snapshot).servers).toEqual([]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("does not write or publish an unchanged provider observation", () => {
+    const { layer } = setup({}, (api) => ({
+      ...api,
+      usage: () =>
+        Effect.succeed({
+          seconds: 0,
+          dollars: 0,
+          since: "1970-01-01T00:00:00.000Z",
+          until: "1970-01-01T00:00:00.000Z",
+        }),
+    }));
+    return Effect.gen(function* () {
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      const before = yield* snapshot;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.adjust("1 minute");
+      yield* settle;
+      const [row] = yield* sql<{
+        observed_at: string;
+      }>`SELECT observed_at FROM boat_servers WHERE managed_id = ${managedId}`;
+      expect(row?.observed_at).toBe(before.servers[0]?.observedAt);
+      expect(yield* snapshot).toBe(before);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each(["account", "get", "usage"] as const)(
+    "publishes provider staleness on %s failure and recovery without rewriting observations",
+    (read) => {
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        usage: (key, id) =>
+          api.usage(key, id).pipe(
+            Effect.map((usage) => ({
+              ...usage,
+              since: "1970-01-01T00:00:00.000Z",
+              until: "1970-01-01T00:00:00.000Z",
+              seconds: 0,
+              dollars: 0,
+            })),
+          ),
+      }));
+      return Effect.gen(function* () {
+        yield* configure;
+        yield* createSmall;
+        yield* settle;
+        const current = yield* snapshot;
+        yield* TestClock.adjust("1 minute");
+        fake.failNext(read, new BoatApiError({ category: "unavailable" }));
+        yield* settle;
+        const stale = yield* snapshot;
+        expect(stale).toMatchObject({ providerStale: true, servers: current.servers });
+        fake.failNext(read, new BoatApiError({ category: "unavailable" }));
+        yield* settle;
+        expect(yield* snapshot).toBe(stale);
+        yield* settle;
+        expect(yield* snapshot).toMatchObject({ providerStale: false, servers: current.servers });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "keeps provider data stale when only the account endpoint answers pending creates",
+    () => {
+      let unavailable = true;
+      const { layer } = setup({}, (api) => ({
+        ...api,
+        create: (key, input) =>
+          unavailable
+            ? Effect.fail(new BoatApiError({ category: "unavailable" }))
+            : api.create(key, input),
+      }));
+      return Effect.gen(function* () {
+        yield* configure;
+        yield* createSmall;
+        yield* createSmall;
+        yield* settle;
+        const stale = yield* snapshot;
+        expect(stale).toMatchObject({ account: { status: "configured" }, providerStale: true });
+        expect(stale.servers.map((row) => row.operation?.stage)).toEqual([
+          "allocating",
+          "allocating",
+        ]);
+
+        const sql = yield* SqlClient.SqlClient;
+        const changes = sql<{ count: number }>`SELECT total_changes() AS count`;
+        const before = yield* changes;
+        yield* TestClock.adjust("1 minute");
+        yield* settle;
+        expect(yield* changes).toEqual(before);
+        expect(yield* snapshot).toBe(stale);
+
+        unavailable = false;
+        yield* settle;
+        const recovered = yield* snapshot;
+        expect(recovered.providerStale).toBe(false);
+        expect(recovered.servers.map((row) => row.lifecycle)).toEqual(["running", "running"]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "keeps provider data stale when a pending stop fails despite successful sandbox reads",
+    () => {
+      let stopUnavailable = true;
+      const { layer } = setup({}, (api) => ({
+        ...api,
+        stop: (key, id) =>
+          stopUnavailable
+            ? Effect.fail(new BoatApiError({ category: "unavailable" }))
+            : api.stop(key, id),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        yield* settle;
+        expect((yield* snapshot).providerStale).toBe(true);
+
+        const { managedId } = yield* createSmall;
+        yield* createSmall;
+        yield* settle;
+        expect((yield* snapshot).providerStale).toBe(false);
+
+        yield* boat.stop({ managedId, requestId: requestId() });
+        yield* settle;
+        expect(yield* snapshot).toMatchObject({ providerStale: true });
+        expect(yield* server(managedId)).toMatchObject({ lifecycle: "stopping" });
+
+        stopUnavailable = false;
+        yield* settle;
+        expect(yield* snapshot).toMatchObject({ providerStale: false });
+        expect(yield* server(managedId)).toMatchObject({ lifecycle: "stopped" });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect.each(["cancelled", "error"] as const)(
+    "deletes a sandbox after its create ends in %s and allows key removal",
+    (state) => {
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        get: (key, id) => api.get(key, id).pipe(Effect.map((sandbox) => ({ ...sandbox, state }))),
+        stop: () => Effect.fail(new BoatApiError({ category: "conflict" })),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        expect(yield* server(managedId)).toMatchObject({
+          lifecycle: "failed",
+          sandboxId: expect.any(String),
+          operation: { kind: "create", stage: "failed" },
+        });
+
+        yield* boat.delete({ requestId: requestId(), managedId });
+        yield* settle;
+        expect(fake.sandboxes.size).toBe(0);
+        expect(yield* server(managedId)).toBeUndefined();
+        expect(yield* boat.setApiKey({ apiKey: null })).toEqual({ status: "missing" });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("keeps the old key during a pending allocation", () => {
+    const allocated = Deferred.makeUnsafe<void>();
+    const releaseResponse = Deferred.makeUnsafe<void>();
+    const replacement = `${FAKE_BOAT_KEY}_scoped`;
+    const { layer, secrets } = setup({}, (api) => ({
+      ...api,
+      account: (key) =>
+        api.account(Redacted.value(key) === replacement ? Redacted.make(FAKE_BOAT_KEY) : key),
+      create: Effect.fnUntraced(function* (key, input) {
+        const sandbox = yield* api.create(key, input);
+        yield* Deferred.succeed(allocated, undefined);
+        yield* Deferred.await(releaseResponse);
+        return sandbox;
+      }),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const stored = secrets.get("boat-api-key");
+      yield* createSmall;
+      yield* Deferred.await(allocated);
+      const result = yield* boat
+        .setApiKey({ apiKey: replacement })
+        .pipe(Effect.result, Effect.ensuring(Deferred.succeed(releaseResponse, undefined)));
+      expect(result).toMatchObject({ _tag: "Failure", failure: { code: "conflict" } });
+      expect(secrets.get("boat-api-key")).toEqual(stored);
+      yield* settle;
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("keeps the original credential through an in-flight stop", () => {
+    const stopStarted = Deferred.makeUnsafe<void>();
+    const releaseStop = Deferred.makeUnsafe<void>();
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      stop: Effect.fnUntraced(function* (key, sandboxId) {
+        yield* Deferred.succeed(stopStarted, undefined);
+        yield* Deferred.await(releaseStop);
+        return yield* api.stop(key, sandboxId);
+      }),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* Deferred.await(stopStarted);
+      const replacement = yield* boat
+        .setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY })
+        .pipe(Effect.result, Effect.ensuring(Deferred.succeed(releaseStop, undefined)));
+      expect(replacement).toMatchObject({ _tag: "Failure", failure: { code: "conflict" } });
+      yield* settle;
+
+      expect({
+        account: (yield* snapshot).account.status,
+        machine: yield* server(managedId),
+        providerState: [...fake.sandboxes.values()][0]?.sandbox.state,
+      }).toMatchObject({
+        account: "configured",
+        machine: {
+          lifecycle: "stopped",
+          operation: { kind: "stop", stage: "completed", failure: null },
+        },
+        providerState: "archived",
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect(
+    "keeps the Boat environment when a replaced key omits it, and clears it on null",
+    () => {
+      const { layer } = setup();
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* boat.setApiKey({ apiKey: FAKE_BOAT_KEY, environment: "t3code" });
+        yield* configure;
+        expect((yield* snapshot).account.environment).toBe("t3code");
+        yield* boat.setApiKey({ apiKey: FAKE_BOAT_KEY, environment: null });
+        expect((yield* snapshot).account.environment).toBeUndefined();
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("refuses to create when Boat does not report the retention policy", () => {
+    const { layer, fake } = setup({ zeroDataRetention: null });
+    return Effect.gen(function* () {
+      yield* configure;
+      const error = yield* Effect.flip(createSmall);
+      expect(error.code).toBe("invalid-state");
+      expect(fake.sandboxes.size).toBe(0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refuses another create after the wallet enables zero-data retention", () => {
+    let zeroDataRetention = false;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      account: (key) =>
+        api.account(key).pipe(Effect.map((account) => ({ ...account, zeroDataRetention }))),
+    }));
+    return Effect.gen(function* () {
+      yield* configure;
+      yield* createSmall;
+      yield* settle;
+
+      zeroDataRetention = true;
+      const error = yield* Effect.flip(createSmall);
+      expect(error.code).toBe("invalid-state");
+      expect((yield* snapshot).servers).toHaveLength(1);
+      expect(fake.calls.filter((name) => name === "create")).toHaveLength(1);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("keeps an archived machine stopped when the wallet enables zero-data retention", () => {
+    let zeroDataRetention = false;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      account: (key) =>
+        api.account(key).pipe(Effect.map((account) => ({ ...account, zeroDataRetention }))),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+
+      zeroDataRetention = true;
+      yield* boat.resume({ requestId: requestId(), managedId });
+      yield* settle;
+
+      expect(fake.calls).not.toContain("resume");
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "stopped",
+        operation: { kind: "resume", stage: "failed", failure: "provider-rejected" },
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each(["stop", "resume"] as const)(
+    "preserves the machine when Boat refuses %s permission",
+    (kind) => {
+      const { layer, fake } = setup();
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        if (kind === "resume") {
+          yield* boat.stop({ requestId: requestId(), managedId });
+          yield* settle;
+        }
+
+        fake.failNext(
+          kind,
+          new BoatApiError({ category: "forbidden", code: "api_key_action_forbidden" }),
+        );
+        yield* boat[kind]({ requestId: requestId(), managedId });
+        yield* settle;
+
+        expect(fake.calls.filter((name) => name === "stop")).toHaveLength(1);
+        expect(yield* server(managedId)).toMatchObject({
+          lifecycle: kind === "resume" ? "stopped" : "running",
+          operation: { kind, stage: "failed", failure: "provider-rejected" },
+        });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("keeps the disk when retention changes during a resume that fails", () => {
+    let zeroDataRetention = false;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      account: (key) =>
+        api.account(key).pipe(Effect.map((account) => ({ ...account, zeroDataRetention }))),
+      resume: (key, id, ttl, environment) =>
+        api.resume(key, id, ttl, environment).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              zeroDataRetention = true;
+            }),
+          ),
+        ),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      const sandboxId = (yield* server(managedId))!.sandboxId!;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      fake.replaceGuestIdentity(sandboxId);
+
+      yield* boat.resume({ requestId: requestId(), managedId });
+      yield* settle;
+      yield* settle;
+
+      expect(fake.calls.filter((name) => name === "stop")).toHaveLength(1);
+      expect(yield* server(managedId)).toMatchObject({
+        observedPower: "running",
+        operation: { kind: "resume", stage: "failed", failure: "bootstrap-failed" },
+      });
+    }).pipe(Effect.provide(layer));
+  });
+});

@@ -751,6 +751,8 @@ export const ServerConfig = Schema.Struct({
   secretReferences: Schema.optionalKey(Schema.Boolean),
   /** A secret request card may be answered with a secret provider reference. */
   secretRequestReferences: Schema.optionalKey(Schema.Boolean),
+  /** This server can create and manage Boat environments through the `boat.*` methods. */
+  boatEnvironments: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**
