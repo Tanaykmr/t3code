@@ -18,6 +18,7 @@ import {
 } from "./BoatApi.ts";
 
 const BASE_URL = "https://boat.dev/api/v1";
+const SANDBOX_PAGE_LIMIT = 200;
 const MANUAL_REDIRECT: RequestInit = { redirect: "manual" };
 
 const SandboxBody = Schema.Struct({
@@ -42,11 +43,13 @@ const SandboxBody = Schema.Struct({
 const SandboxEnvelope = Schema.Struct({ sandbox: SandboxBody });
 const ListEnvelope = Schema.Struct({
   sandboxes: Schema.Array(SandboxBody),
-  pageInfo: Schema.Struct({ nextCursor: Schema.NullOr(Schema.String), hasMore: Schema.Boolean }),
+  pageInfo: Schema.optional(
+    Schema.Struct({ nextCursor: Schema.NullOr(Schema.String), hasMore: Schema.Boolean }),
+  ),
 });
 const UserEnvelope = Schema.Struct({
   user: Schema.Struct({
-    id: Schema.String,
+    id: Schema.optional(Schema.String),
     login: Schema.optional(Schema.String),
     displayName: Schema.optional(Schema.String),
     zeroDataRetention: Schema.optional(Schema.Boolean),
@@ -106,12 +109,12 @@ const checked = Effect.fn("BoatHttpApi.checkId")(function* (pattern: RegExp, id:
   return id;
 });
 
+const invalidResponse = () => new BoatApiError({ category: "rejected", code: "decode" });
+
 const decode =
   <S extends Schema.Top & { readonly DecodingServices: never }>(schema: S) =>
   (body: unknown) =>
-    Schema.decodeUnknownEffect(schema)(body).pipe(
-      Effect.mapError(() => new BoatApiError({ category: "rejected", code: "decode" })),
-    );
+    Schema.decodeUnknownEffect(schema)(body).pipe(Effect.mapError(invalidResponse));
 
 const make = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
@@ -137,9 +140,7 @@ const make = Effect.gen(function* () {
         Effect.mapError(() => new BoatApiError({ category: "unavailable" })),
       );
     if (response.status >= 200 && response.status < 300) {
-      return yield* response.json.pipe(
-        Effect.mapError(() => new BoatApiError({ category: "rejected", code: "decode" })),
-      );
+      return yield* response.json.pipe(Effect.mapError(invalidResponse));
     }
     const code = yield* HttpClientResponse.schemaBodyJson(ErrorEnvelope)(response).pipe(
       Effect.map((body) => body.code),
@@ -179,9 +180,12 @@ const make = Effect.gen(function* () {
       const { user } = yield* send(key, HttpClientRequest.get("/me")).pipe(
         Effect.flatMap(decode(UserEnvelope)),
       );
+      const login = user.login?.trim();
+      const accountId = user.id?.trim() || (login ? `login:${login.toLowerCase()}` : null);
+      if (accountId === null) return yield* invalidResponse();
       return {
-        accountId: user.id,
-        label: user.displayName ?? user.login ?? user.id,
+        accountId,
+        label: user.displayName?.trim() || login || accountId,
         zeroDataRetention: user.zeroDataRetention ?? null,
       };
     }),
@@ -212,10 +216,11 @@ const make = Effect.gen(function* () {
     }),
     list: Effect.fn("BoatHttpApi.list")(function* (key, labels) {
       const sandboxes: Array<BoatSandbox> = [];
+      const seenCursors = new Set<string>();
       let cursor: string | null = null;
       for (;;) {
         const params: Array<[string, string]> = [
-          ["limit", "200"],
+          ["limit", String(SANDBOX_PAGE_LIMIT)],
           ...Object.entries(labels).map(([name, value]): [string, string] => [
             "label",
             `${name}=${value}`,
@@ -227,8 +232,17 @@ const make = Effect.gen(function* () {
           HttpClientRequest.get("/sandboxes").pipe(HttpClientRequest.setUrlParams(params)),
         ).pipe(Effect.flatMap(decode(ListEnvelope)));
         sandboxes.push(...page.sandboxes.map(toSandbox));
-        if (!page.pageInfo.hasMore || page.pageInfo.nextCursor === null) return sandboxes;
+        if (page.pageInfo === undefined) {
+          // The documented unpaginated shape can only establish completeness below the limit.
+          if (page.sandboxes.length >= SANDBOX_PAGE_LIMIT) return yield* invalidResponse();
+          return sandboxes;
+        }
+        if (!page.pageInfo.hasMore) return sandboxes;
         cursor = page.pageInfo.nextCursor;
+        if (cursor === null || cursor === "" || seenCursors.has(cursor)) {
+          return yield* invalidResponse();
+        }
+        seenCursors.add(cursor);
       }
     }),
     stop: Effect.fn("BoatHttpApi.stop")(function* (key, sandboxId) {
@@ -263,7 +277,7 @@ const make = Effect.gen(function* () {
         ),
       ).pipe(Effect.flatMap(decode(DeletionEnvelope)));
       if (operation.targetId !== id) {
-        return yield* new BoatApiError({ category: "rejected", code: "decode" });
+        return yield* invalidResponse();
       }
       return yield* checked(DELETION_ID, operation.id);
     }),
@@ -275,7 +289,7 @@ const make = Effect.gen(function* () {
           HttpClientRequest.get(`/deletion-operations/${id}`),
         ).pipe(Effect.flatMap(decode(DeletionEnvelope)));
         if (operation.id !== id || operation.targetId !== sandboxId) {
-          return yield* new BoatApiError({ category: "rejected", code: "decode" });
+          return yield* invalidResponse();
         }
         return operation.status === "completed";
       },

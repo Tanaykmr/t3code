@@ -145,6 +145,58 @@ describe("BoatHttpApi", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("accepts a documented stop acknowledgement without an operation", () => {
+    const { layer } = fakeBoat(() =>
+      json(
+        {
+          ok: true,
+          type: "sandbox.stopping",
+          id: SANDBOX_ID,
+          status: "archiving",
+          sandbox: {
+            id: SANDBOX_ID,
+            name: "Scratch",
+            state: "archiving",
+            desktopAvailable: true,
+            snapshotAvailable: false,
+          },
+        },
+        202,
+      ),
+    );
+    return Effect.gen(function* () {
+      const api = yield* BoatApi;
+      expect(yield* api.stop(KEY, SANDBOX_ID)).toBeNull();
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("reads usage from Boat's top-level documented response", () => {
+    const { layer } = fakeBoat(() =>
+      json({
+        ok: true,
+        type: "sandbox.usage",
+        sandboxId: SANDBOX_ID,
+        sandboxType: "default",
+        billingMultiplier: 1,
+        since: "2026-09-01T00:00:00.000Z",
+        until: "2026-09-14T09:30:00.000Z",
+        seconds: 4980,
+        dollars: 0.0498,
+        secondsPerDollar: 100000,
+        running: false,
+      }),
+    );
+    return Effect.gen(function* () {
+      const api = yield* BoatApi;
+      expect(yield* api.usage(KEY, SANDBOX_ID)).toEqual({
+        since: "2026-09-01T00:00:00.000Z",
+        until: "2026-09-14T09:30:00.000Z",
+        seconds: 4980,
+        dollars: 0.0498,
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("reads Boat's one-time cancelled reply and leaves an omitted snapshot unknown", () => {
     const { layer } = fakeBoat(() =>
       json({ ok: true, sandbox: { id: SANDBOX_ID, state: "cancelled", error: "cancelled" } }),
@@ -194,6 +246,112 @@ describe("BoatHttpApi", () => {
       expect((yield* api.account(KEY)).zeroDataRetention).toBeNull();
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect("accepts the documented current user without an account ID", () => {
+    const { requests, layer } = fakeBoat((url) =>
+      url.pathname.endsWith("/me")
+        ? json({
+            ok: true,
+            type: "user.info",
+            user: {
+              login: "octocat",
+              email: "octocat@example.com",
+              zeroDataRetention: false,
+              zeroDataRetentionEnabledAt: null,
+            },
+          })
+        : json({ ok: true, type: "sandbox.list", sandboxes: [] }),
+    );
+    return Effect.gen(function* () {
+      const api = yield* BoatApi;
+      expect(yield* api.account(KEY)).toEqual({
+        accountId: "login:octocat",
+        label: "octocat",
+        zeroDataRetention: false,
+      });
+      expect(requests.at(-1)?.url.pathname).toBe("/api/v1/me");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("reads the documented sandbox list without pageInfo", () => {
+    const { layer } = fakeBoat(() =>
+      json({
+        ok: true,
+        type: "sandbox.list",
+        sandboxes: [
+          {
+            id: SANDBOX_ID,
+            name: "Scratch",
+            state: "idle",
+            desktopAvailable: true,
+            snapshotAvailable: false,
+            archiveAfter: "2026-05-31T13:00:00Z",
+          },
+        ],
+      }),
+    );
+    return Effect.gen(function* () {
+      const api = yield* BoatApi;
+      expect(yield* api.list(KEY, {})).toMatchObject([
+        { id: SANDBOX_ID, state: "idle", archiveAfter: "2026-05-31T13:00:00Z" },
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("rejects a user response with no usable account identity", () => {
+    const { layer } = fakeBoat(() =>
+      json({ ok: true, type: "user.info", user: { email: null, zeroDataRetention: false } }),
+    );
+    return Effect.gen(function* () {
+      const api = yield* BoatApi;
+      expect(yield* Effect.flip(api.account(KEY))).toMatchObject({ code: "decode" });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("follows documented keyset pagination and repeats the allocation filters", () => {
+    const { requests, layer } = fakeBoat((url) => {
+      if (url.searchParams.get("cursor") === "next-page") {
+        return json({
+          ok: true,
+          type: "sandbox.list",
+          sandboxes: [{ id: "bx_98765432", state: "archived" }],
+          pageInfo: { nextCursor: null, hasMore: false, limit: 200 },
+        });
+      }
+      return json({
+        ok: true,
+        type: "sandbox.list",
+        sandboxes: [{ id: SANDBOX_ID, state: "idle" }],
+        pageInfo: { nextCursor: "next-page", hasMore: true, limit: 200 },
+      });
+    });
+    return Effect.gen(function* () {
+      const api = yield* BoatApi;
+      const list = yield* api.list(KEY, { "t3.managed": "boat_1" });
+      expect(list.map((row) => row.id)).toEqual([SANDBOX_ID, "bx_98765432"]);
+      expect(requests.at(-1)?.url.searchParams.getAll("label")).toEqual(["t3.managed=boat_1"]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each(["missing", "null cursor", "repeated cursor"] as const)(
+    "rejects incomplete inventory with %s pagination",
+    (kind) => {
+      const { layer } = fakeBoat(() =>
+        json(
+          kind === "missing"
+            ? { sandboxes: Array.from({ length: 200 }, () => ({ id: SANDBOX_ID, state: "idle" })) }
+            : {
+                sandboxes: [],
+                pageInfo: { hasMore: true, nextCursor: kind === "null cursor" ? null : "same" },
+              },
+        ),
+      );
+      return Effect.gen(function* () {
+        const api = yield* BoatApi;
+        expect(yield* Effect.flip(api.list(KEY, {}))).toMatchObject({ code: "decode" });
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("refuses an ID that is not Boat's shape before building a path", () => {
     const { requests, layer } = fakeBoat(() => json({}));
