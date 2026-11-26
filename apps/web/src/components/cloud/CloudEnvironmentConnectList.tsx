@@ -81,6 +81,7 @@ function RemoteEnvironmentRowsSkeleton() {
 export function CloudEnvironmentConnectRows({
   primaryEnvironmentId,
   savedEnvironments,
+  excludeSavedEnvironmentIds,
   showSavedEnvironments = false,
   refreshWhileEmpty = false,
   empty = null,
@@ -92,6 +93,7 @@ export function CloudEnvironmentConnectRows({
   readonly only?: EnvironmentId;
   readonly primaryEnvironmentId: EnvironmentId | null;
   readonly savedEnvironments: ReadonlyArray<SavedCloudEnvironmentConnection>;
+  readonly excludeSavedEnvironmentIds?: ReadonlySet<EnvironmentId> | undefined;
   readonly showSavedEnvironments?: boolean;
   readonly refreshWhileEmpty?: boolean;
   readonly empty?: ReactNode;
@@ -221,6 +223,10 @@ export function CloudEnvironmentConnectRows({
     environmentId !== primaryEnvironmentId &&
     !desktopLocalIds.has(environmentId) &&
     (showSavedEnvironments || !savedById.has(environmentId)) &&
+    !(
+      excludeSavedEnvironmentIds?.has(environmentId) &&
+      (savedById.has(environmentId) || savedWithoutRelay.has(environmentId))
+    ) &&
     !(selection && savedWithoutRelay.has(environmentId));
   const visibleEnvironments = [...discovered.values()].filter(({ environment }) =>
     isVisibleEnvironment(environment.environmentId),

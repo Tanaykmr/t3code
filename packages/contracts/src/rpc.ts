@@ -461,6 +461,18 @@ import {
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
 import {
+  BoatCreateInput,
+  BoatDeleteInput,
+  BoatError,
+  BoatForgetInput,
+  BoatLifecycleInput,
+  BoatOperationReceipt,
+  BoatSetApiKeyInput,
+  BoatSetApiKeyResult,
+  BoatSnapshot,
+  BoatSubscribeInput,
+} from "./boat.ts";
+import {
   BotChannelQuery,
   BotChannelSnapshot,
   BotCreateInput,
@@ -673,6 +685,14 @@ export const WS_METHODS = {
   workflowsGetDefinition: "workflows.getDefinition",
   workflowsSaveDefinition: "workflows.saveDefinition",
   workflowsDeleteDefinition: "workflows.deleteDefinition",
+
+  boatSubscribe: "boat.subscribe",
+  boatCreate: "boat.create",
+  boatStop: "boat.stop",
+  boatResume: "boat.resume",
+  boatDelete: "boat.delete",
+  boatForget: "boat.forget",
+  boatSetApiKey: "boat.setApiKey",
 
   botsSubscribe: "bots.subscribe",
   botsCreate: "bots.create",
@@ -2438,6 +2458,51 @@ const WsWorkflowsDeleteDefinitionRpc = Rpc.make(WS_METHODS.workflowsDeleteDefini
   error: EnvironmentAuthorizationError,
 });
 
+const BoatRpcError = Schema.Union([BoatError, EnvironmentAuthorizationError]);
+
+const WsBoatSubscribeRpc = Rpc.make(WS_METHODS.boatSubscribe, {
+  payload: BoatSubscribeInput,
+  success: BoatSnapshot,
+  error: BoatRpcError,
+  stream: true,
+});
+
+const WsBoatCreateRpc = Rpc.make(WS_METHODS.boatCreate, {
+  payload: BoatCreateInput,
+  success: BoatOperationReceipt,
+  error: BoatRpcError,
+});
+
+const WsBoatStopRpc = Rpc.make(WS_METHODS.boatStop, {
+  payload: BoatLifecycleInput,
+  success: BoatOperationReceipt,
+  error: BoatRpcError,
+});
+
+const WsBoatResumeRpc = Rpc.make(WS_METHODS.boatResume, {
+  payload: BoatLifecycleInput,
+  success: BoatOperationReceipt,
+  error: BoatRpcError,
+});
+
+const WsBoatDeleteRpc = Rpc.make(WS_METHODS.boatDelete, {
+  payload: BoatDeleteInput,
+  success: BoatOperationReceipt,
+  error: BoatRpcError,
+});
+
+const WsBoatForgetRpc = Rpc.make(WS_METHODS.boatForget, {
+  payload: BoatForgetInput,
+  success: Schema.Void,
+  error: BoatRpcError,
+});
+
+const WsBoatSetApiKeyRpc = Rpc.make(WS_METHODS.boatSetApiKey, {
+  payload: BoatSetApiKeyInput,
+  success: BoatSetApiKeyResult,
+  error: BoatRpcError,
+});
+
 const WsBotsSubscribeRpc = Rpc.make(WS_METHODS.botsSubscribe, {
   payload: Schema.Struct({}),
   success: BotDirectory,
@@ -2711,6 +2776,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsWorkflowsGetDefinitionRpc,
   WsWorkflowsSaveDefinitionRpc,
   WsWorkflowsDeleteDefinitionRpc,
+  WsBoatSubscribeRpc,
+  WsBoatCreateRpc,
+  WsBoatStopRpc,
+  WsBoatResumeRpc,
+  WsBoatDeleteRpc,
+  WsBoatForgetRpc,
+  WsBoatSetApiKeyRpc,
   WsBotsSubscribeRpc,
   WsBotsCreateRpc,
   WsBotsUpdateRpc,

@@ -1,4 +1,4 @@
-import { GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import { BoatError, GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
 import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
@@ -135,6 +135,9 @@ import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts"
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as Boat from "./boat/BoatService.ts";
+import { isLoopbackHost } from "./startupAccess.ts";
+import { deriveAuthClientMetadata } from "./auth/utils.ts";
 import * as BotService from "./bots/BotService.ts";
 import * as BotChannelService from "./bots/BotChannelService.ts";
 import * as BotKnowledgeService from "./bots/BotKnowledgeService.ts";
@@ -821,11 +824,21 @@ function hasCompatibleOrchestrationProtocol(url: URL): boolean {
   );
 }
 
-function readSettingsClient(url: URL) {
+export function readSettingsClient(url: URL, request: HttpServerRequest.HttpServerRequest) {
   const capabilities = url.searchParams.get(CLIENT_CAPABILITIES_QUERY_PARAM)?.split(",") ?? [];
+  const socket = NodeHttpServerRequest.toIncomingMessage(request).socket;
+  const peerIp = socket?.remoteAddress?.replace(/^::ffff:/, "");
+  const clientIp = deriveAuthClientMetadata({ request }).ipAddress;
   return {
     secretReferences: capabilities.includes(SETTINGS_SECRET_REFERENCES_CAPABILITY),
     httpUsageLimitSources: capabilities.includes(HTTP_USAGE_LIMIT_SOURCES_CAPABILITY),
+    // T3 Connect and local HTTPS proxies terminate TLS and forward to loopback.
+    privateTransport:
+      (socket !== undefined && "encrypted" in socket && socket.encrypted === true) ||
+      (peerIp !== undefined &&
+        isLoopbackHost(peerIp) &&
+        (request.headers["x-forwarded-proto"] === "https" ||
+          (clientIp !== undefined && isLoopbackHost(clientIp)))),
   };
 }
 
@@ -1463,7 +1476,7 @@ export const layerWsRpc = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
   reportProfiles: ServerBrowser.ProfileReporter,
-  settingsClient: ServerSettings.SettingsClient,
+  settingsClient: ServerSettings.SettingsClient & { readonly privateTransport?: boolean },
 ) =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -1513,6 +1526,7 @@ export const layerWsRpc = (
       const threadViewers = yield* ThreadViewers.ThreadViewers;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
+      const boat = yield* Boat.BoatService;
       const bots = yield* BotService.BotService;
       const botChannels = yield* BotChannelService.BotChannelService;
       const botKnowledge = yield* BotKnowledgeService.BotKnowledgeService;
@@ -1975,6 +1989,7 @@ export const layerWsRpc = (
           secretProviderSettings: true,
           secretReferences: true,
           secretRequestReferences: true,
+          boatEnvironments: true,
           featureFlags: {
             secretProviders: featureFlags.secretProviders,
             tanstackSource: featureFlags.tanstackSource,
@@ -2450,6 +2465,23 @@ export const layerWsRpc = (
         [WS_METHODS.workflowsSaveDefinition]: (input) =>
           workflowDefinitions.save(input.name, input.source),
         [WS_METHODS.workflowsDeleteDefinition]: (input) => workflowDefinitions.remove(input.name),
+        [WS_METHODS.boatSubscribe]: (_input) => boat.snapshots,
+        [WS_METHODS.boatCreate]: (input) => boat.create(input),
+        [WS_METHODS.boatStop]: (input) => boat.stop(input),
+        [WS_METHODS.boatResume]: (input) => boat.resume(input),
+        [WS_METHODS.boatDelete]: (input) => boat.delete(input),
+        [WS_METHODS.boatForget]: (input) => boat.forget(input),
+        // A reusable account key must not cross a plain-HTTP LAN route.
+        [WS_METHODS.boatSetApiKey]: (input) =>
+          input.apiKey !== null && settingsClient.privateTransport !== true
+            ? Effect.fail(
+                new BoatError({
+                  code: "insecure-transport",
+                  message:
+                    "Enter the Boat key over HTTPS, T3 Connect, or on this machine, not over plain HTTP.",
+                }),
+              )
+            : boat.setApiKey(input),
         [WS_METHODS.botsSubscribe]: (_input) => bots.subscribeDirectory(),
         [WS_METHODS.botsCreate]: (input) =>
           Effect.annotateCurrentSpan({ "bot.id": input.botId }).pipe(
@@ -3856,6 +3888,7 @@ export const layer = Layer.unwrap(
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const peerThreadRelay = yield* PeerThreadRelay.PeerThreadRelay;
     const peerClientPairing = yield* PeerClientPairing.PeerClientPairing;
+    const boat = yield* Boat.BoatService;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3930,7 +3963,7 @@ export const layer = Layer.unwrap(
               clientAnalyticsProps,
               serverBrowser,
               reportProfiles,
-              readSettingsClient(url.value),
+              readSettingsClient(url.value, request),
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Handler-context reporters see only request defects, not server-wide defects.
@@ -3945,6 +3978,7 @@ export const layer = Layer.unwrap(
                 ),
               ),
               Layer.provide(Layer.succeed(NpmRelease.NpmRelease, npmRelease)),
+              Layer.provide(Layer.succeed(Boat.BoatService, boat)),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
               // Share server-lifetime PR caches so WS mutations invalidate every client's HTTP diffs.
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),

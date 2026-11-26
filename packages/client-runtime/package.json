@@ -103,6 +103,10 @@
       "types": "./src/promptLinks.ts",
       "default": "./src/promptLinks.ts"
     },
+    "./boat": {
+      "types": "./src/boat.ts",
+      "default": "./src/boat.ts"
+    },
     "./secret-request": {
       "types": "./src/secretRequest.ts",
       "default": "./src/secretRequest.ts"

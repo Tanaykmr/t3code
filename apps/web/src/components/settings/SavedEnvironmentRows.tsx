@@ -7,7 +7,7 @@ import {
   RouteIcon,
 } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
-import { useEffect, useEffectEvent, useState } from "react";
+import { type ReactNode, useEffect, useEffectEvent, useState } from "react";
 import {
   AuthRelayWriteScope,
   type EnvironmentId,
@@ -75,6 +75,9 @@ import { useT3ConnectAuthPrompt } from "../clerk/useT3ConnectAuthPrompt";
 
 type SavedBackendListRowProps = {
   environment: EnvironmentPresentation;
+  label?: string;
+  extraStatus?: ReactNode;
+  children?: ReactNode;
   removingEnvironmentId: EnvironmentId | null;
   onSetEnabled: (environmentId: EnvironmentId, enabled: boolean) => void;
   onRemove: (environment: EnvironmentPresentation) => void;
@@ -127,6 +130,9 @@ export function savedBackendStatus(
 
 export function SavedBackendListRow({
   environment,
+  label: labelOverride,
+  extraStatus,
+  children,
   removingEnvironmentId,
   onSetEnabled,
   onRemove,
@@ -135,6 +141,7 @@ export function SavedBackendListRow({
 }: SavedBackendListRowProps) {
   const messages = useMessages();
   const gt = useGT();
+  const label = labelOverride ?? environment.label;
   const [routesOpen, setRoutesOpen] = useState(initialRoutesOpen);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const [diagnosisOpen, setDiagnosisOpen] = useState(false);
@@ -267,7 +274,7 @@ export function SavedBackendListRow({
   return (
     <EnvironmentRow
       kind={machineKind}
-      label={environment.label}
+      label={label}
       dimmed={!enabled}
       subtitle={
         <span className="flex min-w-0 items-center gap-1">
@@ -340,6 +347,9 @@ export function SavedBackendListRow({
       }
       below={
         <>
+          {extraStatus ? (
+            <div className="mt-1 text-xs text-muted-foreground">{extraStatus}</div>
+          ) : null}
           {diagnosis ? (
             <ConnectionDiagnosisSummary
               diagnosis={diagnosis}
@@ -387,6 +397,7 @@ export function SavedBackendListRow({
         </>
       }
     >
+      {children}
       {unsupported &&
       environment.entry.serverUpdateRequired === true &&
       serverUpdateState.status !== "running" ? (
@@ -423,9 +434,7 @@ export function SavedBackendListRow({
             checked={enabled}
             disabled={isRemoving || blocked}
             aria-label={
-              enabled
-                ? gt("Switch off {label}", { label: environment.label })
-                : gt("Switch on {label}", { label: environment.label })
+              enabled ? gt("Switch off {label}", { label }) : gt("Switch on {label}", { label })
             }
             onCheckedChange={(checked) => onSetEnabled(environmentId, checked)}
           />
@@ -440,7 +449,7 @@ export function SavedBackendListRow({
               variant="ghost-muted"
               size="icon-xs"
               disabled={isRemoving}
-              aria-label={gt("More actions for {label}", { label: environment.label })}
+              aria-label={gt("More actions for {label}", { label })}
             />
           }
         >
@@ -919,10 +928,12 @@ function EmptyRemoteEnvironments({ cloudEnabled = true }: { readonly cloudEnable
 export function CloudRemoteEnvironmentRows({
   primaryEnvironmentId,
   savedEnvironments,
+  excludeSavedEnvironmentIds,
   only,
 }: {
   readonly primaryEnvironmentId: EnvironmentId | null;
   readonly savedEnvironments: ReadonlyArray<EnvironmentPresentation>;
+  readonly excludeSavedEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly only?: EnvironmentId;
 }) {
   if (only !== undefined) {
@@ -938,6 +949,7 @@ export function CloudRemoteEnvironmentRows({
     <CloudEnvironmentConnectRows
       primaryEnvironmentId={primaryEnvironmentId}
       savedEnvironments={savedEnvironments}
+      excludeSavedEnvironmentIds={excludeSavedEnvironmentIds}
       empty={<EmptyRemoteEnvironments />}
     />
   ) : savedEnvironments.length === 0 ? (

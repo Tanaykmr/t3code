@@ -99,6 +99,9 @@ describe("V2 preview upgrade", () => {
         [117, "WorkflowMailSender"],
         [118, "WorkflowPools"],
         [119, "WorkflowRunSubject"],
+        [120, "BoatEnvironments"],
+        [121, "BoatEnvironmentName"],
+        [122, "BoatCleanupAccess"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -241,6 +244,9 @@ describe("V2 preview upgrade", () => {
         [117, "WorkflowMailSender"],
         [118, "WorkflowPools"],
         [119, "WorkflowRunSubject"],
+        [120, "BoatEnvironments"],
+        [121, "BoatEnvironmentName"],
+        [122, "BoatCleanupAccess"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

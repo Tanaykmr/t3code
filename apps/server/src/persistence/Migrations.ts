@@ -130,6 +130,9 @@ import Migration0116 from "./Migrations/116_ForkHistoryMembership.ts";
 import Migration0117 from "./Migrations/117_WorkflowMailSender.ts";
 import Migration0118 from "./Migrations/118_WorkflowPools.ts";
 import Migration0119 from "./Migrations/119_WorkflowRunSubject.ts";
+import Migration0120 from "./Migrations/120_BoatEnvironments.ts";
+import Migration0121 from "./Migrations/121_BoatEnvironmentName.ts";
+import Migration0122 from "./Migrations/122_BoatCleanupAccess.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -252,6 +255,9 @@ const migrationEntries = [
   [117, "WorkflowMailSender", Migration0117],
   [118, "WorkflowPools", Migration0118],
   [119, "WorkflowRunSubject", Migration0119],
+  [120, "BoatEnvironments", Migration0120],
+  [121, "BoatEnvironmentName", Migration0121],
+  [122, "BoatCleanupAccess", Migration0122],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -266,6 +272,8 @@ const makeMigrationLoader = (throughId?: number) =>
   );
 
 const FIRST_V2_MIGRATION_ID = 55;
+const legacyBoatMigrations = ["BoatEnvironments", "BoatEnvironmentName", "BoatCleanupAccess"];
+const FIRST_LEGACY_BOAT_ID = 112;
 
 export function skippedV2Migrations(
   recorded: ReadonlyArray<{ readonly id: number; readonly name: string }>,
@@ -285,8 +293,8 @@ export function skippedV2Migrations(
   });
 }
 
-// Migrators skip ids up to the highest recorded; reject collisions that would skip V2 schema.
-const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function* (
+// Migrators skip ids up to the highest recorded, so collisions must be reconciled or refused.
+const prepareV2MigrationHistory = Effect.fn("prepareV2MigrationHistory")(function* (
   throughId?: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -294,10 +302,42 @@ const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function*
     SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
   `;
   if (tables.length === 0) return;
-  const recorded = yield* sql<{
+  const readHistory = sql<{
     readonly migration_id: number;
     readonly name: string;
-  }>`SELECT migration_id, name FROM effect_sql_migrations`;
+  }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
+  let recorded = yield* readHistory;
+  if (
+    (throughId === undefined || throughId >= FIRST_LEGACY_BOAT_ID) &&
+    recorded.some(
+      (row) => row.migration_id === FIRST_LEGACY_BOAT_ID && row.name === legacyBoatMigrations[0],
+    )
+  ) {
+    recorded = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const current = yield* readHistory;
+        const tail = current.filter((row) => row.migration_id >= FIRST_LEGACY_BOAT_ID);
+        const previous = current.slice(0, current.length - tail.length);
+        if (
+          tail.length === 0 ||
+          !tail.every(
+            (row, index) =>
+              row.migration_id === FIRST_LEGACY_BOAT_ID + index &&
+              row.name === legacyBoatMigrations[index],
+          ) ||
+          skippedV2Migrations(
+            current.map((row) => ({ id: row.migration_id, name: row.name })),
+            FIRST_LEGACY_BOAT_ID - 1,
+          ).length > 0
+        ) {
+          return current;
+        }
+        // Boat's renumbered migrations can replay against the existing schema after upstream runs.
+        yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= ${FIRST_LEGACY_BOAT_ID}`;
+        return previous;
+      }),
+    );
+  }
   const skipped = skippedV2Migrations(
     recorded.map((row) => ({ id: row.migration_id, name: row.name })),
     throughId,
@@ -347,7 +387,7 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   // The reconcile takes the write lock; CLI startup must not contend with the server for a no-op.
   const previewMigrations = includesV2 && hasPending ? yield* reconcileV2PreviewMigration() : [];
   if (includesV2) {
-    yield* assertV2MigrationsCanRun(toMigrationInclusive);
+    yield* prepareV2MigrationHistory(toMigrationInclusive);
   }
   const sql = yield* SqlClient.SqlClient;
   const ledger = yield* sql`
