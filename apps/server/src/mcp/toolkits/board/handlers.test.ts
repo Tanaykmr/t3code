@@ -133,6 +133,54 @@ const userEdit = (threadId: ThreadId, id: string, changes: Record<string, unknow
   });
 
 layer("board toolkit", (it) => {
+  it.effect("reports canvas bounds for rotated shapes and strokes", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("rotated-board");
+      const boards = yield* BoardService.BoardService;
+      const board = yield* boards.create(threadId);
+      yield* boards.apply({
+        actor: "user",
+        batch: {
+          threadId,
+          boardId: board.boardId,
+          mutationId: "rotated",
+          operations: ["rectangle", "line", "freedraw"].map((type, i) => ({
+            type: "create" as const,
+            element: {
+              id: type,
+              type,
+              index: `a${i}`,
+              version: 1,
+              versionNonce: 1,
+              isDeleted: false,
+              x: 10,
+              y: 20,
+              width: 100,
+              height: 40,
+              angle: Math.PI / 2,
+              ...(type === "rectangle"
+                ? {}
+                : {
+                    points: [
+                      [0, 0],
+                      [100, 40],
+                    ],
+                  }),
+            },
+          })),
+        },
+      });
+      const read = yield* callAs(threadCaller(threadId), "board_get", {});
+      expect(read.elements.map(({ id }) => id)).toEqual(["rectangle", "line", "freedraw"]);
+      for (const bounds of read.elements) {
+        expect(bounds.x).toBeCloseTo(40);
+        expect(bounds.y).toBeCloseTo(-10);
+        expect(bounds.width).toBeCloseTo(40);
+        expect(bounds.height).toBeCloseTo(100);
+      }
+    }),
+  );
+
   describe("drawing a connected diagram", () => {
     it.effect("stores labels and arrow bindings both ways, and reads them back", () =>
       Effect.gen(function* () {

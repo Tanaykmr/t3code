@@ -337,7 +337,6 @@ describe("BoardService subscriptions", () => {
       const ready = yield* Deferred.make<void>();
       const fiber = yield* boards.subscribe(threadId).pipe(
         Stream.tap(() => Deferred.succeed(ready, undefined)),
-        Stream.take(2),
         Stream.runCollect,
         Effect.forkChild,
       );

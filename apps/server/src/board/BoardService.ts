@@ -316,6 +316,7 @@ const transitionAllowed = (
 interface BoardChannel {
   readonly lock: Semaphore.Semaphore;
   readonly events: PubSub.PubSub<BoardStreamEvent>;
+  users: number;
 }
 
 const make = Effect.gen(function* () {
@@ -324,16 +325,30 @@ const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   const channels = new Map<string, BoardChannel>();
 
-  const channelFor = Effect.fnUntraced(function* (ownerKey: string) {
-    const existing = channels.get(ownerKey);
-    if (existing !== undefined) return existing;
-    const events = yield* PubSub.sliding<BoardStreamEvent>(SUBSCRIBER_BUFFER);
-    const raced = channels.get(ownerKey);
-    if (raced !== undefined) return raced;
-    const channel: BoardChannel = { lock: Semaphore.makeUnsafe(1), events };
-    channels.set(ownerKey, channel);
-    return channel;
-  });
+  const channelFor = (ownerKey: string) =>
+    Effect.acquireRelease(
+      Effect.gen(function* () {
+        const existing = channels.get(ownerKey);
+        if (existing !== undefined) {
+          existing.users += 1;
+          return existing;
+        }
+        const events = yield* PubSub.sliding<BoardStreamEvent>(SUBSCRIBER_BUFFER);
+        const raced = channels.get(ownerKey);
+        if (raced !== undefined) {
+          raced.users += 1;
+          return raced;
+        }
+        const channel: BoardChannel = { lock: Semaphore.makeUnsafe(1), events, users: 1 };
+        channels.set(ownerKey, channel);
+        return channel;
+      }),
+      (channel) =>
+        Effect.sync(() => {
+          channel.users -= 1;
+          if (channel.users === 0) channels.delete(ownerKey);
+        }),
+    );
 
   const storage =
     (operation: "read" | "write") =>
@@ -400,55 +415,55 @@ const make = Effect.gen(function* () {
     return yield* readSnapshot(boardOwnerKey(threadId), threadId);
   });
 
-  const create: BoardService["Service"]["create"] = Effect.fn("BoardService.create")(
-    function* (threadId) {
-      yield* Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": threadId });
-      const ownerKey = boardOwnerKey(threadId);
-      const channel = yield* channelFor(ownerKey);
-      return yield* Semaphore.withPermit(
-        channel.lock,
-        Effect.gen(function* () {
-          // Checked under the lock so a create cannot land after the thread's board cleanup.
-          yield* requireThread(threadId);
-          const existing = yield* findBoard(ownerKey).pipe(storage("read"));
-          if (existing !== null) return toHeader(existing, threadId);
-          const boardId = yield* random.uuidV4();
-          const now = DateTime.formatIso(yield* DateTime.now);
-          const row: BoardRow = {
-            board_id: boardId,
-            thread_id: ownerKey,
-            revision: 0,
-            order_revision: 0,
-            view_background_color: DEFAULT_SETTINGS.viewBackgroundColor,
-            created_at: now,
-            updated_at: now,
-          };
-          yield* sql`
+  const create: BoardService["Service"]["create"] = Effect.fn("BoardService.create")(function* (
+    threadId,
+  ) {
+    yield* Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": threadId });
+    const ownerKey = boardOwnerKey(threadId);
+    const channel = yield* channelFor(ownerKey);
+    return yield* Semaphore.withPermit(
+      channel.lock,
+      Effect.gen(function* () {
+        // Checked under the lock so a create cannot land after the thread's board cleanup.
+        yield* requireThread(threadId);
+        const existing = yield* findBoard(ownerKey).pipe(storage("read"));
+        if (existing !== null) return toHeader(existing, threadId);
+        const boardId = yield* random.uuidV4();
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const row: BoardRow = {
+          board_id: boardId,
+          thread_id: ownerKey,
+          revision: 0,
+          order_revision: 0,
+          view_background_color: DEFAULT_SETTINGS.viewBackgroundColor,
+          created_at: now,
+          updated_at: now,
+        };
+        yield* sql`
             INSERT INTO board (board_id, thread_id, scene_format_version, revision, order_revision,
               view_background_color, created_at, updated_at)
             VALUES (${row.board_id}, ${row.thread_id}, ${BOARD_SCENE_FORMAT_VERSION}, 0, 0,
               ${row.view_background_color}, ${now}, ${now})
           `.pipe(
-            storage("write"),
-            // A committed board must reach subscribers that saw it missing.
-            Effect.andThen(
-              PubSub.publish(channel.events, {
-                type: "snapshot",
-                snapshot: {
-                  board: toHeader(row, threadId),
-                  elements: [],
-                  settings: DEFAULT_SETTINGS,
-                  files: [],
-                },
-              }),
-            ),
-            Effect.uninterruptible,
-          );
-          return toHeader(row, threadId);
-        }),
-      );
-    },
-  );
+          storage("write"),
+          // A committed board must reach subscribers that saw it missing.
+          Effect.andThen(
+            PubSub.publish(channel.events, {
+              type: "snapshot",
+              snapshot: {
+                board: toHeader(row, threadId),
+                elements: [],
+                settings: DEFAULT_SETTINGS,
+                files: [],
+              },
+            }),
+          ),
+          Effect.uninterruptible,
+        );
+        return toHeader(row, threadId);
+      }),
+    );
+  }, Effect.scoped);
 
   const commit = Effect.fn("BoardService.commit")(function* (
     channel: BoardChannel,
@@ -861,7 +876,7 @@ const make = Effect.gen(function* () {
     yield* requireThread(batch.threadId);
     const channel = yield* channelFor(boardOwnerKey(batch.threadId));
     return yield* Semaphore.withPermit(channel.lock, commit(channel, actor, batch));
-  });
+  }, Effect.scoped);
 
   const getFiles: BoardService["Service"]["getFiles"] = Effect.fn("BoardService.getFiles")(
     function* (input) {
@@ -911,46 +926,53 @@ const make = Effect.gen(function* () {
   const subscribe: BoardService["Service"]["subscribe"] = (threadId) =>
     Stream.unwrap(
       Effect.gen(function* () {
-        yield* requireThread(threadId);
         const ownerKey = boardOwnerKey(threadId);
         const channel = yield* channelFor(ownerKey);
         // Subscribing and reading under the commit lock means no commit falls between the two.
         const [subscription, snapshot] = yield* Semaphore.withPermit(
           channel.lock,
-          Effect.all([PubSub.subscribe(channel.events), readSnapshot(ownerKey, threadId)]),
+          Effect.gen(function* () {
+            yield* requireThread(threadId);
+            return yield* Effect.all([
+              PubSub.subscribe(channel.events),
+              readSnapshot(ownerKey, threadId),
+            ]);
+          }),
         );
         const initial: BoardStreamEvent =
           snapshot === null ? { type: "missing" } : { type: "snapshot", snapshot };
-        return Stream.concat(Stream.make(initial), Stream.fromSubscription(subscription));
+        return Stream.concat(
+          Stream.make(initial),
+          Stream.fromSubscription(subscription).pipe(
+            Stream.takeUntil((event) => event.type === "missing"),
+          ),
+        );
       }),
     );
 
-  const remove: BoardService["Service"]["remove"] = Effect.fn("BoardService.remove")(
-    function* (threadId) {
-      const ownerKey = boardOwnerKey(threadId);
-      const channel = yield* channelFor(ownerKey);
-      yield* Semaphore.withPermit(
-        channel.lock,
-        Effect.gen(function* () {
-          const board = yield* findBoard(ownerKey);
-          if (board === null) return;
-          yield* sql
-            .withTransaction(
-              Effect.gen(function* () {
-                yield* sql`DELETE FROM board_element WHERE board_id = ${board.board_id}`;
-                yield* sql`DELETE FROM board_file WHERE board_id = ${board.board_id}`;
-                yield* sql`DELETE FROM board_mutation WHERE board_id = ${board.board_id}`;
-                yield* sql`DELETE FROM board WHERE board_id = ${board.board_id}`;
-              }),
-            )
-            .pipe(
-              Effect.andThen(PubSub.publish(channel.events, { type: "missing" })),
-              Effect.uninterruptible,
-            );
-        }).pipe(storage("write")),
-      );
-    },
-  );
+  const remove: BoardService["Service"]["remove"] = Effect.fn("BoardService.remove")(function* (
+    threadId,
+  ) {
+    const ownerKey = boardOwnerKey(threadId);
+    const channel = yield* channelFor(ownerKey);
+    yield* Semaphore.withPermit(
+      channel.lock,
+      Effect.gen(function* () {
+        const board = yield* findBoard(ownerKey);
+        if (board !== null) {
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`DELETE FROM board_element WHERE board_id = ${board.board_id}`;
+              yield* sql`DELETE FROM board_file WHERE board_id = ${board.board_id}`;
+              yield* sql`DELETE FROM board_mutation WHERE board_id = ${board.board_id}`;
+              yield* sql`DELETE FROM board WHERE board_id = ${board.board_id}`;
+            }),
+          );
+        }
+        yield* PubSub.publish(channel.events, { type: "missing" });
+      }).pipe(storage("write"), Effect.uninterruptible),
+    );
+  }, Effect.scoped);
 
   return BoardService.of({ get, create, apply, getFiles, subscribe, remove });
 });

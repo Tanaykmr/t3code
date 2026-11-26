@@ -151,25 +151,68 @@ const linearPoints = (element: BoardElement): ReadonlyArray<Point> => {
   );
 };
 
-/** Axis-aligned bounds; linear elements by their points, since x/y is only their first point. */
 const elementBounds = (element: BoardElement) => {
-  if (LINEAR_TYPES.has(element.type) || element.type === "freedraw") {
-    const points = linearPoints(element);
-    if (points.length > 0) {
-      const xs = points.map((point) => point.x);
-      const ys = points.map((point) => point.y);
-      const minX = Math.min(...xs);
-      const minY = Math.min(...ys);
-      return { x: minX, y: minY, width: Math.max(...xs) - minX, height: Math.max(...ys) - minY };
-    }
+  const points =
+    LINEAR_TYPES.has(element.type) || element.type === "freedraw" ? linearPoints(element) : [];
+  const box =
+    points.length > 0
+      ? pointBounds(points)
+      : {
+          x: num(element.x),
+          y: num(element.y),
+          width: num(element.width),
+          height: num(element.height),
+        };
+  const angle = num(element.angle);
+  if (angle === 0) return box;
+  const halfWidth = box.width / 2;
+  const halfHeight = box.height / 2;
+  const cx = box.x + halfWidth;
+  const cy = box.y + halfHeight;
+  const sin = Math.sin(angle);
+  const cos = Math.cos(angle);
+  if (element.type === "ellipse") {
+    const rx = Math.hypot(halfWidth * cos, halfHeight * sin);
+    const ry = Math.hypot(halfWidth * sin, halfHeight * cos);
+    return { x: cx - rx, y: cy - ry, width: 2 * rx, height: 2 * ry };
   }
-  return {
-    x: num(element.x),
-    y: num(element.y),
-    width: num(element.width),
-    height: num(element.height),
-  };
+  const vertices =
+    points.length > 0
+      ? points
+      : element.type === "diamond"
+        ? [
+            { x: cx, y: box.y },
+            { x: box.x + box.width, y: cy },
+            { x: cx, y: box.y + box.height },
+            { x: box.x, y: cy },
+          ]
+        : [
+            { x: box.x, y: box.y },
+            { x: box.x + box.width, y: box.y },
+            { x: box.x + box.width, y: box.y + box.height },
+            { x: box.x, y: box.y + box.height },
+          ];
+  return pointBounds(
+    vertices.map(({ x, y }) => ({
+      x: cx + (x - cx) * cos - (y - cy) * sin,
+      y: cy + (x - cx) * sin + (y - cy) * cos,
+    })),
+  );
 };
+
+function pointBounds(points: ReadonlyArray<Point>) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const { x, y } of points) {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
 
 const wrapLines = (text: string, maxWidth: number): ReadonlyArray<string> => {
   const maxChars = Math.max(1, Math.floor(maxWidth / CHAR_WIDTH));
