@@ -78,6 +78,7 @@ export function useBoatControllers(environments: ReadonlyArray<EnvironmentPresen
               environment,
               snapshot: snapshot.value,
               connected: environment.connection.phase === "connected",
+              subscriptionStale: result?._tag === "Failure",
             },
           ]
         : [];
@@ -160,7 +161,7 @@ function BoatRowView({
   const failure =
     operation?.stage === "failed" && operation.failure ? labels.failure[operation.failure] : null;
   const minutesLeft =
-    server.autoStopAt === null || server.lifecycle !== "running"
+    row.stale || server.autoStopAt === null || server.lifecycle !== "running"
       ? null
       : Math.max(0, Math.round((Date.parse(server.autoStopAt) - nowMs) / 60_000));
 
@@ -219,12 +220,14 @@ function BoatRowView({
       : row.cost.source === "usage"
         ? gt("{cost} machine usage", { cost: formatUsd(row.cost.usd) })
         : gt("about {cost} so far", { cost: formatUsd(row.cost.usd) }),
-    server.lifecycle === "stopped" && server.retention === "available"
-      ? gt("Disk saved")
-      : server.retention === "expired"
-        ? gt("Disk expired")
-        : null,
-    server.lifecycle === "failed" && server.observedPower !== null
+    row.stale
+      ? null
+      : server.lifecycle === "stopped" && server.retention === "available"
+        ? gt("Disk saved")
+        : server.retention === "expired"
+          ? gt("Disk expired")
+          : null,
+    !row.stale && server.lifecycle === "failed" && server.observedPower !== null
       ? server.observedPower === "running"
         ? gt("Boat reports it running")
         : server.observedPower === "stopped"
@@ -232,7 +235,11 @@ function BoatRowView({
           : null
       : null,
     row.paired ? gt("Connected on this device") : null,
-    row.stale ? gt("Controller offline; last known state") : null,
+    row.staleReason === "controller-offline"
+      ? gt("Controller offline; last known state")
+      : row.staleReason === "provider"
+        ? gt("Boat data is stale. Showing last known state.")
+        : null,
   ].filter((part): part is string => part !== null);
 
   const description = (
@@ -487,6 +494,7 @@ export function BoatEnvironmentsSettings({
       environmentId: entry.environment.environmentId,
       snapshot: entry.snapshot,
       connected: entry.connected,
+      subscriptionStale: entry.subscriptionStale,
     })),
     pairedEnvironmentIds: paired,
     canManage: (environmentId) => manageable.has(environmentId),

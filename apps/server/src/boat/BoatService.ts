@@ -114,6 +114,7 @@ const decodeServer = Schema.decodeUnknownOption(BoatServer);
 /** Marks a stop or resume Boat acknowledged, so later passes only confirm it. */
 const ACKNOWLEDGED = "acknowledged";
 const NO_ALLOCATION = "no-allocation";
+const CREATE_SENT_AT = "create-sent-at:";
 const SENDING = "sending:";
 const SENT = "stop:";
 const isBoatError = Schema.is(BoatError);
@@ -171,6 +172,16 @@ const isRejectedKey = (error: BoatApiError) =>
 
 const isHiddenMachine = (error: BoatApiError) =>
   error.category === "not-found" || error.category === "forbidden";
+
+const isUnsentCreate = (server: ServerRow, operation: OperationRow | null) =>
+  server.sandbox_id === null &&
+  operation?.kind === "create" &&
+  operation.stage === "queued" &&
+  operation.provider_operation_id === null;
+
+const hasNoAllocation = (server: ServerRow, create: OperationRow | null) =>
+  server.sandbox_id === null &&
+  (create?.provider_operation_id === NO_ALLOCATION || isUnsentCreate(server, create));
 
 const retryTransient = <A, R>(effect: Effect.Effect<A, BoatApiError, R>) =>
   effect.pipe(
@@ -268,6 +279,8 @@ export const make = Effect.gen(function* () {
       WHERE managed_id = ${managedId} AND kind = 'stop' AND stage NOT IN ('completed', 'failed')
     `.pipe(Effect.map((rows) => (rows[0]?.n ?? 0) > 0));
 
+  let providerStale = true;
+  let reconcilePass = 0;
   const buildSnapshot = Effect.gen(function* () {
     const [account, rows, operations] = yield* Effect.all([
       readAccount,
@@ -321,6 +334,7 @@ export const make = Effect.gen(function* () {
       servers,
       createAvailable: bootstrap.available,
       forgetAvailable: true,
+      providerStale,
     } satisfies BoatSnapshot;
   });
 
@@ -368,6 +382,7 @@ export const make = Effect.gen(function* () {
   const recordCredentialStatus = Effect.fn("BoatService.recordCredentialStatus")(function* (
     status: BoatAccountStatus,
     generation: number,
+    notify: Effect.Effect<void> = publish,
   ) {
     const changed = yield* credentialLock.withPermits(1)(
       Effect.suspend(() =>
@@ -376,7 +391,7 @@ export const make = Effect.gen(function* () {
           : Effect.succeed([]),
       ),
     );
-    if (changed.length > 0) yield* publish;
+    if (changed.length > 0) yield* notify;
   });
   const storeCredentials = Effect.fn("BoatService.storeCredentials")(
     function* (key: string | null, updateAccount: Effect.Effect<unknown, SqlError.SqlError>) {
@@ -500,7 +515,7 @@ export const make = Effect.gen(function* () {
         previous.windowStart === usage.since &&
         previous.windowEnd === usage.until
       )
-        return;
+        return true;
       const usageJson = yield* encodeUsage({
         machineSeconds: usage.seconds,
         listPriceUsd: usage.dollars,
@@ -509,8 +524,9 @@ export const make = Effect.gen(function* () {
         observedAt: yield* nowIso,
       });
       yield* setServer(managedId, { usage_json: usageJson }, notify);
+      return true;
     },
-    (effect) => Effect.ignore(effect),
+    (effect) => effect.pipe(Effect.orElseSucceed(() => false)),
   );
 
   const bootstrapGuest = Effect.fn("BoatService.bootstrapGuest")(function* (
@@ -573,31 +589,42 @@ export const make = Effect.gen(function* () {
     // A create this server cannot finish is refused before Boat sees it. One that may already
     // have been sent (it left "queued") is only discovered, so an accepted machine is not lost.
     const discoverOnly = server.sandbox_id === null && !bootstrap.available;
+    const unsent = isUnsentCreate(server, op);
     if (op.provider_operation_id === NO_ALLOCATION) {
       return yield* new OperationFailed({ code: "provider-rejected" });
     }
-    if (discoverOnly && op.stage === "queued") {
+    if (discoverOnly && unsent) {
       yield* setStage(op.request_id, "allocating", { provider_operation_id: NO_ALLOCATION });
       return yield* new OperationRefused({ code: "bootstrap-unavailable" });
     }
     let sandboxId = server.sandbox_id;
     const now = DateTime.toEpochMillis(yield* DateTime.now);
+    const firstSentAt = op.provider_operation_id?.startsWith(CREATE_SENT_AT)
+      ? Number(op.provider_operation_id.slice(CREATE_SENT_AT.length))
+      : Date.parse(op.created_at);
     const canReplay =
-      sandboxId === null &&
-      !discoverOnly &&
-      now - Date.parse(op.created_at) < IDEMPOTENCY_WINDOW_MS;
+      sandboxId === null && !discoverOnly && (unsent || now - firstSentAt < IDEMPOTENCY_WINDOW_MS);
     const retention = canReplay ? yield* ensureDiskRetention(key).pipe(Effect.result) : null;
     const canAllocate = retention?._tag === "Success";
-    if (canReplay && !canAllocate && op.stage === "queued") {
+    if (canReplay && !canAllocate && unsent) {
       const error =
         retention?._tag === "Failure"
           ? retention.failure
           : new OperationRefused({ code: "provider-rejected" });
-      if (error._tag === "BoatApiError" && isTransient(error)) return false;
+      if (error._tag === "BoatApiError") {
+        if (isTransient(error)) return false;
+        if (isRejectedKey(error)) return yield* error;
+      }
       yield* setStage(op.request_id, "allocating", { provider_operation_id: NO_ALLOCATION });
       return yield* error;
     }
-    yield* setStage(op.request_id, "allocating");
+    yield* setStage(
+      op.request_id,
+      "allocating",
+      canAllocate && unsent
+        ? { provider_operation_id: CREATE_SENT_AT + DateTime.toEpochMillis(yield* DateTime.now) }
+        : {},
+    );
     if (sandboxId === null) {
       let sandbox: BoatSandbox;
       if (canAllocate) {
@@ -615,7 +642,7 @@ export const make = Effect.gen(function* () {
           const error = created.failure;
           // An earlier attempt might have allocated even if the current key is refused.
           if (isTransient(error) || error.code === "decode") return false;
-          if (op.stage !== "queued") {
+          if (!unsent) {
             return yield* new OperationFailed({ code: "unresolved-create" });
           }
           yield* setStage(op.request_id, "allocating", { provider_operation_id: NO_ALLOCATION });
@@ -630,7 +657,7 @@ export const make = Effect.gen(function* () {
         );
         if (Option.isNone(listed)) return false;
         if (listed.value === null) {
-          if (now - Date.parse(op.created_at) < DISCOVERY_GRACE_MS) return false;
+          if (now - firstSentAt < DISCOVERY_GRACE_MS) return false;
           return yield* new OperationFailed({ code: "unresolved-create" });
         }
         sandbox = listed.value;
@@ -1008,6 +1035,10 @@ export const make = Effect.gen(function* () {
       const server = yield* readServer(op.managed_id);
       if (server === null) return yield* new OperationFailed({ code: "not-found" });
       const { key, account, generation } = yield* readCredentials;
+      if (Option.isNone(key) && isUnsentCreate(server, op)) {
+        yield* recordCredentialStatus("missing", generation);
+        return false;
+      }
       // A record is managed only with the account that created it.
       if (Option.isNone(key) || account === null || account.account_id !== server.account_id) {
         return yield* new OperationFailed({ code: "unauthorized" });
@@ -1024,14 +1055,18 @@ export const make = Effect.gen(function* () {
         Effect.catchIf(
           (error) => error._tag === "BoatApiError" && isRejectedKey(error),
           (error) =>
-            credentialLock.withPermits(1)(
-              Effect.gen(function* () {
-                // Reload the operation and its provider marker before retrying with the new key.
-                if (generation !== keyGeneration) return "retry" as const;
-                yield* sql`UPDATE boat_account SET status = 'invalid' WHERE id = 1`;
-                return yield* error;
-              }),
-            ),
+            Effect.gen(function* () {
+              yield* recordCredentialStatus("invalid", generation);
+              // Reload the operation and its provider marker before retrying with the new key.
+              if (generation !== keyGeneration) return "retry" as const;
+              if (
+                op.kind === "create" &&
+                isUnsentCreate(server, yield* readOperation(op.request_id))
+              ) {
+                return false;
+              }
+              return yield* error;
+            }),
         ),
       );
       if (done === true) {
@@ -1292,7 +1327,7 @@ export const make = Effect.gen(function* () {
       for (const server of servers) {
         if (server.sandbox_id === null) {
           const create = yield* persistence(readCreate(server.managed_id));
-          if (create?.provider_operation_id === NO_ALLOCATION) continue;
+          if (hasNoAllocation(server, create)) continue;
         }
         // Boat lists sandboxes in the candidate key's pinned wallet. A shared machine is
         // insufficient evidence of ownership.
@@ -1347,7 +1382,10 @@ export const make = Effect.gen(function* () {
           const server = yield* persistence(readServer(input.managedId));
           if (server === null) return;
           const key = yield* persistence(readKey);
-          if (Option.isSome(key)) {
+          const noAllocation =
+            server.sandbox_id === null &&
+            hasNoAllocation(server, yield* persistence(readCreate(server.managed_id)));
+          if (Option.isSome(key) && !noAllocation) {
             const visible = yield* (
               server.sandbox_id === null
                 ? api
@@ -1388,17 +1426,18 @@ export const make = Effect.gen(function* () {
     function* (key: BoatKey, managedId: string, notify: typeof publish) {
       // Read under the machine's lock; the list read before it may be stale.
       const server = yield* readServer(managedId);
-      if (server === null || (yield* nextPending(managedId)) !== null) return;
+      if (server === null || (yield* nextPending(managedId)) !== null) return true;
       if (server.sandbox_id === null) {
         const create = yield* readCreate(managedId);
-        if (create?.stage !== "failed" || create.provider_operation_id === NO_ALLOCATION) return;
+        if (create?.stage !== "failed" || create.provider_operation_id === NO_ALLOCATION)
+          return true;
         // Empty scoped inventory leaves ownership intact. A later exact match can be recovered.
         const recovered = yield* findAllocation(key, managedId);
-        if (recovered === null) return;
+        if (recovered === null) return true;
         yield* setServer(managedId, { sandbox_id: recovered.id }, notify);
         yield* observe(managedId, recovered, notify);
         if (isLiveState(recovered.state)) yield* cleanupStop(key, recovered.id);
-        return;
+        return true;
       }
       const sandbox = yield* api.get(key, server.sandbox_id).pipe(
         Effect.asSome,
@@ -1415,7 +1454,7 @@ export const make = Effect.gen(function* () {
             notify,
           );
         }
-        return;
+        return true;
       }
       const seen = sandbox.value;
       yield* observe(server.managed_id, seen, notify);
@@ -1443,31 +1482,47 @@ export const make = Effect.gen(function* () {
         yield* setServer(server.managed_id, { lifecycle: "running" }, notify);
       }
       if (server.lifecycle === "running" || isLiveState(seen.state)) {
-        yield* updateUsage(key, server.managed_id, server.sandbox_id, notify);
+        return yield* updateUsage(key, server.managed_id, server.sandbox_id, notify);
       }
+      return true;
     },
-    (effect) => Effect.ignore(effect),
+    (effect) => effect.pipe(Effect.orElseSucceed(() => false)),
   );
 
   const reconcile = Effect.gen(function* () {
+    const pass = ++reconcilePass;
     const servers = yield* readServers;
     const { key, generation } = yield* readCredentials;
+    let changed = false;
+    const notify = Effect.sync(() => {
+      changed = true;
+    });
+    const setProviderStale = (stale: boolean) => {
+      if (pass === reconcilePass && generation === keyGeneration && stale !== providerStale) {
+        providerStale = stale;
+        changed = true;
+      }
+    };
+    const publishChanges = Effect.suspend(() => (changed ? publish : Effect.void));
     const checked = yield* checkCredential(key).pipe(Effect.option);
     if (Option.isSome(checked)) {
-      yield* recordCredentialStatus(checked.value.status, generation);
-      if (checked.value.status !== "configured") return;
+      yield* recordCredentialStatus(checked.value.status, generation, notify);
+      if (checked.value.status !== "configured") {
+        setProviderStale(true);
+        yield* publishChanges;
+        return;
+      }
     }
-    if (generation !== keyGeneration || Option.isNone(key)) return;
+    if (generation !== keyGeneration || Option.isNone(key)) {
+      yield* publishChanges;
+      return;
+    }
     const credential = key.value;
     const pending: string[] = [];
     const settled: string[] = [];
     for (const { managed_id } of servers) {
       ((yield* nextPending(managed_id)) === null ? settled : pending).push(managed_id);
     }
-    let changed = false;
-    const notify = Effect.sync(() => {
-      changed = true;
-    });
     yield* Effect.all(
       [
         Effect.forEach(pending, drain, { concurrency: 4, discard: true }),
@@ -1476,9 +1531,13 @@ export const make = Effect.gen(function* () {
           (id) => lockFor(id).withPermits(1)(refresh(credential, id, notify)),
           {
             concurrency: 4,
-            discard: true,
           },
-        ).pipe(Effect.ensuring(Effect.suspend(() => (changed ? publish : Effect.void)))),
+        ).pipe(
+          Effect.tap((reads) =>
+            Effect.sync(() => setProviderStale(Option.isNone(checked) || reads.includes(false))),
+          ),
+          Effect.ensuring(publishChanges),
+        ),
       ],
       { concurrency: 2, discard: true },
     );

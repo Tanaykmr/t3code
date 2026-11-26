@@ -12942,5 +12942,6 @@
   "b7df38b7d8792d78": "Leitfaden öffnen",
   "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden",
   "e16f555fb4418961": "Eintrag entfernen",
-  "8e4aa4a84fad1a44": "{name} aus T3 Code entfernen? Bestätige, dass der Rechner in Boat gelöscht wurde. Durch Entfernen des Eintrags endet die Abrechnung nicht."
+  "8e4aa4a84fad1a44": "{name} aus T3 Code entfernen? Bestätige, dass der Rechner in Boat gelöscht wurde. Durch Entfernen des Eintrags endet die Abrechnung nicht.",
+  "6aa24de268c569ca": "Die Boat-Daten sind veraltet. Der letzte bekannte Zustand wird angezeigt."
 }

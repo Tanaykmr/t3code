@@ -98,9 +98,14 @@ const wireSnapshot = {
 const snapshot = Schema.decodeUnknownSync(BoatSnapshot)(wireSnapshot);
 const decodeReceipt = Schema.decodeUnknownSync(BoatOperationReceipt);
 const nowMs = Date.parse("2026-11-23T10:30:00.000Z");
-const rows = (connected: boolean, canManage = true, current = snapshot) =>
+const rows = (
+  connected: boolean,
+  canManage = true,
+  current = snapshot,
+  subscriptionStale = false,
+) =>
   boatRows({
-    controllers: [{ environmentId: CONTROLLER, snapshot: current, connected }],
+    controllers: [{ environmentId: CONTROLLER, snapshot: current, connected, subscriptionStale }],
     pairedEnvironmentIds: new Set([EnvironmentId.make("env-guest")]),
     canManage: () => canManage,
     nowMs,
@@ -134,6 +139,30 @@ describe("boatRows", () => {
     const list = rows(false);
     expect(list).toHaveLength(4);
     expect(list.every((row) => row.stale && row.actions.size === 0)).toBe(true);
+  });
+
+  it("shows stale provider state on a connected controller and stops extrapolating running cost", () => {
+    const running = byId(rows(true), "boat_running")!.server;
+    const usage = byId(rows(true), "boat_stopped")!.server.usage;
+    const row = rows(true, true, {
+      ...snapshot,
+      providerStale: true,
+      servers: [{ ...running, usage }],
+    })[0];
+    expect(row).toMatchObject({ stale: true, staleReason: "provider", cost: { source: "usage" } });
+    expect(row?.actions.has("stop")).toBe(true);
+    expect(
+      byId(rows(true, true, { ...snapshot, providerStale: true }), "boat_running")?.cost,
+    ).toBeNull();
+    expect(
+      rows(true, true, {
+        ...snapshot,
+        providerStale: false,
+        servers: [{ ...running, observedPower: "missing" }],
+      })[0]?.stale,
+    ).toBe(true);
+    expect(byId(rows(true), "boat_running")?.stale).toBe(false);
+    expect(byId(rows(true, true, snapshot, true), "boat_running")?.stale).toBe(true);
   });
 
   it("offers no actions to a session without the management permission", () => {

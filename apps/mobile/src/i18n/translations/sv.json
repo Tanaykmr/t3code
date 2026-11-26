@@ -5773,5 +5773,6 @@
   "085f3d64c434cafd": "Botar",
   "e16f555fb4418961": "Glöm posten",
   "8e4aa4a84fad1a44": "Glöm {name} i T3 Code? Bekräfta att maskinen har tagits bort i Boat. Faktureringen upphör inte när du glömmer posten.",
-  "f8834c10f2f6ffca": "Visar maskinåtgärder"
+  "f8834c10f2f6ffca": "Visar maskinåtgärder",
+  "6aa24de268c569ca": "Boat-data är inaktuella. Visar det senast kända tillståndet."
 }

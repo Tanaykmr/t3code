@@ -63,30 +63,44 @@ vi.mock(import("../../state/server"), async (original) => {
       servers: [],
     }),
   );
+  const machine = {
+    managedId: BoatManagedId.make("old-machine"),
+    displayName: "Old machine",
+    size: "small",
+    ttlSeconds: 3600,
+    lifecycle: "stopped",
+    operation: null,
+    sandboxId: "bx_22222222",
+    guestEnvironmentId: null,
+    origin: null,
+    observedPower: "missing",
+    observedAt: null,
+    autoStopAt: null,
+    retention: "unknown",
+    usage: null,
+    createdAt: "2026-11-01T00:00:00.000Z",
+    lastStartedAt: null,
+    lastStoppedAt: null,
+  } satisfies BoatSnapshot["servers"][number];
   const recovery = Atom.make(
     AsyncResult.success<BoatSnapshot>({
       account: { status: "invalid", label: "Boat" },
       rates: [],
       forgetAvailable: true,
+      servers: [machine],
+    }),
+  );
+  const outage = Atom.make(
+    AsyncResult.success<BoatSnapshot>({
+      account: { status: "configured", label: "Boat" },
+      rates: [],
+      providerStale: true,
       servers: [
         {
-          managedId: BoatManagedId.make("old-machine"),
-          displayName: "Old machine",
-          size: "small",
-          ttlSeconds: 3600,
-          lifecycle: "stopped",
-          operation: null,
-          sandboxId: "bx_22222222",
-          guestEnvironmentId: null,
-          origin: null,
-          observedPower: "missing",
-          observedAt: null,
-          autoStopAt: null,
-          retention: "unknown",
-          usage: null,
-          createdAt: "2026-11-01T00:00:00.000Z",
-          lastStartedAt: null,
-          lastStoppedAt: null,
+          ...machine,
+          lifecycle: "running",
+          observedPower: "running",
+          autoStopAt: "2026-11-30T00:00:00.000Z",
         },
       ],
     }),
@@ -96,7 +110,11 @@ vi.mock(import("../../state/server"), async (original) => {
     serverEnvironment: {
       ...actual.serverEnvironment,
       boatLive: ({ environmentId }: { environmentId: EnvironmentId }) =>
-        environmentId === "controller-recovery" ? recovery : snapshot,
+        environmentId === "controller-recovery"
+          ? recovery
+          : environmentId === "controller-outage"
+            ? outage
+            : snapshot,
     },
   };
 });
@@ -123,6 +141,27 @@ function BoatSettings() {
   const boat = useBoatControllers(environments);
   return <BoatEnvironmentsSettings boat={boat} renderSavedGuest={() => null} />;
 }
+
+it("marks Boat data stale while the controller is connected", async () => {
+  mocks.environments = [
+    {
+      environmentId: EnvironmentId.make("controller-outage"),
+      label: "Owner",
+      serverConfig: { boatEnvironments: true },
+      connection: { phase: "connected" },
+    },
+  ];
+  await using screen = await render(
+    <RegistryProvider>
+      <BoatSettings />
+    </RegistryProvider>,
+  );
+  const stop = screen.getByRole("button", { name: "Stop" });
+  await expect.element(stop).toBeVisible();
+  const details = stop.element().closest('[data-slot="settings-row"]')?.textContent;
+  expect(details).toContain("Boat data is stale. Showing last known state.");
+  expect(details).not.toMatch(/Stops in \d+ min/);
+});
 
 it("requires confirmation before forgetting a Boat record locally", async () => {
   const environmentId = EnvironmentId.make("controller-recovery");

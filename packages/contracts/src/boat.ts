@@ -144,6 +144,8 @@ export const BoatSnapshot = Schema.Struct({
   /** False while this server cannot install T3 on a new machine; Create and Resume are refused. */
   createAvailable: Schema.optionalKey(Schema.Boolean),
   forgetAvailable: Schema.optionalKey(Schema.Boolean),
+  /** Provider observations were incomplete on the last reconciliation, independent of the socket. */
+  providerStale: Schema.optionalKey(Schema.Boolean),
 });
 export type BoatSnapshot = typeof BoatSnapshot.Type;
 

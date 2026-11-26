@@ -340,7 +340,7 @@ describe("BoatService", () => {
 
       // As if the create reply was lost and the controller stayed down for a day.
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`UPDATE boat_operations SET stage = 'queued'`;
+      yield* sql`UPDATE boat_operations SET stage = 'allocating'`;
       yield* sql`UPDATE boat_servers SET lifecycle = 'provisioning', sandbox_id = NULL`;
       yield* TestClock.adjust("25 hours");
       yield* settle;
@@ -917,6 +917,87 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect.each(["queued", "allocating"] as const)(
+    "recovers a %s create only when its persisted state proves it was unsent",
+    (stage) => {
+      let revoked = false;
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        account: (key) =>
+          revoked && Redacted.value(key) === FAKE_BOAT_KEY
+            ? Effect.fail(new BoatApiError({ category: "unauthorized" }))
+            : api.account(key),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const id = requestId();
+        const now = "1970-01-01T00:00:00.000Z";
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO boat_servers (managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at)
+          VALUES ('boat_recovery', 'acct_fake', 'Recovery', 'small', 3600, 'provisioning', 'unknown', ${now})
+        `;
+        yield* sql`
+          INSERT INTO boat_operations (request_id, managed_id, kind, payload_json, stage, created_at, updated_at)
+          VALUES (${id}, 'boat_recovery', 'create', '', ${stage}, ${now}, ${now})
+        `;
+        yield* TestClock.adjust("25 hours");
+        revoked = true;
+        yield* settle;
+        const recovery = boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY });
+        if (stage === "allocating") {
+          expect((yield* Effect.flip(recovery)).code).toBe("conflict");
+          expect(fake.calls).toContain("list");
+          expect(fake.sandboxes.size).toBe(0);
+          return;
+        }
+        expect(yield* Effect.result(recovery)).toMatchObject({
+          _tag: "Success",
+          success: { status: "configured" },
+        });
+        expect(fake.calls).not.toContain("list");
+        yield* settle;
+        expect(yield* server("boat_recovery")).toMatchObject({
+          lifecycle: "running",
+          operation: { kind: "create", stage: "completed" },
+        });
+        expect(fake.sandboxes.size).toBe(1);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("keeps Create queued when the saved key is revoked before dispatch", () => {
+    let remainingReads = Number.POSITIVE_INFINITY;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      account: (key) =>
+        Effect.suspend(() =>
+          Redacted.value(key) === FAKE_BOAT_KEY && remainingReads-- <= 0
+            ? Effect.fail(new BoatApiError({ category: "unauthorized" }))
+            : api.account(key),
+        ),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      remainingReads = 1;
+      const { managedId } = yield* createSmall;
+      yield* boat.snapshots.pipe(
+        Stream.filter((value) => value.account.status === "invalid"),
+        Stream.runHead,
+      );
+      expect(yield* server(managedId)).toMatchObject({
+        sandboxId: null,
+        operation: { kind: "create", stage: "queued" },
+      });
+      expect(fake.calls).not.toContain("create");
+      yield* boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY });
+      yield* settle;
+      expect((yield* server(managedId))?.lifecycle).toBe("running");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect.each(["working", "revoked", "missing"] as const)(
     "can forget a machine deleted in Boat and remove the %s credential binding",
     (credential) => {
@@ -1004,6 +1085,41 @@ describe("BoatService", () => {
       expect(yield* snapshot).toBe(before);
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect.each(["account", "get", "usage"] as const)(
+    "publishes provider staleness on %s failure and recovery without rewriting observations",
+    (read) => {
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        usage: (key, id) =>
+          api.usage(key, id).pipe(
+            Effect.map((usage) => ({
+              ...usage,
+              since: "1970-01-01T00:00:00.000Z",
+              until: "1970-01-01T00:00:00.000Z",
+              seconds: 0,
+              dollars: 0,
+            })),
+          ),
+      }));
+      return Effect.gen(function* () {
+        yield* configure;
+        yield* createSmall;
+        yield* settle;
+        const current = yield* snapshot;
+        yield* TestClock.adjust("1 minute");
+        fake.failNext(read, new BoatApiError({ category: "unavailable" }));
+        yield* settle;
+        const stale = yield* snapshot;
+        expect(stale).toMatchObject({ providerStale: true, servers: current.servers });
+        fake.failNext(read, new BoatApiError({ category: "unavailable" }));
+        yield* settle;
+        expect(yield* snapshot).toBe(stale);
+        yield* settle;
+        expect(yield* snapshot).toMatchObject({ providerStale: false, servers: current.servers });
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect.each(["cancelled", "error"] as const)(
     "deletes a sandbox after its create ends in %s and allows key removal",

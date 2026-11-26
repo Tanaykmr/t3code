@@ -5775,5 +5775,6 @@
   "085f3d64c434cafd": "Bots",
   "e16f555fb4418961": "Forget record",
   "8e4aa4a84fad1a44": "Forget {name} from T3 Code? Confirm it has been deleted in Boat. Forgetting its record does not stop billing.",
-  "f8834c10f2f6ffca": "Shows machine actions"
+  "f8834c10f2f6ffca": "Shows machine actions",
+  "6aa24de268c569ca": "Boat data is stale. Showing last known state."
 }

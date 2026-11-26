@@ -5773,5 +5773,6 @@
   "085f3d64c434cafd": "Bots",
   "e16f555fb4418961": "Eintrag entfernen",
   "8e4aa4a84fad1a44": "{name} aus T3 Code entfernen? Bestätige, dass der Rechner in Boat gelöscht wurde. Durch Entfernen des Eintrags endet die Abrechnung nicht.",
-  "f8834c10f2f6ffca": "Zeigt Rechneraktionen"
+  "f8834c10f2f6ffca": "Zeigt Rechneraktionen",
+  "6aa24de268c569ca": "Die Boat-Daten sind veraltet. Der letzte bekannte Zustand wird angezeigt."
 }

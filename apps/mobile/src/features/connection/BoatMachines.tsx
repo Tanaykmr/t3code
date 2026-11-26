@@ -76,6 +76,7 @@ export function useBoatControllers() {
               environment,
               snapshot: snapshot.value,
               connected: environment.connection.phase === "connected",
+              subscriptionStale: result?._tag === "Failure",
             },
           ]
         : [];
@@ -139,18 +140,22 @@ function BoatMachineRow({
   const forget = useAtomCommand(serverEnvironment.forgetBoat, { label: "boat forget" });
   const { server } = row;
   const minutesLeft =
-    server.autoStopAt === null || server.lifecycle !== "running"
+    row.stale || server.autoStopAt === null || server.lifecycle !== "running"
       ? null
       : Math.max(0, Math.round((Date.parse(server.autoStopAt) - nowMs) / 60_000));
   const details = [
     server.size === "small" ? gt("Small") : gt("Default"),
     minutesLeft === null ? null : gt("Stops in {minutes} min", { minutes: minutesLeft }),
     row.cost === null ? null : `$${row.cost.usd.toFixed(row.cost.usd < 0.01 ? 4 : 2)}`,
-    server.retention === "expired" ? gt("Disk expired") : null,
-    server.lifecycle === "failed" && server.observedPower === "running"
+    !row.stale && server.retention === "expired" ? gt("Disk expired") : null,
+    !row.stale && server.lifecycle === "failed" && server.observedPower === "running"
       ? gt("Boat reports it running")
       : null,
-    row.stale ? gt("Controller offline") : null,
+    row.staleReason === "controller-offline"
+      ? gt("Controller offline")
+      : row.staleReason === "provider"
+        ? gt("Boat data is stale. Showing last known state.")
+        : null,
   ].filter((part): part is string => part !== null);
   const failure =
     server.operation?.stage === "failed" && server.operation.failure != null
@@ -436,6 +441,7 @@ export function BoatMachinesSection({
       environmentId: entry.environment.environmentId,
       snapshot: entry.snapshot,
       connected: entry.connected,
+      subscriptionStale: entry.subscriptionStale,
     })),
     pairedEnvironmentIds: new Set(environments.map((entry) => entry.environmentId)),
     canManage: (environmentId) => manageable.has(environmentId),

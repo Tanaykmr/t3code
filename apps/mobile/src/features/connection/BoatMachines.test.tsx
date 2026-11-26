@@ -1,5 +1,5 @@
 import { RegistryProvider } from "@effect/atom-react";
-import { type BoatSnapshot, EnvironmentId } from "@t3tools/contracts";
+import { BoatManagedId, type BoatSnapshot, EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { act, type ReactNode } from "react";
@@ -9,6 +9,7 @@ import { expect, it, vi } from "vite-plus/test";
 const setKey = vi.hoisted(() => vi.fn());
 
 vi.mock("react-native", () => ({
+  Pressable: ({ children }: { children: ReactNode }) => <button>{children}</button>,
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../../components/ui/AppText", () => ({
@@ -77,10 +78,70 @@ const snapshotAtom = Atom.make(
   }),
 );
 
-function BoatSettings() {
+function BoatSettings({ controllerSnapshot }: { readonly controllerSnapshot?: BoatSnapshot }) {
   const boat = useBoatControllers();
-  return <BoatMachinesSection boat={boat} onOpenEnvironment={() => {}} />;
+  return (
+    <BoatMachinesSection
+      boat={
+        controllerSnapshot === undefined
+          ? boat
+          : {
+              ...boat,
+              controllers: boat.controllers.map((entry) => ({
+                ...entry,
+                snapshot: controllerSnapshot,
+              })),
+            }
+      }
+      onOpenEnvironment={() => {}}
+    />
+  );
 }
+
+it("marks Boat data stale while the controller is connected", () => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const element = document.createElement("div");
+  const root = createRoot(element);
+  const controllerSnapshot: BoatSnapshot = {
+    account: { status: "configured", label: "Boat" },
+    rates: [],
+    providerStale: true,
+    servers: [
+      {
+        managedId: BoatManagedId.make("boat_machine"),
+        displayName: "Test machine",
+        size: "small",
+        ttlSeconds: 3600,
+        lifecycle: "running",
+        operation: null,
+        sandboxId: "bx_22222222",
+        guestEnvironmentId: null,
+        origin: null,
+        observedPower: "running",
+        observedAt: null,
+        autoStopAt: "1970-01-01T00:30:00.000Z",
+        retention: "unknown",
+        usage: null,
+        createdAt: "1970-01-01T00:00:00.000Z",
+        lastStartedAt: null,
+        lastStoppedAt: null,
+      },
+    ],
+  };
+  try {
+    act(() =>
+      root.render(
+        <RegistryProvider>
+          <BoatSettings controllerSnapshot={controllerSnapshot} />
+        </RegistryProvider>,
+      ),
+    );
+    expect(element.textContent).toContain("Boat data is stale. Showing last known state.");
+    expect(element.textContent).not.toContain("Stops in");
+  } finally {
+    act(() => root.unmount());
+  }
+});
 
 it("replaces a configured key and can remove it once no machines remain", async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

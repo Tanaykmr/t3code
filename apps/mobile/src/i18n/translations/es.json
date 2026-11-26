@@ -5767,5 +5767,6 @@
   "085f3d64c434cafd": "Bots",
   "e16f555fb4418961": "Olvidar registro",
   "8e4aa4a84fad1a44": "¿Olvidar {name} en T3 Code? Confirma que la máquina se ha eliminado en Boat. Olvidar el registro no detiene la facturación.",
-  "f8834c10f2f6ffca": "Muestra acciones de la máquina"
+  "f8834c10f2f6ffca": "Muestra acciones de la máquina",
+  "6aa24de268c569ca": "Los datos de Boat están desactualizados. Se muestra el último estado conocido."
 }

@@ -21,8 +21,9 @@ export interface BoatRow {
   readonly server: BoatServer;
   readonly tone: BoatTone;
   readonly actions: ReadonlySet<BoatAction>;
-  /** The controller is not connected; the row is its last snapshot. */
+  /** The row displays last known provider state. */
   readonly stale: boolean;
+  readonly staleReason: "controller-offline" | "provider" | null;
   /** This device already has a saved connection to the guest. */
   readonly paired: boolean;
   readonly cost: BoatCost | null;
@@ -40,6 +41,7 @@ export interface BoatControllerSnapshot {
   readonly environmentId: EnvironmentId;
   readonly snapshot: BoatSnapshot;
   readonly connected: boolean;
+  readonly subscriptionStale?: boolean;
 }
 
 const TONES: Record<BoatServer["lifecycle"], BoatTone> = {
@@ -55,10 +57,11 @@ export function boatCost(
   server: BoatServer,
   rates: BoatSnapshot["rates"],
   nowMs: number,
+  stale = false,
 ): BoatCost | null {
   const rate = rates.find((entry) => entry.size === server.size);
   if (server.usage !== null) {
-    if (server.lifecycle === "running" && rate !== undefined) {
+    if (!stale && server.lifecycle === "running" && rate !== undefined) {
       const observedAt = Date.parse(server.usage.observedAt);
       const since =
         server.lastStartedAt === null
@@ -74,6 +77,7 @@ export function boatCost(
     }
     return { usd: server.usage.listPriceUsd, source: "usage", asOf: server.usage.observedAt };
   }
+  if (stale && server.lifecycle === "running") return null;
   if (rate === undefined || server.lastStartedAt === null) return null;
   const end =
     server.lifecycle === "running"
@@ -110,20 +114,31 @@ export function boatRows(input: {
   readonly canManage: (controller: EnvironmentId) => boolean;
   readonly nowMs: number;
 }): ReadonlyArray<BoatRow> {
-  return input.controllers.flatMap(({ environmentId, snapshot, connected }) =>
-    snapshot.servers.map((server) => ({
-      key: `${environmentId}:${server.managedId}`,
-      controllerEnvironmentId: environmentId,
-      server,
-      tone: TONES[server.lifecycle],
-      actions:
-        connected && input.canManage(environmentId) ? actionsFor(server, snapshot) : new Set(),
-      stale: !connected,
-      paired:
-        server.guestEnvironmentId !== null &&
-        input.pairedEnvironmentIds.has(server.guestEnvironmentId),
-      cost: boatCost(server, snapshot.rates, input.nowMs),
-    })),
+  return input.controllers.flatMap(({ environmentId, snapshot, connected, subscriptionStale }) =>
+    snapshot.servers.map((server) => {
+      const staleReason = !connected
+        ? "controller-offline"
+        : subscriptionStale === true ||
+            snapshot.providerStale === true ||
+            snapshot.account.status !== "configured" ||
+            server.observedPower === "missing"
+          ? "provider"
+          : null;
+      return {
+        key: `${environmentId}:${server.managedId}`,
+        controllerEnvironmentId: environmentId,
+        server,
+        tone: TONES[server.lifecycle],
+        actions:
+          connected && input.canManage(environmentId) ? actionsFor(server, snapshot) : new Set(),
+        stale: staleReason !== null,
+        staleReason,
+        paired:
+          server.guestEnvironmentId !== null &&
+          input.pairedEnvironmentIds.has(server.guestEnvironmentId),
+        cost: boatCost(server, snapshot.rates, input.nowMs, staleReason !== null),
+      };
+    }),
   );
 }
 
