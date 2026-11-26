@@ -423,6 +423,59 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect.each([
+    { recovery: null, original: false, lifecycle: "stopped" },
+    { recovery: null, original: true, lifecycle: "running" },
+    { recovery: null, original: null, lifecycle: "running" },
+    { recovery: true, original: false, lifecycle: "running" },
+    { recovery: false, original: null, lifecycle: "stopped" },
+    { recovery: false, original: true, lifecycle: "running" },
+  ])(
+    "checks Stop with recovery retention $recovery and original retention $original",
+    ({ recovery, original, lifecycle }) => {
+      const recoveryKey = `${FAKE_BOAT_KEY}_recovery`;
+      const walletKey = Redacted.make(FAKE_BOAT_KEY);
+      const denied = new BoatApiError({ category: "forbidden", code: "api_key_action_forbidden" });
+      let originalPolicy: boolean | null = false;
+      let originalStopDenied = true;
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        account: (key) =>
+          api.account(walletKey).pipe(
+            Effect.map((account) => ({
+              ...account,
+              zeroDataRetention: Redacted.value(key) === recoveryKey ? recovery : originalPolicy,
+            })),
+          ),
+        get: (_, id) => api.get(walletKey, id),
+        list: (_, labels) => api.list(walletKey, labels),
+        stop: (key, id) =>
+          Redacted.value(key) === recoveryKey || originalStopDenied
+            ? Effect.fail(denied)
+            : api.stop(key, id),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+
+        yield* boat.setApiKey({ apiKey: recoveryKey });
+        originalPolicy = original;
+        originalStopDenied = false;
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+
+        expect((yield* server(managedId))?.lifecycle).toBe(lifecycle);
+        expect(fake.calls.filter((call) => call === "stop")).toHaveLength(
+          lifecycle === "stopped" ? 1 : 0,
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("fails a resume that finds another identity and asks Boat to stop it", () => {
     const { layer, fake } = setup();
     return Effect.gen(function* () {

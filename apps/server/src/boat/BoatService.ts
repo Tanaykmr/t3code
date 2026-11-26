@@ -854,6 +854,7 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  const reportsRetention = (account: BoatAccount) => account.zeroDataRetention !== null;
   const checkStopRetention = (
     key: BoatKey,
     server: ServerRow,
@@ -867,9 +868,11 @@ export const make = Effect.gen(function* () {
           server,
           generation,
           CLEANUP_ACCESS.retention,
+          reportsRetention,
         ),
         fallback,
         (previous) => api.account(previous),
+        (account) => !reportsRetention(account),
       ),
     );
   const requestStop = (
@@ -888,9 +891,9 @@ export const make = Effect.gen(function* () {
       ),
       fallback,
       (previous) =>
-        ensureDiskRetention(api.account(previous)).pipe(
-          Effect.andThen(trackProvider(api.stop(previous, sandboxId))),
-        ),
+        ensureDiskRetention(
+          api.account(previous).pipe(Effect.filterOrElse(reportsRetention, () => api.account(key))),
+        ).pipe(Effect.andThen(trackProvider(api.stop(previous, sandboxId)))),
     );
   const cleanupStop = Effect.fn("BoatService.cleanupStop")(
     function* (
