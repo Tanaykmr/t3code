@@ -1015,15 +1015,98 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect(
+    "keeps cleanup denial and the original key when a recovery key can only inspect",
+    () => {
+      const inspectKey = `${FAKE_BOAT_KEY}_inspect`;
+      const stopKey = `${FAKE_BOAT_KEY}_stop`;
+      const permissionDenied = new BoatApiError({
+        category: "forbidden",
+        code: "api_key_action_forbidden",
+      });
+      const sameWallet = () => Redacted.make(FAKE_BOAT_KEY);
+      const { layer, secrets, fake } = setup({}, (api) => ({
+        ...api,
+        account: () => api.account(sameWallet()),
+        get: (_, id) => api.get(sameWallet(), id),
+        list: (_, labels) => api.list(sameWallet(), labels),
+        stop: (key, id) =>
+          Redacted.value(key) === stopKey
+            ? api.stop(sameWallet(), id)
+            : Effect.fail(permissionDenied),
+        delete: (key, id) =>
+          Redacted.value(key) === FAKE_BOAT_KEY
+            ? api.delete(key, id)
+            : Effect.fail(permissionDenied),
+        deletionCompleted: (key, operationId, id) =>
+          Redacted.value(key) === FAKE_BOAT_KEY
+            ? api.deletionCompleted(key, operationId, id)
+            : Effect.fail(permissionDenied),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const original = Buffer.from(secrets.get("boat-api-key")!);
+        const { managedId } = yield* createSmall;
+        const sql = yield* SqlClient.SqlClient;
+        const cleanupDenied = sql<{ cleanup_denied: number }>`
+        SELECT cleanup_denied FROM boat_servers WHERE managed_id = ${managedId}
+      `.pipe(Effect.map((rows) => rows[0]?.cleanup_denied));
+        yield* settle;
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+        expect((yield* server(managedId))?.lifecycle).toBe("running");
+        const denial = yield* cleanupDenied;
+        expect(denial).toBeGreaterThan(0);
+
+        yield* boat.setApiKey({ apiKey: inspectKey });
+        expect((yield* Effect.flip(createSmall)).code).toBe("invalid-state");
+        expect(yield* cleanupDenied).toBe(denial);
+        expect(original.equals(secrets.get("boat-api-key") ?? new Uint8Array())).toBe(true);
+        expect(fake.calls).not.toContain("stop");
+
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+        expect((yield* server(managedId))?.lifecycle).toBe("running");
+        expect(yield* cleanupDenied).toBe(denial);
+
+        yield* boat.setApiKey({ apiKey: stopKey });
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+        expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+        expect(yield* cleanupDenied).toBe(0);
+        expect((yield* Effect.flip(createSmall)).code).toBe("invalid-state");
+        yield* boat.resume({ requestId: requestId(), managedId });
+        yield* settle;
+        expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+        expect(fake.calls).not.toContain("resume");
+
+        yield* boat.delete({ requestId: requestId(), managedId });
+        yield* settle;
+        expect(fake.sandboxes.size).toBe(0);
+        expect(yield* server(managedId)).toBeUndefined();
+
+        yield* sql`
+          CREATE TRIGGER reject_recovery_key_removal BEFORE DELETE ON boat_account
+          BEGIN SELECT RAISE(ABORT, 'test account write failure'); END
+        `;
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: null }))).code).toBe("persistence");
+        expect(original.equals(secrets.get("boat-api-key") ?? new Uint8Array())).toBe(true);
+        expect(secrets.size).toBe(2);
+        yield* sql`DROP TRIGGER reject_recovery_key_removal`;
+
+        expect(yield* boat.setApiKey({ apiKey: null })).toEqual({ status: "missing" });
+        expect(secrets.size).toBe(0);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect.each(["stop", "stop-unauthorized", "delete", "get", "list", "policy"] as const)(
     "recovers cleanup when an authenticated key is denied %s",
     (deniedAction) => {
       const replacement = `${FAKE_BOAT_KEY}_recovery`;
-      const nextReplacement = `${FAKE_BOAT_KEY}_next`;
       const sameWallet = (key: BoatKey) =>
-        [replacement, nextReplacement].includes(Redacted.value(key))
-          ? Redacted.make(FAKE_BOAT_KEY)
-          : key;
+        Redacted.value(key) === replacement ? Redacted.make(FAKE_BOAT_KEY) : key;
       let denied = false;
       let replacementReadDenied = true;
       const refuses = (key: BoatKey, action: typeof deniedAction) =>
@@ -1089,9 +1172,6 @@ describe("BoatService", () => {
           _tag: "Success",
           success: { status: "configured" },
         });
-        expect((yield* Effect.flip(boat.setApiKey({ apiKey: nextReplacement }))).code).toBe(
-          "conflict",
-        );
         if (deniedAction !== "delete") {
           yield* boat.stop({ requestId: requestId(), managedId });
           yield* settle;

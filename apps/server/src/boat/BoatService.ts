@@ -46,7 +46,7 @@ import {
   BOAT_LOGIN_ACCOUNT_ID_PREFIX,
   BoatApi,
   type BoatAccount,
-  type BoatApiError,
+  BoatApiError,
   type BoatBootstrapError,
   BoatGuestBootstrap,
   type BoatKey,
@@ -57,6 +57,7 @@ import { makeFakeBoat } from "./BoatApiFake.ts";
 import * as BoatHttpApi from "./BoatHttpApi.ts";
 
 const API_KEY_SECRET = "boat-api-key";
+const RECOVERY_KEY_SECRET = "boat-recovery-key";
 /** Boat keeps create idempotency keys for 24 hours; stop trusting ours a little before. */
 const IDEMPOTENCY_WINDOW_MS = 23 * 60 * 60 * 1000;
 /** How long label discovery keeps looking for a create that may have reached Boat. */
@@ -176,6 +177,7 @@ const isRejectedKey = (error: BoatApiError) =>
 
 const isHiddenMachine = (error: BoatApiError) =>
   error.category === "not-found" || error.category === "forbidden";
+const isBoatApiError = Schema.is(BoatApiError);
 
 const ProviderRead = Context.Reference<((observed: boolean) => void) | null>(
   "t3/boat/ProviderRead",
@@ -386,22 +388,34 @@ export const make = Effect.gen(function* () {
     ),
   );
 
-  const readStoredKey = secrets
-    .get(API_KEY_SECRET)
-    .pipe(
-      Effect.map(Option.map((bytes): BoatKey => Redacted.make(new TextDecoder().decode(bytes)))),
-    );
+  const readStoredKey = (name: string) =>
+    secrets
+      .get(name)
+      .pipe(
+        Effect.map(Option.map((bytes): BoatKey => Redacted.make(new TextDecoder().decode(bytes)))),
+      );
 
   const locks = new Map<string, Semaphore.Semaphore>();
   // Key changes and create acceptance take turns, so no create binds to a key being replaced.
   const accountLock = Semaphore.makeUnsafe(1);
   const credentialLock = Semaphore.makeUnsafe(1);
-  const readKey = credentialLock.withPermits(1)(readStoredKey);
   let keyGeneration = 0;
   const readCredentials = credentialLock.withPermits(1)(
     Effect.gen(function* () {
-      const [key, account] = yield* Effect.all([readStoredKey, readAccount]);
-      return { key, account, generation: keyGeneration };
+      const [primary, recovery, account] = yield* Effect.all([
+        readStoredKey(API_KEY_SECRET),
+        readStoredKey(RECOVERY_KEY_SECRET),
+        readAccount,
+      ]);
+      return {
+        key: Option.orElse(recovery, () => primary),
+        fallback: Option.isSome(recovery)
+          ? Option.filter(primary, (key) => Redacted.value(key) !== Redacted.value(recovery.value))
+          : Option.none<BoatKey>(),
+        recovery,
+        account,
+        generation: keyGeneration,
+      };
     }),
   );
   const checkCredential = Effect.fn("BoatService.checkCredential")(function* (
@@ -428,18 +442,33 @@ export const make = Effect.gen(function* () {
     if (changed.length > 0) yield* notify;
   });
   const storeCredentials = Effect.fn("BoatService.storeCredentials")(
-    function* (key: string | null, updateAccount: Effect.Effect<unknown, SqlError.SqlError>) {
-      const prior = yield* secrets.get(API_KEY_SECRET);
-      if (key === null) yield* secrets.remove(API_KEY_SECRET);
-      else yield* secrets.set(API_KEY_SECRET, new TextEncoder().encode(key));
-      yield* updateAccount.pipe(
-        Effect.onError(() =>
-          (Option.isSome(prior)
-            ? secrets.set(API_KEY_SECRET, prior.value)
-            : secrets.remove(API_KEY_SECRET)
-          ).pipe(Effect.orDie),
-        ),
-      );
+    function* (
+      key: string | null,
+      updateAccount: Effect.Effect<unknown, SqlError.SqlError>,
+      stage = false,
+    ) {
+      const value = key === null ? undefined : new TextEncoder().encode(key);
+      const write = (name: string, bytes: Uint8Array | undefined) =>
+        bytes === undefined ? secrets.remove(name) : secrets.set(name, bytes);
+      const changes = stage
+        ? ([[RECOVERY_KEY_SECRET, value]] as const)
+        : ([
+            [API_KEY_SECRET, value],
+            [RECOVERY_KEY_SECRET, undefined],
+          ] as const);
+      let commit: Effect.Effect<
+        unknown,
+        SqlError.SqlError | Effect.Error<ReturnType<typeof write>>
+      > = updateAccount;
+      for (const [name, bytes] of changes) {
+        const prior = yield* secrets.get(name);
+        if (bytes === undefined && Option.isNone(prior)) continue;
+        commit = write(name, bytes).pipe(
+          Effect.andThen(commit),
+          Effect.onError(() => write(name, Option.getOrUndefined(prior)).pipe(Effect.orDie)),
+        );
+      }
+      yield* commit;
       keyGeneration += 1;
     },
     (effect) => credentialLock.withPermits(1)(persistence(Effect.uninterruptible(effect))),
@@ -476,6 +505,24 @@ export const make = Effect.gen(function* () {
           : Effect.void,
       ),
       Effect.tap((value) => record(!visible(value))),
+    );
+  };
+  const withCleanupFallback = <A, E, E2>(
+    request: Effect.Effect<A, BoatApiError | E>,
+    fallback: Option.Option<BoatKey>,
+    retry: (key: BoatKey) => Effect.Effect<A, E2>,
+    missing: (result: A) => boolean = () => false,
+  ): Effect.Effect<A, E | E2 | BoatApiError> => {
+    if (Option.isNone(fallback)) return request;
+    return request.pipe(
+      Effect.matchEffect({
+        onFailure: (error): Effect.Effect<A, E | E2 | BoatApiError> =>
+          isBoatApiError(error) && (isRejectedKey(error) || isHiddenMachine(error))
+            ? retry(fallback.value)
+            : Effect.fail(error),
+        onSuccess: (result): Effect.Effect<A, E2> =>
+          missing(result) ? retry(fallback.value) : Effect.succeed(result),
+      }),
     );
   };
   const lockFor = (managedId: string) => {
@@ -557,10 +604,17 @@ export const make = Effect.gen(function* () {
     managedId: string,
     sandboxId: string,
     done: (sandbox: BoatSandbox) => boolean,
-    options: { readonly yieldTo?: Effect.Effect<boolean, SqlError.SqlError> } = {},
+    options: {
+      readonly yieldTo?: Effect.Effect<boolean, SqlError.SqlError>;
+      readonly fallback?: Option.Option<BoatKey>;
+    } = {},
   ) {
     for (let attempt = 0; ; attempt++) {
-      const sandbox = yield* readSandbox(key, sandboxId);
+      const sandbox = yield* withCleanupFallback(
+        readSandbox(key, sandboxId),
+        options.fallback ?? Option.none(),
+        (previous) => readSandbox(previous, sandboxId),
+      );
       yield* observe(managedId, sandbox);
       if (done(sandbox)) return Option.some(sandbox);
       // Returns the unfinished observation when other queued work should go first.
@@ -780,7 +834,7 @@ export const make = Effect.gen(function* () {
     return true;
   });
 
-  const refuseForbidden = <A, E extends SqlError.SqlError>(
+  const refuseForbidden = <A, E extends SqlError.SqlError | OperationRefused>(
     request: Effect.Effect<A, BoatApiError | E>,
   ) =>
     request.pipe(
@@ -800,26 +854,54 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  const checkStopRetention = (key: BoatKey, server: ServerRow, generation: number) =>
+  const checkStopRetention = (
+    key: BoatKey,
+    server: ServerRow,
+    generation: number,
+    fallback: Option.Option<BoatKey>,
+  ) =>
     ensureDiskRetention(
-      trackCleanupAccess(
-        trackProvider(api.account(key), () => false),
-        server,
-        generation,
-        CLEANUP_ACCESS.retention,
+      withCleanupFallback(
+        trackCleanupAccess(
+          trackProvider(api.account(key), () => false),
+          server,
+          generation,
+          CLEANUP_ACCESS.retention,
+        ),
+        fallback,
+        (previous) => api.account(previous),
       ),
     );
-  const requestStop = (key: BoatKey, sandboxId: string, server: ServerRow, generation: number) =>
-    trackCleanupAccess(
-      trackProvider(api.stop(key, sandboxId)),
-      server,
-      generation,
-      CLEANUP_ACCESS.stop,
+  const requestStop = (
+    key: BoatKey,
+    sandboxId: string,
+    server: ServerRow,
+    generation: number,
+    fallback: Option.Option<BoatKey>,
+  ) =>
+    withCleanupFallback(
+      trackCleanupAccess(
+        trackProvider(api.stop(key, sandboxId)),
+        server,
+        generation,
+        CLEANUP_ACCESS.stop,
+      ),
+      fallback,
+      (previous) =>
+        ensureDiskRetention(api.account(previous)).pipe(
+          Effect.andThen(trackProvider(api.stop(previous, sandboxId))),
+        ),
     );
   const cleanupStop = Effect.fn("BoatService.cleanupStop")(
-    function* (key: BoatKey, sandboxId: string, server: ServerRow, generation: number) {
-      yield* checkStopRetention(key, server, generation);
-      yield* requestStop(key, sandboxId, server, generation);
+    function* (
+      key: BoatKey,
+      sandboxId: string,
+      server: ServerRow,
+      generation: number,
+      fallback: Option.Option<BoatKey>,
+    ) {
+      yield* checkStopRetention(key, server, generation, fallback);
+      yield* requestStop(key, sandboxId, server, generation, fallback);
     },
     (effect) => Effect.ignore(effect),
   );
@@ -829,6 +911,7 @@ export const make = Effect.gen(function* () {
     op: OperationRow,
     server: ServerRow,
     generation: number,
+    fallback: Option.Option<BoatKey>,
   ) {
     const sandboxId = server.sandbox_id;
     if (sandboxId === null) {
@@ -850,11 +933,10 @@ export const make = Effect.gen(function* () {
       });
     yield* setStage(op.request_id, "stopping");
     yield* setServer(server.managed_id, { lifecycle: "stopping" });
-    const current = yield* trackCleanupAccess(
-      readSandbox(key, sandboxId),
-      server,
-      generation,
-      CLEANUP_ACCESS.lookup,
+    const current = yield* withCleanupFallback(
+      trackCleanupAccess(readSandbox(key, sandboxId), server, generation, CLEANUP_ACCESS.lookup),
+      fallback,
+      (previous) => readSandbox(previous, sandboxId),
     ).pipe(
       Effect.asSome,
       Effect.catchIf(
@@ -881,13 +963,15 @@ export const make = Effect.gen(function* () {
         ourStopId = seen.stopId;
         yield* record(ourStopId);
       } else if (seen.state !== "archived") {
-        yield* checkStopRetention(key, server, generation);
+        yield* checkStopRetention(key, server, generation, fallback);
         before = seen.stopId;
         yield* setStage(op.request_id, "stopping", {
           provider_operation_id: SENDING + (before ?? ""),
         });
         // Sent once per pass: a lost reply leaves the operation pending for the next look.
-        ourStopId = yield* refuseForbidden(requestStop(key, sandboxId, server, generation));
+        ourStopId = yield* refuseForbidden(
+          requestStop(key, sandboxId, server, generation, fallback),
+        );
         yield* record(ourStopId);
       }
     }
@@ -907,6 +991,7 @@ export const make = Effect.gen(function* () {
       server.managed_id,
       sandboxId,
       (s) => s.state === "archived" || overtaken(s),
+      { fallback },
     );
     if (Option.isNone(archived)) return false;
     if (archived.value.state !== "archived") {
@@ -924,6 +1009,7 @@ export const make = Effect.gen(function* () {
     key: BoatKey,
     op: OperationRow,
     server: ServerRow,
+    recovering: boolean,
   ) {
     const sandboxId = server.sandbox_id;
     if (sandboxId === null) return yield* new OperationFailed({ code: "not-found" });
@@ -967,6 +1053,9 @@ export const make = Effect.gen(function* () {
       return yield* new OperationRefused({ code: "bootstrap-unavailable" });
     }
     if (current.state === "archived") {
+      if (recovering || server.cleanup_denied !== 0) {
+        return yield* new OperationRefused({ code: "provider-rejected" });
+      }
       yield* ensureDiskRetention(trackProvider(api.account(key), () => false));
       // Last look before waking it: a stop accepted since the check above still wins.
       if (yield* hasPendingStop(server.managed_id)) {
@@ -1030,6 +1119,7 @@ export const make = Effect.gen(function* () {
     op: OperationRow,
     server: ServerRow,
     generation: number,
+    fallback: Option.Option<BoatKey>,
   ) {
     yield* setStage(op.request_id, "deleting");
     yield* setServer(server.managed_id, { lifecycle: "deleting" });
@@ -1044,11 +1134,10 @@ export const make = Effect.gen(function* () {
       if (operationId === null) {
         // A scoped key can miss a live machine in both GET and list. Without a purge receipt,
         // neither 404 nor inventory under that key releases the controller's cleanup obligation.
-        const current = yield* trackCleanupAccess(
-          readSandbox(key, target),
-          server,
-          generation,
-          CLEANUP_ACCESS.lookup,
+        const current = yield* withCleanupFallback(
+          trackCleanupAccess(readSandbox(key, target), server, generation, CLEANUP_ACCESS.lookup),
+          fallback,
+          (previous) => readSandbox(previous, target),
         );
         if (
           current.state !== "archived" &&
@@ -1059,19 +1148,26 @@ export const make = Effect.gen(function* () {
           if (current.state === "archiving") return false;
           return yield* new OperationFailed({ code: "machine-running" });
         }
-        operationId = yield* trackCleanupAccess(
-          trackProvider(api.delete(key, target)),
-          server,
-          generation,
-          CLEANUP_ACCESS.delete,
+        operationId = yield* withCleanupFallback(
+          trackCleanupAccess(
+            trackProvider(api.delete(key, target)),
+            server,
+            generation,
+            CLEANUP_ACCESS.delete,
+          ),
+          fallback,
+          (previous) => trackProvider(api.delete(previous, target)),
         );
         yield* setStage(op.request_id, "deleting", { provider_operation_id: operationId });
       }
       let completed = false;
       for (let attempt = 0; !completed && attempt < POLL_ATTEMPTS; attempt++) {
         if (attempt > 0) yield* Effect.sleep(POLL_INTERVAL);
-        const status = yield* trackProvider(
-          retryTransient(api.deletionCompleted(key, operationId, target)),
+        const status = yield* withCleanupFallback(
+          trackProvider(retryTransient(api.deletionCompleted(key, operationId, target))),
+          fallback,
+          (previous) =>
+            trackProvider(retryTransient(api.deletionCompleted(previous, operationId, target))),
         ).pipe(
           // Boat documents that accepting a purge irreversibly removes the sandbox from use.
           // Organization keys cannot read purge status, but we already persisted its receipt.
@@ -1130,9 +1226,9 @@ export const make = Effect.gen(function* () {
       );
       // Stop billing for a failed create or resume when Boat can keep its disk.
       if ((op.kind === "create" || op.kind === "resume") && server.sandbox_id !== null) {
-        const { key, generation } = yield* readCredentials;
+        const { key, generation, fallback } = yield* readCredentials;
         if (Option.isSome(key))
-          yield* cleanupStop(key.value, server.sandbox_id, server, generation);
+          yield* cleanupStop(key.value, server.sandbox_id, server, generation, fallback);
       }
     }
     yield* setStage(op.request_id, "failed", { failure });
@@ -1170,7 +1266,7 @@ export const make = Effect.gen(function* () {
     function* (op: OperationRow) {
       const server = yield* readServer(op.managed_id);
       if (server === null) return yield* new OperationFailed({ code: "not-found" });
-      const { key, account, generation } = yield* readCredentials;
+      const { key, account, generation, recovery, fallback } = yield* readCredentials;
       if (Option.isNone(key) && isUnsentCreate(server, op)) {
         yield* recordCredentialStatus("missing", generation);
         return false;
@@ -1181,13 +1277,13 @@ export const make = Effect.gen(function* () {
       }
       const run =
         op.kind === "create"
-          ? runCreate
+          ? runCreate(key.value, op, server, generation)
           : op.kind === "stop"
-            ? runStop
+            ? runStop(key.value, op, server, generation, fallback)
             : op.kind === "resume"
-              ? runResume
-              : runDelete;
-      const done = yield* run(key.value, op, server, generation).pipe(
+              ? runResume(key.value, op, server, Option.isSome(recovery))
+              : runDelete(key.value, op, server, generation, fallback);
+      const done = yield* run.pipe(
         Effect.catchIf(
           (error) => error._tag === "BoatApiError" && isRejectedKey(error),
           (error) =>
@@ -1345,7 +1441,13 @@ export const make = Effect.gen(function* () {
               "The saved Boat key could not manage an existing machine. Restore its access or replace it before creating another machine.",
             );
           }
-          const key = yield* readKey;
+          const { key, recovery } = yield* readCredentials;
+          if (Option.isSome(recovery) && (yield* readServers).length > 0) {
+            return yield* fail(
+              "invalid-state",
+              "Clean up this server's Boat machines before creating another one with a recovery key.",
+            );
+          }
           if (Option.isNone(key)) {
             yield* sql`UPDATE boat_account SET status = 'missing' WHERE id = 1`;
             return new BoatError({
@@ -1374,6 +1476,9 @@ export const make = Effect.gen(function* () {
               "invalid-state",
               "Boat did not confirm that this account keeps stopped disks, so a stopped machine might not resume.",
             );
+          }
+          if (Option.isSome(recovery)) {
+            yield* storeCredentials(Redacted.value(recovery.value), Effect.void);
           }
           return yield* sql.withTransaction(
             Effect.gen(function* () {
@@ -1453,7 +1558,12 @@ export const make = Effect.gen(function* () {
     const credentials = yield* persistence(readCredentials);
     const replacing =
       Option.isNone(credentials.key) || Redacted.value(credentials.key.value) !== input.apiKey;
-    if (servers.length > 0 && replacing && servers.every((server) => server.cleanup_denied === 0)) {
+    if (
+      servers.length > 0 &&
+      replacing &&
+      Option.isNone(credentials.recovery) &&
+      servers.every((server) => server.cleanup_denied === 0)
+    ) {
       const previous = yield* checkCredential(credentials.key).pipe(
         Effect.mapError(providerUnavailable),
       );
@@ -1541,6 +1651,9 @@ export const make = Effect.gen(function* () {
       input.environment === undefined
         ? (credentials.account?.boat_environment ?? null)
         : input.environment;
+    // Boat does not expose a scoped key's lifecycle permissions. Keep the original key
+    // available for cleanup and let actual lifecycle calls verify the recovery key's access.
+    const stage = servers.length > 0 && (replacing || Option.isSome(credentials.recovery));
     // 0 only when Boat says it keeps stopped disks; an unreported policy blocks create like 1.
     yield* storeCredentials(
       input.apiKey,
@@ -1548,8 +1661,6 @@ export const make = Effect.gen(function* () {
         if (rebind && previousAccountId !== accountId)
           yield* sql`UPDATE boat_servers SET account_id = ${accountId}
             WHERE deleted_at IS NULL AND account_id = ${previousAccountId}`;
-        if (replacing)
-          yield* sql`UPDATE boat_servers SET cleanup_denied = 0 WHERE cleanup_denied <> 0`;
         for (const [managedId, sandboxId] of recovered) {
           yield* sql`UPDATE boat_servers SET sandbox_id = ${sandboxId}
             WHERE managed_id = ${managedId} AND sandbox_id IS NULL AND deleted_at IS NULL`;
@@ -1564,6 +1675,7 @@ export const make = Effect.gen(function* () {
         boat_environment = excluded.boat_environment
         `;
       }).pipe(sql.withTransaction),
+      stage,
     );
     yield* publish;
     return { status: "configured" as const };
@@ -1575,25 +1687,31 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const server = yield* persistence(readServer(input.managedId));
           if (server === null) return;
-          const key = yield* persistence(readKey);
+          const { key, fallback } = yield* persistence(readCredentials);
           const noAllocation =
             server.sandbox_id === null &&
             hasNoAllocation(server, yield* persistence(readCreate(server.managed_id)));
           if (Option.isSome(key) && !noAllocation) {
-            const visible = yield* (
-              server.sandbox_id === null
+            const sandboxId = server.sandbox_id;
+            const visible = (credential: BoatKey) =>
+              (sandboxId === null
                 ? api
-                    .list(key.value, allocationLabels(server.managed_id))
+                    .list(credential, allocationLabels(server.managed_id))
                     .pipe(Effect.map((matches) => matches.length > 0))
-                : api.get(key.value, server.sandbox_id).pipe(Effect.as(true))
-            ).pipe(
-              Effect.catchIf(
-                (error) => isRejectedKey(error) || isHiddenMachine(error),
-                () => Effect.succeed(false),
-              ),
-              Effect.mapError(providerUnavailable),
-            );
-            if (visible)
+                : api.get(credential, sandboxId).pipe(Effect.as(true))
+              ).pipe(
+                Effect.catchIf(
+                  (error) => isRejectedKey(error) || isHiddenMachine(error),
+                  () => Effect.succeed(false),
+                ),
+              );
+            const reported = yield* withCleanupFallback(
+              visible(key.value),
+              fallback,
+              visible,
+              (found) => !found,
+            ).pipe(Effect.mapError(providerUnavailable));
+            if (reported)
               return yield* fail(
                 "invalid-state",
                 "Boat still reports this machine. Delete it before forgetting its record.",
@@ -1617,7 +1735,13 @@ export const make = Effect.gen(function* () {
 
   /** Refreshes one settled machine: an external archive, restart, or deletion shows up here. */
   const refresh = Effect.fn("BoatService.refresh")(
-    function* (key: BoatKey, generation: number, managedId: string, notify: typeof publish) {
+    function* (
+      key: BoatKey,
+      generation: number,
+      fallback: Option.Option<BoatKey>,
+      managedId: string,
+      notify: typeof publish,
+    ) {
       // Read under the machine's lock; the list read before it may be stale.
       const server = yield* readServer(managedId);
       if (server === null || (yield* nextPending(managedId)) !== null) return null;
@@ -1626,24 +1750,30 @@ export const make = Effect.gen(function* () {
         if (create?.stage !== "failed" || create.provider_operation_id === NO_ALLOCATION)
           return null;
         // Empty scoped inventory leaves ownership intact. A later exact match can be recovered.
-        const recovered = yield* trackCleanupAccess(
-          findAllocation(key, managedId),
-          server,
-          generation,
-          CLEANUP_ACCESS.lookup,
-          (match) => match !== null,
+        const recovered = yield* withCleanupFallback(
+          trackCleanupAccess(
+            findAllocation(key, managedId),
+            server,
+            generation,
+            CLEANUP_ACCESS.lookup,
+            (match) => match !== null,
+          ),
+          fallback,
+          (previous) => findAllocation(previous, managedId),
+          (match) => match === null,
         );
         if (recovered === null) return null;
         yield* setServer(managedId, { sandbox_id: recovered.id }, notify);
         yield* observe(managedId, recovered, notify);
-        if (isLiveState(recovered.state)) yield* cleanupStop(key, recovered.id, server, generation);
+        if (isLiveState(recovered.state))
+          yield* cleanupStop(key, recovered.id, server, generation, fallback);
         return true;
       }
-      const sandbox = yield* trackCleanupAccess(
-        api.get(key, server.sandbox_id),
-        server,
-        generation,
-        CLEANUP_ACCESS.lookup,
+      const sandboxId = server.sandbox_id;
+      const sandbox = yield* withCleanupFallback(
+        trackCleanupAccess(api.get(key, sandboxId), server, generation, CLEANUP_ACCESS.lookup),
+        fallback,
+        (previous) => api.get(previous, sandboxId),
       ).pipe(
         Effect.asSome,
         Effect.catchIf(
@@ -1681,7 +1811,7 @@ export const make = Effect.gen(function* () {
             latest.kind === "resume" ||
             (latest.kind === "delete" && latest.failure === "unresolved-create"))
         ) {
-          yield* cleanupStop(key, server.sandbox_id, server, generation);
+          yield* cleanupStop(key, sandboxId, server, generation, fallback);
         }
       } else if (server.lifecycle === "stopped" && isLiveState(seen.state)) {
         // Restarted outside T3; show it with its new deadline rather than hiding it.
@@ -1698,7 +1828,7 @@ export const make = Effect.gen(function* () {
   const reconcile = Effect.gen(function* () {
     const pass = ++reconcilePass;
     const servers = yield* readServers;
-    const { key, generation } = yield* readCredentials;
+    const { key, generation, fallback } = yield* readCredentials;
     let changed = false;
     const notify = Effect.sync(() => {
       changed = true;
@@ -1717,7 +1847,7 @@ export const make = Effect.gen(function* () {
     const checked = yield* checkCredential(key).pipe(Effect.option);
     if (Option.isSome(checked)) {
       yield* recordCredentialStatus(checked.value.status, generation, notify);
-      if (checked.value.status !== "configured") {
+      if (checked.value.status !== "configured" && Option.isNone(fallback)) {
         setProviderStale(true);
         yield* publishChanges;
         return;
@@ -1727,7 +1857,7 @@ export const make = Effect.gen(function* () {
       yield* publishChanges;
       return;
     }
-    const accountReadFailed = Option.isNone(checked);
+    const accountReadFailed = !Option.exists(checked, (result) => result.status === "configured");
     if (accountReadFailed) setProviderStale(true);
     const credential = key.value;
     const pending: string[] = [];
@@ -1740,7 +1870,7 @@ export const make = Effect.gen(function* () {
         Effect.forEach(pending, drain, { concurrency: 4 }),
         Effect.forEach(
           settled,
-          (id) => lockFor(id).withPermits(1)(refresh(credential, generation, id, notify)),
+          (id) => lockFor(id).withPermits(1)(refresh(credential, generation, fallback, id, notify)),
           {
             concurrency: 4,
           },
