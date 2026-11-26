@@ -312,7 +312,7 @@ export const make = Effect.gen(function* () {
     ),
   );
 
-  const readKey = secrets
+  const readStoredKey = secrets
     .get(API_KEY_SECRET)
     .pipe(
       Effect.map(Option.map((bytes): BoatKey => Redacted.make(new TextDecoder().decode(bytes)))),
@@ -322,33 +322,31 @@ export const make = Effect.gen(function* () {
   // Key changes and create acceptance take turns, so no create binds to a key being replaced.
   const accountLock = Semaphore.makeUnsafe(1);
   const credentialLock = Semaphore.makeUnsafe(1);
+  const readKey = credentialLock.withPermits(1)(readStoredKey);
   let keyGeneration = 0;
   const readCredentials = credentialLock.withPermits(1)(
     Effect.gen(function* () {
-      const [key, account] = yield* Effect.all([readKey, readAccount]);
+      const [key, account] = yield* Effect.all([readStoredKey, readAccount]);
       return { key, account, generation: keyGeneration };
     }),
   );
-  const storeCredentials = (
-    key: string | null,
-    updateAccount: Effect.Effect<unknown, SqlError.SqlError>,
-  ) =>
-    credentialLock.withPermits(1)(
-      persistence(
-        (key === null
-          ? secrets.remove(API_KEY_SECRET)
-          : secrets.set(API_KEY_SECRET, new TextEncoder().encode(key))
-        ).pipe(
-          Effect.tap(() =>
-            Effect.sync(() => {
-              keyGeneration += 1;
-            }),
-          ),
-          Effect.andThen(updateAccount),
-          Effect.uninterruptible,
+  const storeCredentials = Effect.fn("BoatService.storeCredentials")(
+    function* (key: string | null, updateAccount: Effect.Effect<unknown, SqlError.SqlError>) {
+      const prior = yield* secrets.get(API_KEY_SECRET);
+      if (key === null) yield* secrets.remove(API_KEY_SECRET);
+      else yield* secrets.set(API_KEY_SECRET, new TextEncoder().encode(key));
+      yield* updateAccount.pipe(
+        Effect.onError(() =>
+          (Option.isSome(prior)
+            ? secrets.set(API_KEY_SECRET, prior.value)
+            : secrets.remove(API_KEY_SECRET)
+          ).pipe(Effect.orDie),
         ),
-      ),
-    );
+      );
+      keyGeneration += 1;
+    },
+    (effect) => credentialLock.withPermits(1)(persistence(Effect.uninterruptible(effect))),
+  );
   const lockFor = (managedId: string) => {
     let lock = locks.get(managedId);
     if (lock === undefined) {

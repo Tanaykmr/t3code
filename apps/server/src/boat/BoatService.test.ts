@@ -762,6 +762,36 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect.each(["replacement", "removal"] as const)(
+    "restores the prior secret when SQLite rejects key %s",
+    (operation) => {
+      const { layer, secrets } = setup();
+      return Effect.gen(function* () {
+        yield* configure;
+        const stored = Buffer.from(secrets.get("boat-api-key")!);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          CREATE TRIGGER reject_boat_account_insert BEFORE INSERT ON boat_account
+          BEGIN SELECT RAISE(ABORT, 'test account write failure'); END
+        `;
+        yield* sql`
+          CREATE TRIGGER reject_boat_account_delete BEFORE DELETE ON boat_account
+          BEGIN SELECT RAISE(ABORT, 'test account write failure'); END
+        `;
+        const boat = yield* BoatService.BoatService;
+        const error = yield* Effect.flip(
+          boat.setApiKey({
+            apiKey: operation === "replacement" ? FAKE_OTHER_WALLET_KEY : null,
+          }),
+        );
+        expect(error.code).toBe("persistence");
+        expect(stored.equals(secrets.get("boat-api-key") ?? new Uint8Array())).toBe(true);
+        expect((yield* snapshot).account.status).toBe("configured");
+        yield* createSmall;
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("keeps the old key when a replacement can only read the first machine", () => {
     const replacement = `${FAKE_BOAT_KEY}_scoped`;
     let accessibleSandboxId: string | null | undefined;
