@@ -246,6 +246,34 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect.each([
+    { policy: true, label: "enabled" },
+    { policy: null, label: "unknown" },
+  ])("refuses to stop a running machine when zero-data retention is $label", ({ policy }) => {
+    let zeroDataRetention: boolean | null = false;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      account: (key) =>
+        api.account(key).pipe(Effect.map((account) => ({ ...account, zeroDataRetention }))),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+
+      zeroDataRetention = policy;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+
+      expect(fake.calls).not.toContain("stop");
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "running",
+        operation: { kind: "stop", stage: "failed", failure: "provider-rejected" },
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("fails a resume that finds another identity and asks Boat to stop it", () => {
     const { layer, fake } = setup();
     return Effect.gen(function* () {

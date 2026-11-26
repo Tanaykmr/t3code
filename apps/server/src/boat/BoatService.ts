@@ -622,6 +622,10 @@ export const make = Effect.gen(function* () {
         ourStopId = seen.stopId;
         yield* record(ourStopId);
       } else if (seen.state !== "archived") {
+        const policy = yield* api.account(key);
+        if (policy.zeroDataRetention !== false) {
+          return yield* new OperationRefused({ code: "provider-rejected" });
+        }
         before = seen.stopId;
         yield* setStage(op.request_id, "stopping", {
           provider_operation_id: SENDING + (before ?? ""),
