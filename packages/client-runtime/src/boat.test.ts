@@ -189,6 +189,16 @@ describe("boatCost", () => {
     expect(estimate?.source).toBe("estimate");
     expect(estimate?.usd).toBeCloseTo(0.009, 6);
   });
+
+  it("extends the last usage sample while a machine is running", () => {
+    const stopped = byId(rows(true), "boat_stopped")!.server;
+    const running = { ...stopped, lifecycle: "running" as const };
+    const later = Date.parse("2026-11-23T10:51:00.000Z");
+
+    const cost = boatCost(running, snapshot.rates, later);
+    expect(cost?.source).toBe("estimate");
+    expect(cost?.usd).toBeCloseTo(0.015, 6);
+  });
 });
 
 describe("Boat wire compatibility", () => {

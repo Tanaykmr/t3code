@@ -56,10 +56,24 @@ export function boatCost(
   rates: BoatSnapshot["rates"],
   nowMs: number,
 ): BoatCost | null {
+  const rate = rates.find((entry) => entry.size === server.size);
   if (server.usage !== null) {
+    if (server.lifecycle === "running" && rate !== undefined) {
+      const observedAt = Date.parse(server.usage.observedAt);
+      const since =
+        server.lastStartedAt === null
+          ? observedAt
+          : Math.max(observedAt, Date.parse(server.lastStartedAt));
+      if (nowMs > since) {
+        return {
+          usd: server.usage.listPriceUsd + ((nowMs - since) / 3_600_000) * rate.usdPerHour,
+          source: "estimate",
+          asOf: null,
+        };
+      }
+    }
     return { usd: server.usage.listPriceUsd, source: "usage", asOf: server.usage.observedAt };
   }
-  const rate = rates.find((entry) => entry.size === server.size);
   if (rate === undefined || server.lastStartedAt === null) return null;
   const end =
     server.lifecycle === "running"
