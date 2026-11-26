@@ -161,9 +161,8 @@ export function boatRequestAnswered(error: unknown): boolean {
     typeof error === "object" &&
     error !== null &&
     "_tag" in error &&
-    error._tag === "BoatError" &&
-    "code" in error &&
-    error.code !== "persistence"
+    (error._tag === "EnvironmentAuthorizationError" ||
+      (error._tag === "BoatError" && "code" in error && error.code !== "persistence"))
   );
 }
 

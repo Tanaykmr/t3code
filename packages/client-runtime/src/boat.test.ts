@@ -1,13 +1,22 @@
 import {
   BoatSnapshot,
   BoatOperationReceipt,
+  BoatRequestId,
+  EnvironmentAuthorizationError,
   EnvironmentId,
   type BoatServer,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { boatCost, boatKeyRouteIsPrivate, boatRows } from "./boat.ts";
+import {
+  boatCost,
+  boatKeyRouteIsPrivate,
+  boatRequestAnswered,
+  boatRows,
+  createBoatCreateJournal,
+  type SavedBoatCreate,
+} from "./boat.ts";
 
 // Wire JSON as a controller sends it; web and mobile both read rows through boatRows.
 const CONTROLLER = EnvironmentId.make("env-controller");
@@ -198,6 +207,41 @@ describe("boatCost", () => {
     const cost = boatCost(running, snapshot.rates, later);
     expect(cost?.source).toBe("estimate");
     expect(cost?.usd).toBeCloseTo(0.015, 6);
+  });
+});
+
+describe("Boat create journal", () => {
+  it("clears a persisted create after the server rejects its authorization", async () => {
+    let saved: ReadonlyArray<SavedBoatCreate> = [];
+    const journal = createBoatCreateJournal(
+      async (change) => (saved = change(saved)),
+      () => "Storage failed",
+      () => nowMs,
+    );
+    const error = new EnvironmentAuthorizationError({
+      message: "Permission denied",
+      requiredScope: "environment:maintain",
+    });
+    await journal.submit(
+      {
+        kind: "create",
+        environmentId: CONTROLLER,
+        input: {
+          requestId: BoatRequestId.make("00000000-0000-4000-8000-000000000004"),
+          displayName: "Scratch",
+          size: "small",
+          ttlSeconds: 3600,
+        },
+      },
+      false,
+      async () => {
+        expect(saved).toHaveLength(1);
+        return { ok: false, error: error.message, answered: boatRequestAnswered(error) };
+      },
+    );
+
+    expect(saved).toEqual([]);
+    expect(journal.getSnapshot()).toEqual({ entries: [], busy: false });
   });
 });
 
