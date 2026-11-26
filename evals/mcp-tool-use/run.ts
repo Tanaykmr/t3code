@@ -56,6 +56,7 @@ import { PULL_REQUEST_LINKING_INSTRUCTIONS } from "@t3tools/provider-core/server
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
+import { BoardToolkit } from "../../apps/server/src/mcp/toolkits/board/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
 import { FeedbackToolkit } from "../../apps/server/src/mcp/toolkits/feedback/tools.ts";
 import {
@@ -89,6 +90,7 @@ import {
 import { proxyConfig } from "../shared/proxy.ts";
 import { changeRequestsCreatedBy } from "../../apps/server/src/orchestration-v2/PullRequestSyncReactor.ts";
 import { type BackgroundWait, makeBackgroundWait } from "./backgroundWait.ts";
+import { BoardExpect, gradeBoard } from "./board-grading.ts";
 import { DeviceExpect, gradeDevice } from "./device-grading.ts";
 import { FileLinksExpect, gradeFileLinks } from "./file-link-grading.ts";
 import {
@@ -271,6 +273,8 @@ const McpToolUseExpect = Schema.Struct({
   secret: Schema.optional(SecretExpect),
   /** File pills in the final answer resolve against the thread cwd to `world.files` entries. */
   fileLinks: Schema.optional(FileLinksExpect),
+  /** One successful board_apply draws these labeled shapes and the arrows between them. */
+  board: Schema.optional(BoardExpect),
 });
 
 /**
@@ -511,6 +515,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   PullRequestsToolkit,
   PreviewToolkit,
   IssuesToolkit,
+  BoardToolkit,
   DeviceToolkit,
   HtmlToolkit,
   MessageToolkit,
@@ -2635,6 +2640,7 @@ export const gradeSample = (
     add("linkedNumbers", exact === valueText(expect.linkedNumbers.toSorted((a, b) => a - b)));
   }
   checks.push(...gradeDevice(expect.device, run));
+  checks.push(...gradeBoard(expect.board, calls));
   checks.push(
     ...gradeFileLinks(
       expect.fileLinks,

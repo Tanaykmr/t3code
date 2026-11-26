@@ -91,6 +91,10 @@ describe("V2 preview upgrade", () => {
         [109, "IssueTrackerAccounts"],
         [110, "Workflows"],
         [111, "SupersededRunAttemptIndex"],
+        [112, "BoatEnvironments"],
+        [113, "BoatEnvironmentName"],
+        [114, "BoatCleanupAccess"],
+        [115, "Boards"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -225,6 +229,10 @@ describe("V2 preview upgrade", () => {
         [109, "IssueTrackerAccounts"],
         [110, "Workflows"],
         [111, "SupersededRunAttemptIndex"],
+        [112, "BoatEnvironments"],
+        [113, "BoatEnvironmentName"],
+        [114, "BoatCleanupAccess"],
+        [115, "Boards"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

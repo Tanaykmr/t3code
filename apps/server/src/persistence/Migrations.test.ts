@@ -8,6 +8,7 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { migrationManifest, runMigrations } from "./Migrations.ts";
+import createBoards from "./Migrations/115_Boards.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
 const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
@@ -29,6 +30,29 @@ const v2TableCount = Effect.gen(function* () {
 });
 
 describe("runMigrations", () => {
+  it.effect("upgrades the preview Boards migration without losing data or skipping Boat", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 111 });
+      yield* createBoards;
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name) VALUES (112, 'Boards')
+      `;
+      yield* sql`
+        INSERT INTO board (board_id, thread_id, scene_format_version, revision,
+          order_revision, view_background_color, created_at, updated_at)
+        VALUES ('board-1', 'thread-1', 1, 2, 1, '#fff', '', '')
+      `;
+
+      assert.deepStrictEqual(yield* runMigrations(), migrationManifest.slice(-4));
+      assert.deepStrictEqual(yield* history, migrationManifest);
+      assert.deepStrictEqual(yield* sql`SELECT board_id, revision FROM board`, [
+        { board_id: "board-1", revision: 2 },
+      ]);
+      assert.deepStrictEqual(yield* sql`SELECT * FROM boat_servers`, []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("refuses to start when another migration took a V2 id", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

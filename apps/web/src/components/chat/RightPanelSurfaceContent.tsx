@@ -1,4 +1,4 @@
-import { useGT } from "gt-react";
+import { T, useGT } from "gt-react";
 import type {
   EditorId,
   EnvironmentId,
@@ -37,6 +37,10 @@ const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
+const ExcalidrawPanel = lazy(async () => {
+  const { ExcalidrawPanel } = await import("../excalidraw/ExcalidrawPanel");
+  return { default: ExcalidrawPanel };
+});
 
 type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
@@ -91,6 +95,18 @@ export function RightPanelSurfaceContent(props: {
   const gt = useGT();
   if (surface === null) return null;
   switch (surface.kind) {
+    case "excalidraw":
+      return (
+        <Suspense
+          fallback={
+            <div role="status" className="p-4 text-sm text-muted-foreground">
+              <T>Loading Excalidraw…</T>
+            </div>
+          }
+        >
+          <ExcalidrawPanel key={scopedThreadKey(threadRef)} threadRef={threadRef} />
+        </Suspense>
+      );
     case "preview":
       return (
         <Suspense fallback={null}>

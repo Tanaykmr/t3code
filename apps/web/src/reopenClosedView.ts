@@ -149,6 +149,9 @@ export async function reopenClosedView(
       }
       break;
     }
+    case "excalidraw":
+      panels.open(ref, "excalidraw");
+      break;
     case "device":
       if (surface.target) {
         panels.openDevice(ref, surface.target);

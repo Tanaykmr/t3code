@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import { McpServer } from "effect/ai";
 
 import { AssetSigner } from "../assets/AssetSigner.ts";
+import { BoardService } from "../board/BoardService.ts";
 import { ServerSecretStore } from "../auth/ServerSecretStore.ts";
 import { ServerConfig } from "../config.ts";
 import { DeviceService } from "../device/DeviceService.ts";
@@ -64,6 +65,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(BoatService)({}),
   Layer.mock(AnalyticsService)({}),
   Layer.mock(AssetSigner)({}),
+  Layer.mock(BoardService)({}),
   Layer.mock(DeviceService)({}),
   Layer.mock(DocumentText)({}),
   Layer.mock(EnvironmentThemeService)({}),
