@@ -1,9 +1,16 @@
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m } from "~/i18n/messages";
 import { pipe } from "effect/Function";
-import { ChevronsLeftRightEllipsisIcon, PlusIcon, TerminalIcon } from "lucide-react";
+import { ChevronsLeftRightEllipsisIcon, PlusIcon, SailboatIcon, TerminalIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { T, useGT, useMessages, Var } from "gt-react";
 import {
   type DesktopDiscoveredSshHost,
@@ -20,7 +27,9 @@ import {
 import * as Option from "effect/Option";
 
 import { cn } from "../../lib/utils";
+import { hasSavedBoatCreate, subscribeBoatCreateJournal } from "../../state/boatCreateJournal";
 import { formatDesktopSshTarget } from "./EnvironmentRow";
+import { BoatCreateForm } from "./BoatEnvironmentsSettings";
 import { Input } from "../ui/input";
 import { CommandShortcut } from "../ui/command";
 import {
@@ -52,7 +61,11 @@ import {
 } from "~/connection/onboarding";
 import { useEnvironmentQuery } from "~/state/query";
 import { desktopSshHostsStateAtom, filterDiscoveredSshHosts } from "~/state/desktopSshHosts";
-import { type EnvironmentPresentation, useRelayEnvironmentDiscovery } from "~/state/environments";
+import {
+  type EnvironmentPresentation,
+  useEnvironments,
+  useRelayEnvironmentDiscovery,
+} from "~/state/environments";
 import type { AddEnvironmentPrefill } from "~/state/linkedThreadView";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { primaryServerKeybindingsAtom } from "~/state/server";
@@ -108,6 +121,15 @@ export function AddEnvironmentDialog({
     reportFailure: false,
   });
   const relayDiscoveryState = useRelayEnvironmentDiscovery();
+  const { environments } = useEnvironments();
+  const savedBoatCreate = useSyncExternalStore(subscribeBoatCreateJournal, hasSavedBoatCreate);
+  const [savedBackendMode, setSavedBackendMode] = useState<"remote" | "ssh" | "boat">("remote");
+  const offersBoat =
+    routeTarget === null &&
+    prefill === null &&
+    (savedBoatCreate ||
+      savedBackendMode === "boat" ||
+      environments.some((environment) => environment.serverConfig?.boatEnvironments === true));
   const savedDesktopSshEnvironmentKeys = (() => {
     const keys = new Set<string>();
     for (const environment of savedEnvironments) {
@@ -125,7 +147,6 @@ export function AddEnvironmentDialog({
     }
     return keys;
   })();
-  const [savedBackendMode, setSavedBackendMode] = useState<"remote" | "ssh">("remote");
   const [savedBackendHost, setSavedBackendHost] = useState(prefill?.host ?? initialHost);
   const [savedBackendPairingCode, setSavedBackendPairingCode] = useState("");
   const [savedBackendSshHost, setSavedBackendSshHost] = useState("");
@@ -378,7 +399,7 @@ export function AddEnvironmentDialog({
     setSavedBackendHost(value);
   };
   const renderConnectionModeCard = (input: {
-    readonly mode: "remote" | "ssh";
+    readonly mode: "remote" | "ssh" | "boat";
     readonly title: string;
     readonly description: string;
     readonly icon?: ReactNode;
@@ -725,9 +746,24 @@ export function AddEnvironmentDialog({
                     icon: <TerminalIcon aria-hidden className="size-4" />,
                   })
                 : null}
+              {offersBoat
+                ? renderConnectionModeCard({
+                    mode: "boat",
+                    // oxlint-disable-next-line t3code/no-untranslated-copy -- Boat is a product name.
+                    title: "Boat",
+                    description: gt("Create a cloud machine on Boat that runs its own T3 Code."),
+                    icon: <SailboatIcon aria-hidden className="size-4" />,
+                  })
+                : null}
             </div>
             <AnimatedHeight>
-              {savedBackendMode === "ssh" ? renderSshFields() : renderRemoteModeBody()}
+              {savedBackendMode === "boat" ? (
+                <BoatCreateForm onCreated={() => handleOpenChange(false)} />
+              ) : savedBackendMode === "ssh" ? (
+                renderSshFields()
+              ) : (
+                renderRemoteModeBody()
+              )}
             </AnimatedHeight>
           </div>
         </DialogPanel>

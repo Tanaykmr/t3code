@@ -132,6 +132,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.botsSubscribeChannel]: AuthOrchestrationReadScope,
   [WS_METHODS.botsSubscribeKnowledge]: AuthOrchestrationReadScope,
   [WS_METHODS.scheduledTasksSubscribe]: AuthOrchestrationReadScope,
+  [WS_METHODS.boatSubscribe]: AuthOrchestrationReadScope,
   [WS_METHODS.workflowsSubscribe]: AuthOrchestrationReadScope,
   [WS_METHODS.workflowsCounts]: AuthOrchestrationReadScope,
   [WS_METHODS.workflowsGet]: AuthOrchestrationReadScope,

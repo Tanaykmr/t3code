@@ -71,6 +71,8 @@ import * as BotsHandlers from "./toolkits/bots/handlers.ts";
 import * as Feedback from "../feedback/FeedbackService.ts";
 import { EnvironmentToolkit } from "./toolkits/environment/tools.ts";
 import * as EnvironmentHandlers from "./toolkits/environment/handlers.ts";
+import { BoatToolkit } from "./toolkits/boat/tools.ts";
+import * as BoatHandlers from "./toolkits/boat/handlers.ts";
 import { ThemeToolkit } from "./toolkits/theme/tools.ts";
 import * as ThemeHandlers from "./toolkits/theme/handlers.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
@@ -1451,6 +1453,8 @@ const layerEnvironmentToolkit = toolkitRegistration(
   EnvironmentHandlers.layer,
 ).pipe(Layer.provide(ThreadCommandExecutor.layer));
 
+export const layerBoatToolkit = toolkitRegistration(BoatToolkit, BoatHandlers.layer);
+
 const layerThemeToolkit = toolkitRegistration(ThemeToolkit, ThemeHandlers.layer).pipe(
   Layer.provide(ThreadCommandExecutor.layer),
 );
@@ -1534,6 +1538,7 @@ export const layerTools = Layer.mergeAll(
   layerProjectRegistration,
   layerFeedbackToolkit,
   layerEnvironmentToolkit,
+  layerBoatToolkit,
   layerThemeToolkit,
   layerPreviewControlsRegistration,
   layerWorktreeToolkitRegistration,

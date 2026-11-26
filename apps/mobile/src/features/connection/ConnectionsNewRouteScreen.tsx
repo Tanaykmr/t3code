@@ -23,6 +23,7 @@ import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { AppText as Text, AppTextInput, type AppTextInputProps } from "../../components/ui/AppText";
+import { BoatCreateSection } from "./BoatMachines";
 import { FrostedCutout } from "../../components/ui/FrostedCutout";
 import { buildPairingUrl, extractPairingUrlFromQrPayload, parsePairingUrl } from "./pairing";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
@@ -287,6 +288,18 @@ function PairingForm({
           </View>
 
           {hasCloudPublicConfig() ? <T3ConnectSection /> : null}
+          {linked ? null : (
+            <BoatCreateSection
+              onCreated={() => {
+                // Progress shows on the Boat machines list in Environments.
+                if (!navigation.canGoBack()) {
+                  navigation.dispatch(StackActions.replace("Home"));
+                } else {
+                  leaveSettingsPage(navigation, workspaceHasColumns(), "SettingsEnvironments");
+                }
+              }}
+            />
+          )}
         </View>
       </ScrollView>
     </SettingsScreen>
