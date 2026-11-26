@@ -1,12 +1,18 @@
 import { createMemoryHistory } from "@tanstack/react-router";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
+  BotId,
+  BotMessageId,
+  BotRoomId,
   EnvironmentId,
   IssueTrackerKind,
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
   ThreadId,
   WS_METHODS,
+  type Bot,
+  type BotChannelSnapshot,
+  type BotRoom,
   type IssueDetail,
   type IssueRef,
   type ThreadIssueLink,
@@ -19,6 +25,7 @@ import {
 import type * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 import { expect, it, vi } from "vite-plus/test";
 import { cdp, page, userEvent } from "vite-plus/test/browser";
 
@@ -26,7 +33,11 @@ import { AppRoot } from "~/AppRoot";
 // The route loads ChatView lazily, and its first transform (React Compiler over ~4k lines)
 // takes 6-11s; importing it here keeps that out of the test's timeout.
 import "~/components/ChatView";
-import { DraftId, useComposerDraftStore } from "~/composerDraftStore";
+import {
+  clearComposerDraftsEnvironment,
+  DraftId,
+  useComposerDraftStore,
+} from "~/composerDraftStore";
 import { selectThreadDiffPanelSelection, useDiffPanelStore } from "~/diffPanelStore";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import stylesheet from "~/index.css?inline";
@@ -46,7 +57,7 @@ import {
   dispatchedCommands,
   emitThreadEvent,
   hasPendingAssetUrl,
-  installFakeEnvironment,
+  installFakeEnvironment as installFakeEnvironmentFixture,
   rejectPendingCommand,
   threadWithHistory,
   threadWithQuestion,
@@ -60,6 +71,13 @@ const PNG = Uint8Array.from(
   ),
   (char) => char.charCodeAt(0),
 );
+
+function installFakeEnvironment(...args: Parameters<typeof installFakeEnvironmentFixture>) {
+  const cleanup = new DisposableStack();
+  cleanup.use(installFakeEnvironmentFixture(...args));
+  cleanup.defer(() => clearComposerDraftsEnvironment(ENVIRONMENT_ID));
+  return cleanup;
+}
 
 /** Accepts every attachment upload without sending its bytes, until disposed. */
 function acceptAttachmentUploads(): Disposable {
@@ -607,6 +625,124 @@ it("opens the thread actions menu for an older settled thread the shell leaves o
   await expect
     .element(page.getByRole("menuitem", { name: "Rename thread" }), { timeout: 5_000 })
     .toBeVisible();
+});
+
+it("opens archived bot chats for restore and room deliveries for inspection", async () => {
+  appAtomRegistry.reset();
+  const style = document.createElement("style");
+  style.textContent = stylesheet;
+  document.head.append(style);
+  using _style = { [Symbol.dispose]: () => style.remove() };
+  await page.viewport(1400, 900);
+  const thread = threadWithHistory("ArchiveBot", 1);
+  const archivedAt = "2026-03-17T19:12:28.000Z";
+  const bot = {
+    id: BotId.make("archive-bot"),
+    name: "ArchiveBot",
+    title: "",
+    avatar: "bot",
+    persona: "",
+    personaRevision: 1,
+    dmThreadId: thread.id,
+    peerThreadId: null,
+    projectId: PROJECT_ID,
+    allowedProjectIds: [],
+    createdAt: archivedAt,
+    updatedAt: archivedAt,
+    archivedAt,
+  } satisfies Bot;
+  const memberBotId = BotId.make("room-bot");
+  const seat = threadWithHistory("room-seat", 1);
+  const room = {
+    id: BotRoomId.make("single-bot-room"),
+    name: "Single",
+    memberBotIds: [memberBotId],
+    defaultBotId: memberBotId,
+    participants: [{ botId: memberBotId, threadId: seat.id }],
+    createdAt: archivedAt,
+    updatedAt: archivedAt,
+    archivedAt: null,
+  } satisfies BotRoom;
+  const start = threadWithHistory("archive-bot-start", 1);
+  using _environment = installFakeEnvironment([start, seat, { ...thread, archivedAt }], {
+    botDirectory: {
+      bots: [bot],
+      rooms: [
+        room,
+        {
+          ...room,
+          id: BotRoomId.make("two-bot-room"),
+          name: "Pair",
+          memberBotIds: [memberBotId, BotId.make("second-bot")],
+        },
+      ],
+    },
+  });
+  const messageId = BotMessageId.make("room-question");
+  using _channel = answerRpc(WS_METHODS.botsSubscribeChannel, () =>
+    Stream.concat(
+      Stream.make({
+        messages: [
+          {
+            id: messageId,
+            seq: 1,
+            channelKey: `room:${room.id}`,
+            sender: { kind: "user" },
+            text: "Check the release",
+            mentions: [],
+            replyToId: null,
+            originThreadId: null,
+            createdAt: archivedAt,
+          },
+        ],
+        deliveries: [
+          {
+            id: "delivery",
+            messageId,
+            targetBotId: memberBotId,
+            status: "settled",
+            threadId: seat.id,
+            reason: null,
+            updatedAt: archivedAt,
+          },
+        ],
+      } satisfies BotChannelSnapshot),
+      Stream.never,
+    ),
+  );
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${start.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+
+  const bots = page.getByRole("region", { name: "Bots", exact: true });
+  await expect.element(bots.getByRole("link", { name: "Pair 2 bots", exact: true })).toBeVisible();
+  const single = bots.getByRole("link", { name: /^Single / });
+  expect.soft(single.element()).toHaveAccessibleName("Single 1 bot");
+  const archived = bots.getByRole("button", { name: "Archived · 1" });
+  await userEvent.click(archived);
+  await userEvent.click(bots.getByRole("link", { name: bot.name }));
+  await expect.element(page.getByText("ArchiveBot: question 0"), { timeout: 5_000 }).toBeVisible();
+  expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${thread.id}`);
+  const composer = page.elementLocator(document.querySelector("[data-chat-composer-overlay]")!);
+  await expect.element(composer.getByTestId("composer-editor")).not.toBeInTheDocument();
+  const restore = composer.getByRole("button", { name: "Restore bot" });
+  await expect.element(restore).toBeVisible();
+  await expect.element(restore).toBeEnabled();
+
+  await single.click();
+  await page.getByRole("link", { name: /Replied/ }).click();
+  await expect.element(page.getByText("Read-only", { exact: true })).toBeVisible();
+  await expect.element(page.getByTestId("composer-editor")).not.toBeInTheDocument();
+  expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${seat.id}`);
 });
 
 it("retains each thread's diff selection when returning from another thread or Settings", async () => {

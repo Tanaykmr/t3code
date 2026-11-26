@@ -1,4 +1,4 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { BoatSnapshot, EnvironmentId } from "@t3tools/contracts";
 import type { RelayClientEnvironmentRecord } from "@t3tools/contracts/relay";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
 
@@ -40,4 +40,16 @@ export function splitEnvironmentSections(input: EnvironmentSectionsInput): Envir
       (environment) => !savedEnvironmentIds.has(environment.environmentId),
     ),
   };
+}
+
+export function withoutBoatGuests(
+  environments: ReadonlyArray<ConnectedEnvironmentSummary>,
+  boatControllers: ReadonlyArray<{ readonly snapshot: BoatSnapshot }>,
+): ReadonlyArray<ConnectedEnvironmentSummary> {
+  const guestIds = new Set(
+    boatControllers.flatMap(({ snapshot }) =>
+      snapshot.servers.map((server) => server.guestEnvironmentId),
+    ),
+  );
+  return environments.filter((environment) => !guestIds.has(environment.environmentId));
 }

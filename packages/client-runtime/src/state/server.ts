@@ -1480,6 +1480,16 @@ export function createServerEnvironmentAtoms<R, E>(
       sources.map(({ environmentId, atom }) => ({ environmentId, result: get(atom) })),
     ).pipe(Atom.withLabel(`environment-data:server:workflows:live-across:${environmentIdsKey}`));
   });
+  const boatConcurrency = {
+    mode: "serial" as const,
+    key: ({
+      environmentId,
+      input,
+    }: {
+      environmentId: EnvironmentId;
+      input: { managedId: string };
+    }) => JSON.stringify([environmentId, input.managedId]),
+  };
   // One change of a run or file at a time per target, so a double click does not act twice.
   const workflowRunConcurrency = {
     mode: "singleFlight" as const,
@@ -1657,6 +1667,22 @@ export function createServerEnvironmentAtoms<R, E>(
         const snapshot = liveWorkflowSnapshot(environmentId);
         return Atom.make((get) => snapshot(get)?.definition?.revision);
       },
+    }),
+    boatLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:boat:live",
+      tag: WS_METHODS.boatSubscribe,
+    }),
+    botsLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:bots:live",
+      tag: WS_METHODS.botsSubscribe,
+    }),
+    botKnowledgeLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:bots:knowledge",
+      tag: WS_METHODS.botsSubscribeKnowledge,
+    }),
+    botChannelLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:bots:channel",
+      tag: WS_METHODS.botsSubscribeChannel,
     }),
     scheduledTasksLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:scheduled-tasks:live",
@@ -1923,6 +1949,79 @@ export function createServerEnvironmentAtoms<R, E>(
     signalProcess: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:signal-process",
       tag: WS_METHODS.serverSignalProcess,
+    }),
+    createBoat: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat:create",
+      tag: WS_METHODS.boatCreate,
+    }),
+    // One lifecycle request at a time per machine.
+    stopBoat: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat:stop",
+      tag: WS_METHODS.boatStop,
+      concurrency: boatConcurrency,
+    }),
+    resumeBoat: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat:resume",
+      tag: WS_METHODS.boatResume,
+      concurrency: boatConcurrency,
+    }),
+    deleteBoat: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat:delete",
+      tag: WS_METHODS.boatDelete,
+      concurrency: boatConcurrency,
+    }),
+    forgetBoat: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat:forget",
+      tag: WS_METHODS.boatForget,
+      concurrency: boatConcurrency,
+    }),
+    setBoatApiKey: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat:set-api-key",
+      tag: WS_METHODS.boatSetApiKey,
+    }),
+    createBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:create",
+      tag: WS_METHODS.botsCreate,
+    }),
+    updateBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:update",
+      tag: WS_METHODS.botsUpdate,
+    }),
+    archiveBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:archive",
+      tag: WS_METHODS.botsArchive,
+    }),
+    restoreBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:restore",
+      tag: WS_METHODS.botsRestore,
+    }),
+    createBotRoom: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot-room:create",
+      tag: WS_METHODS.botsCreateRoom,
+    }),
+    updateBotRoom: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot-room:update",
+      tag: WS_METHODS.botsUpdateRoom,
+    }),
+    sendBotRoomMessage: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot-room:send",
+      tag: WS_METHODS.botsSendRoomMessage,
+    }),
+    saveBotMemory: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:memory-save",
+      tag: WS_METHODS.botsSaveMemory,
+    }),
+    saveBotSkill: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:skill-save",
+      tag: WS_METHODS.botsSaveSkill,
+    }),
+    deleteBotKnowledge: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:knowledge-delete",
+      tag: WS_METHODS.botsDeleteKnowledge,
+    }),
+    handoffToBots: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:handoff",
+      tag: WS_METHODS.botsHandoff,
     }),
     upsertScheduledTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:upsert",

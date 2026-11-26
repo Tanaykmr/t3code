@@ -7,6 +7,7 @@ import {
   MessageId,
   RunId,
   ScheduledTaskUpsertInput,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -17,6 +18,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -29,6 +31,7 @@ const decodeUpsertInput = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
 
 it.effect("rejects a stale form save after deletion while preserving explicit-id creates", () =>
   Effect.gen(function* () {
+    const threadId = ThreadId.make("bot-dm");
     const layerDependencies = Layer.mergeAll(
       NodeCrypto.layer,
       Scheduler.layer,
@@ -38,7 +41,9 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
         namedProjectsRoot: "/projects",
         isScratchProject: () => Effect.succeed(false),
       }),
-      Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+      Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
+      }),
       Layer.mock(SecretRequests.SecretRequests)({}),
     );
     yield* Effect.gen(function* () {
@@ -49,7 +54,7 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
         prompt: "Review the open pull requests.",
         enabled: true,
         schedule: { type: "interval", everyMs: 60_000 },
-        projectId: "project-stale-schedule",
+        projectId: liveThreadShell(threadId).projectId,
         workspaceStrategy: { type: "root" },
         modelSelection: { instanceId: "codex", model: "gpt-5.4" },
         runtimeMode: "full-access",
@@ -58,6 +63,16 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
       const created = yield* service.upsert(input);
       const edit = yield* decodeUpsertInput({ ...input, requireExisting: true, title: "Edited" });
       expect((yield* service.upsert(edit)).task.title).toBe("Edited");
+      // The routine was unbound after the caller checked ownership.
+      const staleBinding = yield* service
+        .upsert({ ...edit, threadId, threadMode: "continue", requiredThreadId: threadId })
+        .pipe(Effect.flip);
+      expect(staleBinding.message).toBe("Schedule task not found.");
+      yield* service.delete({ id: created.task.id, requiredThreadId: threadId }).pipe(Effect.flip);
+      expect((yield* service.list()).tasks).toMatchObject([
+        { id: created.task.id, title: "Edited", threadId: null },
+      ]);
+
       yield* service.delete({ id: created.task.id });
 
       const failure = yield* service.upsert(edit).pipe(Effect.flip);

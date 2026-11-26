@@ -7,6 +7,8 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { render, stubGlobal } from "../../../test/render";
 import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
+import { BoatRequestId, EnvironmentId } from "@t3tools/contracts";
+import { boatCreateJournal } from "../../state/boatCreateJournal";
 
 const mocks = vi.hoisted(() => ({
   connectSshEnvironment: vi.fn<() => Promise<AtomCommandResult<void, Error>>>(async () =>
@@ -34,6 +36,7 @@ vi.mock(import("~/state/query"), async (original) => ({
 }));
 vi.mock(import("~/state/environments"), async (original) => ({
   ...(await original()),
+  useEnvironments: (() => ({ environments: [] })) as never,
   useRelayEnvironmentDiscovery: (() => ({ environments: new Map() })) as never,
 }));
 vi.mock(import("~/state/server"), async (original) => ({
@@ -83,6 +86,40 @@ async function expectDefaultModeAfterReopen() {
 }
 
 describe("AddEnvironmentDialog", () => {
+  it("offers warned discard even after the last Boat controller was removed", async () => {
+    using _bridge = setup();
+    const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
+    using _confirmation = stubGlobal("confirm", confirm);
+    const orphan = {
+      kind: "create" as const,
+      environmentId: EnvironmentId.make("removed-controller"),
+      input: {
+        requestId: BoatRequestId.make("00000000-0000-4000-8000-000000000010"),
+        displayName: "Orphan machine",
+        size: "small" as const,
+        ttlSeconds: 3600,
+      },
+    };
+    await boatCreateJournal.submit(orphan, false, async () => ({
+      ok: false,
+      error: null,
+      answered: false,
+    }));
+    await using _screen = await render(<Owner />);
+    await userEvent.click(page.getByRole("button", { name: "Add environment" }));
+    await userEvent.click(page.getByRole("button", { name: /^Boat/ }));
+    const discard = page.getByRole("button", { name: "Discard saved create" });
+    await userEvent.click(discard);
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringContaining("may already exist and incur charges"),
+    );
+    expect(boatCreateJournal.getSnapshot().entries).toHaveLength(1);
+
+    await userEvent.click(discard);
+    await expect.element(discard).not.toBeInTheDocument();
+    expect(boatCreateJournal.getSnapshot().entries).toEqual([]);
+  });
+
   it("reopens on Remote link after adding an SSH environment", async () => {
     using _bridge = setup();
     await using _screen = await render(<Owner />);

@@ -7,6 +7,8 @@ import {
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as AssetSigner from "../../../assets/AssetSigner.ts";
+
+import * as BotMcpPolicy from "../../BotMcpPolicy.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Upload from "../../../assets/AttachmentUpload.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
@@ -89,7 +91,10 @@ export const layer = McpToolAccess.toLayer(
         (input) => [input.threadId],
         (input) =>
           Effect.gen(function* () {
+            const scope = yield* McpInvocationContext.McpInvocationContext;
+            yield* BotMcpPolicy.assertNonBot(scope, "send");
             const { caller, projection } = yield* readThread(input.threadId, ["messages"]);
+            yield* BotMcpPolicy.assertNoAgentInput(projection.thread.id, "send");
             if (projection.thread.archivedAt !== null)
               return yield* new OrchestratorMcpFailure({
                 code: "invalid_request",

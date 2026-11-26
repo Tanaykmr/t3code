@@ -29,6 +29,7 @@ import {
   assertSameLink,
   callerLinkOrigin,
 } from "./linkOrigin.ts";
+import * as BotMcpPolicy from "./BotMcpPolicy.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import {
@@ -196,6 +197,7 @@ export const writesWithCapability = <P, A, E, R>(handle: (params: P) => Effect.E
     (params: P) =>
       writingCaller.pipe(
         Effect.tap((caller) => assertNotLinked(caller, "start work here that is not its link's")),
+        Effect.tap(({ scope }) => BotMcpPolicy.assertNonBot(scope, "project")),
         Effect.flatMap(() => handle(params)),
       ),
     () => writingCaller,
@@ -209,11 +211,24 @@ export const writesThreads = <P, A, E, R>(
     (params: P) =>
       Effect.gen(function* () {
         const caller = yield* writingCaller;
-        for (const threadId of threads(params)) {
-          if (threadId === undefined || threadId === caller.scope.thread?.threadId) continue;
+        for (const requested of threads(params)) {
+          const threadId = requested ?? caller.scope.thread?.threadId;
+          if (threadId === undefined) continue;
+          if (threadId === caller.scope.thread?.threadId) {
+            yield* BotMcpPolicy.assertThreadRead(
+              caller.threads,
+              caller.scope,
+              threadId,
+              caller.caller,
+            );
+            yield* BotMcpPolicy.assertThreadWrite(caller.scope, threadId);
+            continue;
+          }
           const target = yield* caller.threads
             .getThreadShell(threadId)
             .pipe(Effect.mapError(unavailable));
+          yield* BotMcpPolicy.assertThreadRead(caller.threads, caller.scope, threadId, target);
+          yield* BotMcpPolicy.assertThreadWrite(caller.scope, threadId);
           if (target !== null && target.deletedAt === null) {
             yield* assertTargetWithinLimits(caller.limits, target);
             yield* assertSameLink(caller, target);
@@ -262,7 +277,7 @@ export const startsThreads = <P, A, E, R>(
     readonly interactionMode?: ProviderInteractionMode | undefined;
   },
   handle: (params: P, modes: StartedModes) => Effect.Effect<A, E, R>,
-  linked: "stamped" | { readonly refused: string },
+  linked: "stamped" | { readonly refused: string; readonly routine?: true },
 ) => {
   const started = Effect.fn("McpToolAccess.started")(function* (caller: Caller, params: P) {
     const requested = modes(params);
@@ -280,6 +295,9 @@ export const startsThreads = <P, A, E, R>(
       Effect.gen(function* () {
         const caller = yield* writingCaller;
         if (linked !== "stamped") yield* assertNotLinked(caller, linked.refused);
+        if (linked === "stamped" || linked.routine !== true) {
+          yield* BotMcpPolicy.assertNonBot(caller.scope, "launch");
+        }
         return yield* handle(params, yield* started(caller, params));
       }),
     (params: P) => Effect.flatMap(writingCaller, (caller) => started(caller, params)),
@@ -334,6 +352,8 @@ export const writesEnvironment = <P, A, E, R>(
     check: Effect.Effect<Caller, OrchestratorMcpFailure, CheckServices>,
   ) => Effect.Effect<A, E, R>,
   options?: {
+    /** The handler authorizes the loaded routine binding through BotMcpPolicy. */
+    readonly routine?: true;
     /**
      * Whether a linked caller may make it, as for adding a project: it leaves
      * everything already here as it was.
@@ -349,6 +369,9 @@ export const writesEnvironment = <P, A, E, R>(
     ),
     Effect.tap((caller) =>
       assertFullAccessNamingLink(caller, fullAccessRequired, changesEnvironment),
+    ),
+    Effect.tap(({ scope }) =>
+      options?.routine === true ? Effect.void : BotMcpPolicy.assertNonBot(scope, "environment"),
     ),
   );
   return declare(
@@ -417,6 +440,7 @@ const linksUnavailable = new OrchestratorMcpFailure({
 const THREAD_ONLY = new Set<unknown>([
   McpInvocationContext.hiddenFromOutsideClients,
   McpInvocationContext.hiddenWithoutBackgroundWait,
+  McpInvocationContext.hiddenUnlessBotThread,
 ]);
 
 /**
@@ -460,6 +484,7 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
         const scope = yield* McpInvocationContext.McpInvocationContext;
         const target = PeerForwarding.remoteTarget(scope, environmentId);
         if (target === undefined) return yield* here(params);
+        yield* BotMcpPolicy.assertNonBot(scope, "remote");
         if (scope.linkedEnvironments === false) return yield* PeerForwarding.linkedEnvironmentsOff;
         yield* (remote as RemoteCheck<typeof params>)(params);
         if (Option.isNone(forwarding)) return yield* linksUnavailable;

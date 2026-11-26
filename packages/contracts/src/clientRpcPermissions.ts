@@ -76,6 +76,17 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
 
   // Starts an agent session on this environment that can read its logs and database.
   [WS_METHODS.serverPrepareTriage]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsCreate]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsUpdate]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsArchive]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsRestore]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsCreateRoom]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsUpdateRoom]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsSendRoomMessage]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsHandoff]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsSaveMemory]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsSaveSkill]: AuthOrchestrationOperateScope,
+  [WS_METHODS.botsDeleteKnowledge]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksUpsert]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksSetEnabled]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksDelete]: AuthOrchestrationOperateScope,
@@ -99,6 +110,13 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksPairClient]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksPairLink]: AuthAccessWriteScope,
+  // Boat machines spend the owner's wallet and hold a workspace; deleting one is irreversible.
+  [WS_METHODS.boatCreate]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.boatStop]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.boatResume]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.boatDelete]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.boatForget]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.boatSetApiKey]: AuthEnvironmentMaintainScope,
   // Send stores and sends a report from a thread's turn: the bar of running that thread.
   [WS_METHODS.agentFeedbackAnswerRequest]: AuthOrchestrationOperateScope,
   // A thread's board is edited under the bar of running that thread.

@@ -124,7 +124,7 @@ const THREAD_MODE_LABELS: Record<ScheduledTaskThreadMode, string> = {
   fresh_session: msg("One thread, fresh session"),
 };
 
-function describeSchedule(
+export function describeSchedule(
   task: ScheduledTask,
   timeZone: string | undefined,
   resolve: MessageResolver,

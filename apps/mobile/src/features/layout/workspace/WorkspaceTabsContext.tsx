@@ -1,7 +1,15 @@
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { createContext, use, useState, type Dispatch, type ReactNode } from "react";
+import {
+  createContext,
+  use,
+  useLayoutEffect,
+  useState,
+  type Dispatch,
+  type ReactNode,
+} from "react";
 
+import { botByDmThreadKeyAtom } from "../../../state/bots";
 import { mobilePreferencesAtom, saveMobilePreferences } from "../../../state/preferences";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import {
@@ -15,6 +23,7 @@ import {
   initialWorkspaceTabsState,
   resolveWorkspaceTabOrder,
   workspaceTabsReducer,
+  workspaceTabOf,
   type WorkspaceSearchTab,
   type WorkspaceTab,
   type WorkspaceTabsAction,
@@ -64,6 +73,7 @@ function createWorkspaceTabsModel(selectedTab?: WorkspaceTab) {
   const stored = Atom.make(initialWorkspaceTabsState(selectedTab));
   const scrollOffsets: Record<WorkspaceSearchTab, number> = {
     threads: 0,
+    bots: 0,
     pullRequests: 0,
     issues: 0,
     workflows: 0,
@@ -85,10 +95,23 @@ function createWorkspaceTabsModel(selectedTab?: WorkspaceTab) {
 export function WorkspaceTabsProvider(props: {
   readonly children: ReactNode;
   readonly settingsOpen?: boolean;
-  readonly initialTab?: WorkspaceTab;
+  readonly initialTab?: WorkspaceTab | undefined;
+  readonly route?: Parameters<typeof workspaceTabOf>[0];
 }) {
   const registry = use(RegistryContext);
-  const [model] = useState(() => createWorkspaceTabsModel(props.initialTab));
+  const botDms = useAtomValue(botByDmThreadKeyAtom);
+  const botDetailOpen = workspaceTabOf(props.route, botDms) === "bots";
+  const [model] = useState(() =>
+    createWorkspaceTabsModel(botDetailOpen ? "bots" : props.initialTab),
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- follows deep links and bot directories that load after navigation commits
+  useLayoutEffect(() => {
+    if (!botDetailOpen) return;
+    registry.set(
+      model.stored,
+      workspaceTabsReducer(registry.get(model.resolved), { type: "select", tab: "bots" }),
+    );
+  }, [botDetailOpen, model, registry]);
   const state = useAtomValue(model.resolved);
   const savePreferences = useAtomCommand(saveMobilePreferences);
   const dispatch = (action: WorkspaceTabsAction) => {

@@ -1,4 +1,7 @@
 import { useGT, useMessages } from "gt-react";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { useBotDmThreadKeys } from "../../state/bots";
+import type { Bot } from "@t3tools/contracts";
 import {
   legacyThreadPullRequestKey,
   threadPullRequestKeyOf,
@@ -83,6 +86,7 @@ export function useComposerMenuItems({
   workspaceSkillsScanning,
   questionAttachmentTarget,
   modelMentions,
+  botMentions,
 }: {
   readonly composerTrigger: ComposerTrigger | null;
   readonly environmentId: EnvironmentId;
@@ -106,6 +110,8 @@ export function useComposerMenuItems({
     readonly instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
     readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
   };
+  /** Other bots a bot's DM can hand a message to; empty outside bot DMs. */
+  readonly botMentions: ReadonlyArray<Bot>;
 }) {
   const gt = useGT();
   const messages = useMessages();
@@ -125,7 +131,18 @@ export function useComposerMenuItems({
   const settledPullRequestTextQuery =
     pullRequestTextQuery === debouncedPullRequestTextQuery ? pullRequestTextQuery : null;
   const isPathTrigger = composerTriggerKind === "path";
-  const environmentThreadShells = useVisibleThreadShells(isPathTrigger);
+  const visibleThreadShells = useVisibleThreadShells(isPathTrigger);
+  const botThreadKeys = useBotDmThreadKeys();
+  // Bot DMs and room seats are reached through their bots, not as threads.
+  const environmentThreadShells =
+    botThreadKeys.size === 0
+      ? visibleThreadShells
+      : visibleThreadShells.filter(
+          (shell) =>
+            !botThreadKeys.has(
+              scopedThreadKey({ environmentId: shell.environmentId, threadId: shell.id }),
+            ),
+        );
   // Mounts older settled threads matching the mention, here and on linked machines, which shells
   // may leave out.
   useThreadSearch(
@@ -212,6 +229,18 @@ export function useComposerMenuItems({
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
       return [
+        ...botMentions
+          .filter((bot) =>
+            bot.name.toLowerCase().startsWith(composerTrigger.query.trim().toLowerCase()),
+          )
+          .map((bot) => ({
+            id: `bot:${bot.id}`,
+            type: "bot" as const,
+            botId: bot.id,
+            avatar: bot.avatar,
+            label: bot.name,
+            description: bot.title,
+          })),
         ...matchComposerThreadItems(
           {
             shells: environmentThreadShells,

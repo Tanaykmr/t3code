@@ -23,6 +23,7 @@ import { hasPendingBackgroundSubagent } from "@t3tools/shared/orchestrationV2Pen
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 
+import * as BotMcpPolicy from "./BotMcpPolicy.ts";
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
@@ -67,9 +68,16 @@ export const threadNotFound = Effect.fn("OrchestratorMcpService.threadNotFound")
   message: string,
 ) {
   let suggested: ThreadId | null = null;
-  for (const candidate of candidateThreadIds(threadId, scope.environmentId)) {
+  const candidates = candidateThreadIds(threadId, scope.environmentId);
+  const isForeign =
+    candidates.length === 0 ? undefined : yield* BotMcpPolicy.foreignBotThreads(threads, scope);
+  for (const candidate of candidates) {
     const shell = yield* threads.getThreadShell(candidate).pipe(Effect.orElseSucceed(() => null));
-    if (shell !== null && shell.deletedAt === null) {
+    if (
+      shell !== null &&
+      shell.deletedAt === null &&
+      !(isForeign !== undefined && (yield* isForeign(candidate, shell)))
+    ) {
       suggested = candidate;
       break;
     }
@@ -249,6 +257,7 @@ export const readThread = Effect.fn("mcp.readThread")(function* <
 >(threadId?: ThreadId, fields: ReadonlyArray<K> = [], filter?: ProjectionRecordFilter) {
   const context = yield* readCaller();
   const targetId = yield* resolveThreadId(context, threadId);
+  yield* BotMcpPolicy.assertThreadRead(context.threads, context.scope, targetId);
   const shell = yield* context.threads.getThreadShell(targetId).pipe(Effect.mapError(unavailable));
   if (shell === null || shell.deletedAt !== null) {
     return yield* threadNotFound(

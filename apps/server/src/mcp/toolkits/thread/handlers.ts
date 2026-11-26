@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 import { topOfPinnedRunOrderKey } from "@t3tools/shared/pinOrderKey";
 
+import * as BotMcpPolicy from "../../BotMcpPolicy.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
@@ -108,47 +109,66 @@ const writesThread = <P extends { readonly threadId?: ThreadId | undefined }, A,
 ) => McpToolAccess.writesThreads((params: P) => [params.threadId], handle);
 
 export const layer = McpToolAccess.toLayer(ThreadToolkit, {
-  run_scheduled_task_now: McpToolAccess.writesEnvironment((input) =>
-    Effect.gen(function* () {
-      const scheduler = yield* ScheduledTasks.ScheduledTaskService;
-      const { tasks } = yield* scheduler.list().pipe(Effect.mapError(unavailable));
-      if (!tasks.some((task) => task.id === input.taskId))
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "The scheduled task was not found.",
-        });
-      const { task, threadId } = yield* scheduler
-        .runNow({ id: input.taskId })
-        .pipe(
-          Effect.mapError(
-            (error) =>
-              new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
-          ),
-        );
-      const scope = yield* McpInvocationContext.McpInvocationContext;
-      return {
-        taskId: task.id,
-        threadId,
-        ...(threadId === null
-          ? {}
-          : {
-              link: McpInvocationContext.threadLinkFor(scope, threadId),
-            }),
-        lastRunStatus: task.lastRunStatus,
-        lastRunError: task.lastRunError,
-        runCount: task.runCount,
-        nextRunAt: task.nextRunAt,
-      };
-    }),
+  run_scheduled_task_now: McpToolAccess.writesEnvironment(
+    (input, check) =>
+      Effect.gen(function* () {
+        const scheduler = yield* ScheduledTasks.ScheduledTaskService;
+        const { tasks } = yield* scheduler.list().pipe(Effect.mapError(unavailable));
+        const scheduled = tasks.find((task) => task.id === input.taskId);
+        if (scheduled === undefined)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "The scheduled task was not found.",
+          });
+        const { scope, caller } = yield* check;
+        const binding = yield* BotMcpPolicy.authorizeRoutine(scope, caller?.projectId, scheduled);
+        const { task, threadId } = yield* scheduler
+          .runNow({ id: input.taskId, ...binding })
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+            ),
+          );
+        return {
+          taskId: task.id,
+          threadId,
+          ...(threadId === null
+            ? {}
+            : {
+                link: McpInvocationContext.threadLinkFor(scope, threadId),
+              }),
+          lastRunStatus: task.lastRunStatus,
+          lastRunError: task.lastRunError,
+          runCount: task.runCount,
+          nextRunAt: task.nextRunAt,
+        };
+      }),
+    { routine: true },
   ),
   t3_thread_search: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
-      const { caller } = yield* readCaller();
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const { caller, threads, scope } = yield* readCaller();
       const threadSearch = yield* ThreadSearch.ThreadSearch;
-      const { matches } = yield* threadSearch
+      const { matches: found } = yield* threadSearch
         .searchThreads({ ...input, projectId: input.projectId ?? caller?.projectId })
         .pipe(Effect.mapError(unavailable));
+      const isForeign = yield* BotMcpPolicy.foreignBotThreads(threads, scope);
+      const matches =
+        scope.bot === true
+          ? yield* Effect.filter(found, (match) =>
+              Effect.gen(function* () {
+                const shell = yield* threads
+                  .getThreadShell(match.threadId)
+                  .pipe(Effect.orElseSucceed(() => null));
+                return (
+                  shell !== null &&
+                  shell.deletedAt === null &&
+                  !(yield* isForeign(match.threadId, shell))
+                );
+              }),
+            )
+          : found;
       return {
         currentThreadId: scope.thread?.threadId ?? null,
         matches: matches.map((match) => ({
@@ -162,16 +182,29 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     (input) => input.action === "status",
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
-        const { projection } = yield* readThread(input.threadId, ["contextTransfers"]);
+        const { projection, scope, threads } = yield* readThread(input.threadId, [
+          "contextTransfers",
+        ]);
+        const isForeign = yield* BotMcpPolicy.foreignBotThreads(threads, scope);
+        const transfers =
+          scope.bot === true
+            ? yield* Effect.filter(
+                projection.contextTransfers,
+                ({ sourceThreadId, targetThreadId }) =>
+                  Effect.gen(function* () {
+                    return (
+                      !(yield* isForeign(sourceThreadId)) && !(yield* isForeign(targetThreadId))
+                    );
+                  }),
+              )
+            : projection.contextTransfers;
         return {
-          transfers: projection.contextTransfers.map(
-            ({ id, sourceThreadId, targetThreadId, status }) => ({
-              id,
-              sourceThreadId,
-              targetThreadId,
-              status,
-            }),
-          ),
+          transfers: transfers.map(({ id, sourceThreadId, targetThreadId, status }) => ({
+            id,
+            sourceThreadId,
+            targetThreadId,
+            status,
+          })),
         };
       }),
     ),
@@ -179,8 +212,9 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       (input) => [input.threadId, input.targetThreadId],
       (input) =>
         Effect.gen(function* () {
+          const { threads, projection, scope } = yield* readThread(input.threadId);
+          yield* BotMcpPolicy.assertNonBot(scope, "transfer");
           const sourcePoint = input.sourcePoint ?? { type: "latest_stable" as const };
-          const { threads, projection } = yield* readThread(input.threadId);
           const commandId = yield* newCommandId();
           if (input.action === "merge_back") {
             const targetThreadId = yield* required(input.targetThreadId, "targetThreadId");
@@ -264,6 +298,8 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     ),
     writesThread((input) =>
       Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        yield* BotMcpPolicy.assertNonBot(scope, "respond");
         const requestId = yield* required(input.requestId, "requestId");
         const answers = yield* required(input.answers, "answers");
         const { threads, projection } = yield* readQuestion({
@@ -352,6 +388,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           case "edit": {
             const text = yield* required(input.text, "text");
             const { threads, projection } = yield* readThread(input.threadId);
+            yield* BotMcpPolicy.assertNoAgentInput(projection.thread.id, "edit");
             // An agent must not turn a person's queued message into a provider sign-out.
             const command = yield* ThreadMessageIntake.withQueuedAttachmentsOnSignOutText({
               type: "queued-run.edit",
@@ -382,6 +419,8 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
             }));
           }
           case "promote_to_steer": {
+            const scope = yield* McpInvocationContext.McpInvocationContext;
+            yield* BotMcpPolicy.assertNonBot(scope, "steer");
             const targetRunId = yield* required(input.targetRunId, "targetRunId");
             return yield* dispatch(input.threadId, (common) => ({
               ...common,

@@ -119,7 +119,10 @@ import Migration0108 from "./Migrations/108_AgentFeedback.ts";
 import Migration0109 from "./Migrations/109_IssueTrackerAccounts.ts";
 import Migration0110 from "./Migrations/110_Workflows.ts";
 import Migration0111 from "./Migrations/111_SupersededRunAttemptIndex.ts";
-import Migration0112 from "./Migrations/112_Boards.ts";
+import Migration0112 from "./Migrations/112_BoatEnvironments.ts";
+import Migration0113 from "./Migrations/113_BoatEnvironmentName.ts";
+import Migration0114 from "./Migrations/114_BoatCleanupAccess.ts";
+import Migration0115 from "./Migrations/115_Boards.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -234,7 +237,10 @@ const migrationEntries = [
   [109, "IssueTrackerAccounts", Migration0109],
   [110, "Workflows", Migration0110],
   [111, "SupersededRunAttemptIndex", Migration0111],
-  [112, "Boards", Migration0112],
+  [112, "BoatEnvironments", Migration0112],
+  [113, "BoatEnvironmentName", Migration0113],
+  [114, "BoatCleanupAccess", Migration0114],
+  [115, "Boards", Migration0115],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -249,6 +255,7 @@ const makeMigrationLoader = (throughId?: number) =>
   );
 
 const FIRST_V2_MIGRATION_ID = 55;
+const PREVIEW_BOARDS_MIGRATION_ID = 112;
 
 export function skippedV2Migrations(
   recorded: ReadonlyArray<{ readonly id: number; readonly name: string }>,
@@ -264,6 +271,8 @@ export function skippedV2Migrations(
     )
       return [];
     const recordedName = recordedNames.get(id);
+    if (id === PREVIEW_BOARDS_MIGRATION_ID && latestRecordedId === id && recordedName === "Boards")
+      return [];
     return recordedName === name ? [] : [`${id}_${name} (recorded: ${recordedName ?? "nothing"})`];
   });
 }
@@ -335,6 +344,18 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   const ledger = yield* sql`
     SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
   `;
+  if (
+    ledger.length > 0 &&
+    hasPending &&
+    (toMigrationInclusive ?? latestMigrationId) >= PREVIEW_BOARDS_MIGRATION_ID
+  ) {
+    // The feature branch used Boat's id. Replay the ledger from there, retaining the board tables.
+    yield* sql`
+      DELETE FROM effect_sql_migrations
+      WHERE migration_id = ${PREVIEW_BOARDS_MIGRATION_ID} AND name = 'Boards'
+      AND migration_id = (SELECT MAX(migration_id) FROM effect_sql_migrations)
+    `;
+  }
   const [latest] =
     ledger.length === 0
       ? []

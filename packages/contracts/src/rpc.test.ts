@@ -7,6 +7,20 @@ import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
 import { WS_METHODS, WsRpcGroup } from "./rpc.ts";
 
 describe("WebSocket RPC contracts", () => {
+  it("requires explicit confirmation to delete a Boat machine", () => {
+    const deleteBoat = WsRpcGroup.requests.get(WS_METHODS.boatDelete);
+    if (deleteBoat === undefined) throw new Error("boat.delete is not registered");
+    const decode = Schema.decodeUnknownExit(deleteBoat.payloadSchema);
+    const request = {
+      requestId: "eac41e36-97f0-41aa-92b8-174d7d316109",
+      managedId: "96a78899-ec6e-4dba-a404-78ece07d85bf",
+    };
+
+    expect(Exit.isFailure(decode(request))).toBe(true);
+    expect(Exit.isFailure(decode({ ...request, confirmed: false }))).toBe(true);
+    expect(Exit.isSuccess(decode({ ...request, confirmed: true }))).toBe(true);
+  });
+
   it("only accepts asset and upload URLs on their own server routes", () => {
     const decodeAsset = Schema.decodeUnknownExit(AssetCreateUrlResult);
     const decodeUpload = Schema.decodeUnknownExit(AttachmentCreateUploadUrlResult);

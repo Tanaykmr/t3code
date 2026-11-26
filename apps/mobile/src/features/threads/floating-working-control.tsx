@@ -86,7 +86,7 @@ export function FloatingWorkingControl(props: {
   const actions: ReadonlyArray<FloatingStatusAction> =
     props.status?.kind === "goal"
       ? props.status.actions
-      : props.status?.kind === "stop" && props.status.action !== null
+      : (props.status?.kind === "stop" || props.status?.kind === "working") && props.status.action
         ? [props.status.action]
         : [];
   const [agentsWidth, setAgentsWidth] = useState(0);
@@ -236,9 +236,13 @@ export function FloatingWorkingControl(props: {
                 onPress={action.onPress}
                 className={`h-11 items-center justify-center px-3 active:opacity-70 ${action.disabled ? "opacity-50" : ""}`}
               >
-                <Text className="font-t3-medium text-xs text-foreground" numberOfLines={1}>
-                  {action.label}
-                </Text>
+                {action.icon ? (
+                  <SymbolView name={action.icon} size={14} tintColorClassName="accent-icon-muted" />
+                ) : (
+                  <Text className="font-t3-medium text-xs text-foreground" numberOfLines={1}>
+                    {action.label}
+                  </Text>
+                )}
               </Pressable>
             </Fragment>
           ))}
@@ -484,6 +488,20 @@ function FloatingStatusLabel(props: {
           type="monochrome"
         />
         <Text className="shrink font-t3-medium text-xs text-foreground" numberOfLines={1}>
+          {props.status.label}
+        </Text>
+      </StatusLabelRow>
+    );
+  }
+  if (props.status.kind === "working" || props.status.kind === "retrying") {
+    return (
+      <StatusLabelRow
+        accessibilityLabel={props.status.label}
+        className="gap-2"
+        onLayout={props.onLayout}
+      >
+        <AppActivityIndicator size="small" colorClassName="accent-icon-muted" />
+        <Text className="shrink text-xs text-foreground" numberOfLines={1}>
           {props.status.label}
         </Text>
       </StatusLabelRow>

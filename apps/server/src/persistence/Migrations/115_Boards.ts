@@ -6,7 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
-    CREATE TABLE board (
+    CREATE TABLE IF NOT EXISTS board (
       board_id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL UNIQUE,
       scene_format_version INTEGER NOT NULL,
@@ -18,7 +18,7 @@ export default Effect.gen(function* () {
     )
   `;
   yield* sql`
-    CREATE TABLE board_element (
+    CREATE TABLE IF NOT EXISTS board_element (
       board_id TEXT NOT NULL,
       element_id TEXT NOT NULL,
       version INTEGER NOT NULL,
@@ -30,7 +30,7 @@ export default Effect.gen(function* () {
     )
   `;
   yield* sql`
-    CREATE TABLE board_file (
+    CREATE TABLE IF NOT EXISTS board_file (
       board_id TEXT NOT NULL,
       file_id TEXT NOT NULL,
       mime_type TEXT NOT NULL,
@@ -42,7 +42,7 @@ export default Effect.gen(function* () {
     )
   `;
   yield* sql`
-    CREATE TABLE board_mutation (
+    CREATE TABLE IF NOT EXISTS board_mutation (
       board_id TEXT NOT NULL,
       mutation_id TEXT NOT NULL,
       actor TEXT NOT NULL,

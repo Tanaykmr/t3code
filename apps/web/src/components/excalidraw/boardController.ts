@@ -46,6 +46,14 @@ interface BoardTarget {
 const RETRY_MS = 2_000;
 const COALESCE_MS = 150;
 
+const boardFailureTag = (failure: unknown) =>
+  failure !== null && typeof failure === "object" && "_tag" in failure ? failure._tag : null;
+
+const isPermanentBoardFailure = (tag: unknown, cause: Cause.Cause<unknown>) =>
+  (typeof tag === "string" && tag.startsWith("Board") && tag !== "BoardStorageError") ||
+  tag === "EnvironmentAuthorizationError" ||
+  Cause.hasDies(cause);
+
 const asEditorElements = (elements: ReadonlyArray<BoardElement>) =>
   restoreElements(elements as unknown as ExcalidrawElement[], null, {
     refreshDimensions: false,
@@ -103,6 +111,7 @@ export class BoardController {
   private readonly fetching = new Set<string>();
   private flushTimer: number | null = null;
   private retryTimer: number | null = null;
+  private fileRetryTimer: number | null = null;
   /** True while a batch is on the wire, so a stream update cannot send it a second time. */
   private sending = false;
   private saveState: SaveState = "saved";
@@ -181,6 +190,8 @@ export class BoardController {
   detach() {
     this.api = null;
     this.held = new Set();
+    if (this.fileRetryTimer !== null) window.clearTimeout(this.fileRetryTimer);
+    this.fileRetryTimer = null;
     if (this.flushTimer === null) return;
     window.clearTimeout(this.flushTimer);
     this.flushTimer = null;
@@ -297,7 +308,7 @@ export class BoardController {
 
   private loadFiles() {
     const { api, view } = this;
-    if (api === null || view === null) return;
+    if (api === null || view === null || this.fileRetryTimer !== null) return;
     const loaded = api.getFiles();
     const missing = view.files
       .filter((ref) => !loaded[ref.id] && !this.fetching.has(ref.id))
@@ -319,7 +330,20 @@ export class BoardController {
       { reportFailure: false },
     ).then((files) => {
       for (const ref of missing) this.fetching.delete(ref.id);
-      if (files._tag !== "Success" || this.api === null) return;
+      if (this.api === null) return;
+      if (files._tag !== "Success") {
+        if (
+          isPermanentBoardFailure(boardFailureTag(squashAtomCommandFailure(files)), files.cause)
+        ) {
+          return;
+        }
+        this.fileRetryTimer ??= window.setTimeout(() => {
+          this.fileRetryTimer = null;
+          this.loadFiles();
+        }, RETRY_MS);
+        return;
+      }
+      if (files.value.length === 0) return;
       this.api.addFiles(
         files.value.map((file): BinaryFileData => ({
           id: file.id as BinaryFileData["id"],
@@ -383,14 +407,8 @@ export class BoardController {
         this.send();
         return;
       }
-      const failure = squashAtomCommandFailure(outcome);
-      const tag =
-        failure !== null && typeof failure === "object" && "_tag" in failure ? failure._tag : null;
-      const permanent =
-        (typeof tag === "string" && tag.startsWith("Board")) ||
-        tag === "EnvironmentAuthorizationError" ||
-        Cause.hasDies(outcome.cause);
-      if (permanent) {
+      const tag = boardFailureTag(squashAtomCommandFailure(outcome));
+      if (isPermanentBoardFailure(tag, outcome.cause)) {
         const contributed = rejectPending(session);
         this.showCanonical();
         const kind = tag === "BoardConflictError" ? "conflict" : "rejected";

@@ -59,12 +59,13 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { Headers, HttpRouter, HttpServer } from "effect/http";
+import { Headers, HttpRouter, HttpServer, HttpServerRequest } from "effect/http";
 import * as Context from "effect/Context";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as ProviderInstallationGate from "./provider/ProviderInstallationGate.ts";
 import * as Ws from "./ws.ts";
+import { requestUrl } from "./requestUrl.ts";
 import { RpcGroup, RpcMessage, RpcServer } from "effect/rpc";
 import * as RpcTest from "effect/rpc/RpcTest";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -125,6 +126,7 @@ import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewG
 import * as IssueService from "./issue/IssueService.ts";
 import * as ThreadIssueService from "./orchestration-v2/ThreadIssueService.ts";
 import * as IssueTrackerConnections from "./issue/IssueTrackerConnections.ts";
+import * as Boat from "./boat/BoatService.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
@@ -133,6 +135,9 @@ import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolve
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as BotService from "./bots/BotService.ts";
+import * as BotChannelService from "./bots/BotChannelService.ts";
+import * as BotKnowledgeService from "./bots/BotKnowledgeService.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -883,12 +888,16 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(IssueService.IssueService)({}),
   Layer.mock(ThreadIssueService.ThreadIssueService)({}),
   Layer.mock(IssueTrackerConnections.IssueTrackerConnections)({}),
+  Layer.mock(Boat.BoatService)({}),
   Layer.mock(PullRequestSyncReactor.PullRequestSyncReactor)({}),
   Layer.mock(RelayClient.RelayClient)({}),
   Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({}),
   Layer.mock(ResourceTelemetry.ResourceTelemetry)({}),
   Layer.mock(ReviewService.ReviewService)({}),
   Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
+  Layer.mock(BotService.BotService)({}),
+  Layer.mock(BotChannelService.BotChannelService)({}),
+  Layer.mock(BotKnowledgeService.BotKnowledgeService)({}),
   Workflows.layerDisabled,
   Layer.mock(WorkflowRuntime.WorkflowDefinitions)({}),
   Layer.mock(SecretRequests.SecretRequests)({}),
@@ -937,6 +946,26 @@ const layerConfigSources = Layer.mergeAll(
   ),
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
+
+it.each([
+  { name: "plaintext LAN", peer: "192.168.1.20", scheme: "http", expected: false },
+  { name: "untrusted forwarded HTTPS", peer: "192.168.1.20", scheme: "https", expected: false },
+  { name: "loopback HTTPS proxy", peer: "::ffff:127.0.0.1", scheme: "https", expected: true },
+  { name: "loopback HTTP proxy", peer: "::1", scheme: "http", expected: false },
+  { name: "direct loopback", peer: "127.0.0.1", expected: true },
+  { name: "direct TLS", peer: "192.168.1.20", encrypted: true, expected: true },
+])("classifies $name for Boat key entry", ({ peer, scheme, encrypted, expected }) => {
+  const source = Object.assign(
+    new Request("http://example.test/ws", {
+      headers: scheme ? { "x-forwarded-proto": scheme, "x-forwarded-for": "192.0.2.1" } : {},
+    }),
+    { socket: { remoteAddress: peer, encrypted } },
+  );
+  const request = HttpServerRequest.fromWeb(source);
+  const url = requestUrl(request);
+  if (url._tag === "None") throw new Error("Expected a valid request URL");
+  assert.equal(Ws.readSettingsClient(url.value, request).privateTransport, expected);
+});
 
 it.live.each([
   { subject: "desktop-bootstrap", extensions: "", framed: false },

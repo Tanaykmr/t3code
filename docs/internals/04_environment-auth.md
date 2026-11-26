@@ -45,6 +45,13 @@ model.
   [peer links](./05_remote.md#peer-links)). Every MCP tool must statically declare its access level in
   [`McpToolAccess.ts`](../../apps/server/src/mcp/McpToolAccess.ts), and thread-only tools must still
   refuse outside callers in handlers—hiding from tool listings is only discovery.
+- **Bot MCP thread access.** A bot credential can read its calling thread and ordinary threads
+  within its other grants. Other bot DMs and seats are private, including forks that can carry
+  their content. [BotMcpPolicy](../../apps/server/src/mcp/BotMcpPolicy.ts) keeps generic thread writes in
+  the calling DM during operator turns and coding work in configured local work targets through delegation. Routine
+  mutations and manual runs require a direct operator turn in the owning DM. This prevents a
+  routine or another bot from repeatedly starting fresh turns. Bot chats accept agent messages
+  through bot deliveries, which enforce membership and hop limits.
 - **Peer-link client pairing.** Only a full-access peer link may mint a one-time client pairing on
   the linked environment (since full-access agents can already run `t3 auth pairing create`). The
   linked side enforces this itself, and the operation stays a human-triggered RPC/HTTP route rather

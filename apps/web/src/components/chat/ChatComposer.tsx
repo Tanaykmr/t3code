@@ -1,4 +1,7 @@
 import { copySnapshot } from "./copySnapshot";
+import type { Bot } from "@t3tools/contracts";
+import { useBotForThread, useEnvironmentBots } from "../../state/bots";
+import { addBotMentionChip } from "../bots/botMentionChips";
 import { VoiceInputSetup } from "./VoiceInputSetup";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
@@ -519,6 +522,8 @@ export interface ChatComposerProps {
 const NO_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const NO_PROVIDER_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
 
+const EMPTY_BOT_MENTIONS: ReadonlyArray<Bot> = [];
+
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
   const gt = useGT();
   const m = useMessages();
@@ -623,6 +628,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   });
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const composerDraftTargetKey = composerTargetKey(composerDraftTarget);
+  const dmBot = useBotForThread(
+    activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null,
+  );
+  const environmentBots = useEnvironmentBots();
+  const botMentionCandidates = environmentBots
+    .filter(
+      (entry) => entry.environmentId === dmBot?.environmentId && entry.bot.archivedAt === null,
+    )
+    .map((entry) => entry.bot);
   const {
     heldRequestIds,
     onDraftChange: onTypingGuardDraftChange,
@@ -1234,6 +1248,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     workspaceSkillsScanning,
     questionAttachmentTarget,
     modelMentions: { instanceEntries: providerInstanceEntries, modelOptionsByInstance },
+    botMentions: dmBot === null ? EMPTY_BOT_MENTIONS : botMentionCandidates,
   });
 
   const composerMenuOpen = Boolean(composerTrigger);
@@ -2200,6 +2215,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         addComposerDraftThreadContexts(attachmentDraftTarget, [record], {
           appendReference: false,
         });
+        setComposerHighlightedItemId(null);
+      }
+      return;
+    }
+    if (item.type === "bot") {
+      if (trigger.kind !== "path") return;
+      const replacement = `@${item.label} `;
+      const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+        snapshot.value,
+        trigger.rangeEnd,
+        replacement,
+      );
+      const applied = applyPromptReplacement(trigger.rangeStart, replacementRangeEnd, replacement, {
+        expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd),
+      });
+      if (applied) {
+        addBotMentionChip(composerDraftTargetKey, { botId: item.botId, label: item.label });
         setComposerHighlightedItemId(null);
       }
       return;

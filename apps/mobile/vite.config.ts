@@ -4,6 +4,8 @@ import { defineConfig, normalizePath } from "vite-plus";
 import "vite-plus/test/config";
 
 const reactTests = [
+  "src/features/bots/BotPermissions.test.tsx",
+  "src/features/bots/BotRestoreFooter.test.tsx",
   "src/features/threads/LinkedThreadSheet.test.tsx",
   "src/features/threads/ThreadGuestShareSheet.test.tsx",
   "src/features/threads/useSubmitAfterNativeImages.test.tsx",
@@ -58,6 +60,7 @@ const reactTests = [
   "src/features/layout/workspace/useSearchScrollRestoration.test.tsx",
   "src/features/connection/useRetryEnvironment.test.tsx",
   "src/features/connection/ConnectionsNewRouteScreen.test.tsx",
+  "src/features/connection/BoatMachines.test.tsx",
   "src/features/connection/LinkedEnvironmentsSection.test.tsx",
   "src/features/devices/device-stream.browser.test.ts",
   "src/features/keyboard/keyboardControllerState.test.tsx",

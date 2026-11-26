@@ -53,6 +53,7 @@ import {
 } from "../telemetry/ProviderDimensions.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import * as BotChannelService from "../bots/BotChannelService.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolExposure from "./McpToolExposure.ts";
 import * as McpWebhookTransport from "./McpWebhookTransport.ts";
@@ -65,9 +66,13 @@ import { PreviewControlsToolkit } from "./toolkits/previewControls/tools.ts";
 import * as PreviewControlsHandlers from "./toolkits/previewControls/handlers.ts";
 import * as FeedbackHandlers from "./toolkits/feedback/handlers.ts";
 import { FeedbackToolkit } from "./toolkits/feedback/tools.ts";
+import { BotsToolkit } from "./toolkits/bots/tools.ts";
+import * as BotsHandlers from "./toolkits/bots/handlers.ts";
 import * as Feedback from "../feedback/FeedbackService.ts";
 import { EnvironmentToolkit } from "./toolkits/environment/tools.ts";
 import * as EnvironmentHandlers from "./toolkits/environment/handlers.ts";
+import { BoatToolkit } from "./toolkits/boat/tools.ts";
+import * as BoatHandlers from "./toolkits/boat/handlers.ts";
 import { ThemeToolkit } from "./toolkits/theme/tools.ts";
 import * as ThemeHandlers from "./toolkits/theme/handlers.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
@@ -306,6 +311,7 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
   );
   const pullRequests = yield* Effect.serviceOption(PullRequestService.PullRequestService);
   const projections = yield* Effect.serviceOption(ProjectionStore.ProjectionStoreV2);
+  const botChannels = yield* Effect.serviceOption(BotChannelService.BotChannelService);
   const sessions = yield* Effect.serviceOption(SessionStore.SessionStore);
   // Auth runs once per request, so a response that streams on ends when the outside client's
   // session is revoked or expires. `events/stream` ends itself first with
@@ -383,6 +389,10 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
       limited.thread === undefined
         ? undefined
         : yield* Cache.get(forgeOfThread, limited.thread.threadId);
+    const bot =
+      limited.thread === undefined || Option.isNone(botChannels)
+        ? false
+        : yield* botChannels.value.isBotThread(limited.thread.threadId);
     return {
       ...limited,
       linkedEnvironments,
@@ -390,6 +400,7 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
       workflows,
       origin,
       ...(forge === undefined ? {} : { forge }),
+      ...(bot ? { bot } : {}),
     };
   });
   // Untraced: a span here would wrap the tool call; the HTTP server span already covers it.
@@ -397,7 +408,14 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     // The transport allows no browser Origin; refuse it before credentials, as the MCP spec requires.
     if (request.headers.origin !== undefined) return HttpServerResponse.empty({ status: 403 });
-    const admitted = yield* authenticateRequest(request);
+    const admitted = yield* authenticateRequest(request).pipe(
+      Effect.catchTags({
+        BotError: (cause) =>
+          Effect.logError("Could not verify MCP bot ownership.", { cause }).pipe(
+            Effect.as(HttpServerResponse.empty({ status: 503 })),
+          ),
+      }),
+    );
     if (HttpServerResponse.isHttpServerResponse(admitted)) return admitted;
     if (yield* isUndefinedNotification(request)) return HttpServerResponse.empty({ status: 202 });
     const linkExpiresAt = admitted.client?.linkExpiresAt;
@@ -1420,6 +1438,8 @@ const layerWorkflowToolkit = toolkitRegistration(WorkflowToolkit, WorkflowHandle
 
 export const layerMessageToolkit = toolkitRegistration(MessageToolkit, MessageHandlers.layer);
 
+const layerBotsToolkit = toolkitRegistration(BotsToolkit, BotsHandlers.layer);
+
 const layerWorktreeToolkitRegistration = toolkitRegistration(
   WorktreeToolkit,
   WorktreeHandlers.layer,
@@ -1434,6 +1454,8 @@ const layerEnvironmentToolkit = toolkitRegistration(
   EnvironmentToolkit,
   EnvironmentHandlers.layer,
 ).pipe(Layer.provide(ThreadCommandExecutor.layer));
+
+export const layerBoatToolkit = toolkitRegistration(BoatToolkit, BoatHandlers.layer);
 
 const layerThemeToolkit = toolkitRegistration(ThemeToolkit, ThemeHandlers.layer).pipe(
   Layer.provide(ThreadCommandExecutor.layer),
@@ -1520,6 +1542,7 @@ export const layerTools = Layer.mergeAll(
   layerProjectRegistration,
   layerFeedbackToolkit,
   layerEnvironmentToolkit,
+  layerBoatToolkit,
   layerThemeToolkit,
   layerPreviewControlsRegistration,
   layerWorktreeToolkitRegistration,
@@ -1529,6 +1552,7 @@ export const layerTools = Layer.mergeAll(
   layerDeviceToolkit,
   layerHtmlToolkit,
   layerMessageToolkit,
+  layerBotsToolkit,
 );
 
 const layerToolExposure = Layer.effect(

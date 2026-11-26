@@ -11,6 +11,7 @@ import { View } from "react-native";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { PullRequestsScreen } from "../../pull-requests/PullRequestsScreen";
 import { ListSearchToolbar } from "./ListSearchToolbar.android";
+import { AndroidBotsPane } from "./AndroidBotsPane.android";
 import { IssuesScreen } from "../../issues/IssuesScreen";
 import { selectedIssueKey } from "../../issues/issueParams";
 import { selectedPullRequestKey } from "../../pull-requests/pullRequestSelection";
@@ -51,6 +52,10 @@ export function AndroidWorkspaceSidebar() {
             <AndroidHomeFabLayout sidebar disabled={coveredByPage} onStartNewTask={startNewTask}>
               <WorkspaceThreadSidebar />
             </AndroidHomeFabLayout>
+          ) : tab === "bots" ? (
+            <WorkspaceTabsContext value={context}>
+              <AndroidBotsPane />
+            </WorkspaceTabsContext>
           ) : tab === "usage" || tab === "workflows" ? (
             <View className="flex-1 bg-screen" />
           ) : tab === "issues" ? (

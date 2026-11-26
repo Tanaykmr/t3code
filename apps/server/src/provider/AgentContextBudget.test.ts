@@ -1,4 +1,6 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as BotChannelService from "../bots/BotChannelService.ts";
+import * as BotKnowledgeService from "../bots/BotKnowledgeService.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
@@ -56,9 +58,11 @@ import { DocumentText } from "./DocumentText.ts";
 import { EnvironmentThemeService } from "../environmentTheme.ts";
 import { ProviderRegistry } from "./ProviderRegistry.ts";
 import budget from "./agentContextBudget.json" with { type: "json" };
+import { BoatService } from "../boat/BoatService.ts";
 
 // Registration only stores tool definitions, so the handlers' services are never called.
 const toolHandlerServices = Layer.mergeAll(
+  Layer.mock(BoatService)({}),
   Layer.mock(AnalyticsService)({}),
   Layer.mock(AssetSigner)({}),
   Layer.mock(BoardService)({}),
@@ -100,6 +104,8 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ThreadIssueService)({}),
   Layer.mock(ThreadLaunchService)({}),
   Layer.mock(ThreadManagementService)({}),
+  Layer.mock(BotChannelService.BotChannelService)({}),
+  Layer.mock(BotKnowledgeService.BotKnowledgeService)({}),
   Layer.mock(ThreadSearch)({}),
   Layer.mock(VcsStatusBroadcaster)({}),
 ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));

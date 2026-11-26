@@ -1,4 +1,5 @@
 import { CommandId, type RunId } from "@t3tools/contracts";
+import { RoomSeatMessageThread } from "../bots/botStore.ts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -426,6 +427,7 @@ export const layerExecutor: Layer.Layer<
                           : { linkedSender: message.linkedSender }),
                       })
                       .pipe(
+                        Effect.provideService(RoomSeatMessageThread, effect.threadId),
                         // A disabled instance cannot retry this completed turn; its result stands.
                         Effect.catchTags({
                           ThreadManagementProviderInstanceDisabledError: (disabledError) =>

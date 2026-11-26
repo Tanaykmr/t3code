@@ -3,6 +3,7 @@
 // stay pending so nothing retries on timers. Everything above the wire is the app's own.
 import {
   type AssetCreateUrlResult,
+  type BotDirectory,
   AuthStandardClientScopes,
   EnvironmentId,
   EventId,
@@ -111,11 +112,12 @@ const decodeServerConfig = Schema.decodeUnknownSync(ServerConfig);
 const makeServerConfig = (
   providers: ReadonlyArray<unknown>,
   supportsIssues = false,
+  supportsBots = false,
 ): ServerConfig => ({
   ...decodeServerConfig({
     environment: {
       ...descriptor,
-      capabilities: { ...descriptor.capabilities, issues: supportsIssues },
+      capabilities: { ...descriptor.capabilities, issues: supportsIssues, bots: supportsBots },
     },
     auth,
     cwd: "/workspace/render",
@@ -236,6 +238,7 @@ export interface FakeThread {
   readonly providerSubagentOf?: ThreadId;
   /** Makes this an older settled thread the shell leaves out; only its family read returns it. */
   readonly olderSettled?: true;
+  readonly archivedAt?: string;
   readonly id: ThreadId;
   readonly title: string;
   /** Defaults to GPT-5.4 on Codex. */
@@ -354,7 +357,7 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
     visibleItemCount: thread.items.length,
     createdAt: AT,
     updatedAt: AT,
-    archivedAt: null,
+    archivedAt: thread.archivedAt ? DateTime.makeUnsafe(thread.archivedAt) : null,
     settledOverride: thread.olderSettled ? "settled" : null,
     settledAt: thread.olderSettled ? AT : null,
     lastVisitedAt: AT,
@@ -391,7 +394,7 @@ function projectionOf(thread: FakeThread): OrchestrationV2ThreadProjection {
       creationSource: shell.creationSource,
       createdAt: AT,
       updatedAt: AT,
-      archivedAt: null,
+      archivedAt: shell.archivedAt,
       settledOverride: shell.settledOverride,
       settledAt: shell.settledAt,
       lastVisitedAt: AT,
@@ -502,7 +505,9 @@ const handlers: Record<string, (input: never) => unknown> = {
             schemaVersion: 1,
             snapshotSequence: sequence,
             projects,
-            threads: threads.filter((thread) => !thread.olderSettled).map(shellOf),
+            threads: threads
+              .filter((thread) => !thread.olderSettled && !thread.archivedAt)
+              .map(shellOf),
             archivedThreads: [],
           },
         },
@@ -539,7 +544,9 @@ const handlers: Record<string, (input: never) => unknown> = {
     return Effect.succeed({
       snapshotSequence: sequence,
       threads: requested
-        ? threads.filter((thread) => rootOf(thread) === rootOf(requested)).map(shellOf)
+        ? threads
+            .filter((thread) => !thread.archivedAt && rootOf(thread) === rootOf(requested))
+            .map(shellOf)
         : [],
     });
   },
@@ -607,6 +614,7 @@ export function installFakeEnvironment(
   fixtures: ReadonlyArray<FakeThread>,
   options?: {
     readonly acceptCommands?: boolean;
+    readonly botDirectory?: BotDirectory;
     readonly keybindings?: ResolvedKeybindingsConfig;
     readonly extraProjects?: ReadonlyArray<Pick<OrchestrationProjectShell, "id" | "title">>;
     /** Commands left unanswered even when accepting, until `rejectPendingCommand`. */
@@ -619,6 +627,7 @@ export function installFakeEnvironment(
     ...makeServerConfig(
       options?.providers ?? [CODEX_PROVIDER],
       fixtures.some((thread) => (thread.issues?.length ?? 0) > 0),
+      options?.botDirectory !== undefined,
     ),
     keybindings: options?.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS,
   };
@@ -633,6 +642,10 @@ export function installFakeEnvironment(
     })),
   ];
   holdCommand = options?.holdCommand ?? (() => false);
+  const botDirectory = options?.botDirectory;
+  const botSubscription = botDirectory
+    ? answerRpc(WS_METHODS.botsSubscribe, () => subscribe([botDirectory]))
+    : undefined;
   globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
     if (url.origin !== window.location.origin) return realFetch(input, init);
@@ -652,6 +665,7 @@ export function installFakeEnvironment(
   };
   return {
     [Symbol.dispose]: () => {
+      botSubscription?.[Symbol.dispose]();
       globalThis.fetch = realFetch;
       threads = [];
       baseServerConfig = makeServerConfig([CODEX_PROVIDER]);
