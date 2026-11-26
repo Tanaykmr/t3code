@@ -1,3 +1,4 @@
+import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 import type { AppState, ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type { BoardId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -47,7 +48,7 @@ const ready = (key: string): ReadyBoardView => ({
 const retryingEditor = () => ({
   addFiles: vi.fn(),
   getFiles: () => ({}),
-  getSceneElementsIncludingDeleted: () => [],
+  getSceneElementsIncludingDeleted: (): ReadonlyArray<ExcalidrawElement> => [],
   updateScene: vi.fn(),
 });
 
@@ -142,4 +143,68 @@ describe("boardController", () => {
       vi.useRealTimers();
     }
   });
+
+  it.each(["omitted", "tombstoned"])(
+    "reports a rejected deletion with the element %s and offers no copy",
+    async (representation) => {
+      vi.useFakeTimers();
+      vi.stubGlobal("window", globalThis);
+      const board = boardController("delete-conflict", target("delete-conflict"));
+      const api = retryingEditor();
+      const error = { _tag: "BoardConflictError" };
+      command
+        .mockReset()
+        .mockResolvedValueOnce({ _tag: "Failure", cause: Cause.fail(error), error });
+      try {
+        let elements: ReadonlyArray<ExcalidrawElement> = board.initialScene({
+          ...ready("delete-conflict"),
+          elements: [
+            {
+              id: "shape",
+              type: "rectangle",
+              index: "a0",
+              version: 1,
+              versionNonce: 1,
+              isDeleted: false,
+            },
+          ],
+        }).elements;
+        api.getSceneElementsIncludingDeleted = () => elements;
+        api.updateScene.mockImplementation(
+          (scene: { elements?: ReadonlyArray<ExcalidrawElement> }) => {
+            elements = scene.elements ?? elements;
+          },
+        );
+        board.attach(api as unknown as ExcalidrawImperativeAPI);
+        elements =
+          representation === "omitted"
+            ? []
+            : elements.map((element) => ({ ...element, version: 2, isDeleted: true }));
+        board.onChange(
+          elements,
+          {
+            cursorButton: "up",
+            newElement: null,
+            multiElement: null,
+            editingTextElement: null,
+            viewBackgroundColor: "#ffffff",
+          } as AppState,
+          {},
+          { composing: false, canEdit: true },
+        );
+        await vi.runOnlyPendingTimersAsync();
+        expect(command.mock.calls[0]?.[2]).toMatchObject({
+          input: { operations: [{ type: "delete", id: "shape" }] },
+        });
+        expect(elements[0]?.isDeleted).toBe(false);
+        expect(board.getRejection()).toEqual({ kind: "conflict", canKeepCopy: false });
+        board.discardRejected();
+        expect(board.getRejection()).toBeNull();
+      } finally {
+        board.detach();
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      }
+    },
+  );
 });

@@ -205,18 +205,20 @@ function BoardEditor(props: {
           className="absolute inset-x-4 top-16 z-10 mx-auto flex max-w-md flex-wrap items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm shadow-sm"
         >
           <span className="min-w-0 flex-1">
-            {rejection === "conflict" ? (
+            {rejection.kind === "conflict" ? (
               <T>Someone changed this first. Your edit was not saved.</T>
             ) : (
               <T>This edit could not be saved.</T>
             )}
           </span>
           <Button variant="ghost" size="sm" onClick={() => controller.discardRejected()}>
-            <T>Discard</T>
+            {rejection.canKeepCopy ? <T>Discard</T> : <T>Dismiss</T>}
           </Button>
-          <Button variant="outline" size="sm" onClick={() => controller.keepRejectedAsCopy()}>
-            <T>Keep as copy</T>
-          </Button>
+          {rejection.canKeepCopy ? (
+            <Button variant="outline" size="sm" onClick={() => controller.keepRejectedAsCopy()}>
+              <T>Keep as copy</T>
+            </Button>
+          ) : null}
         </div>
       ) : null}
     </div>

@@ -439,7 +439,7 @@ export function rejectPending(session: BoardSession): boolean {
   const rejected: BoardElement[] = [];
   for (const id of pending.sent.keys()) {
     const draft = session.drafts.get(id);
-    if (draft !== undefined && draft.type !== "deleted") rejected.push(draft);
+    if (draft !== undefined && !draft.isDeleted) rejected.push(draft);
     session.drafts.delete(id);
     session.draftOrderRevision.delete(id);
     session.baseline.delete(id);

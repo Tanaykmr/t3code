@@ -37,6 +37,11 @@ import {
 export type ReadyBoardView = Extract<BoardView, { status: "ready" }>;
 export type SaveState = "saved" | "saving" | "retrying" | "conflict" | "rejected";
 
+interface BoardRejection {
+  readonly kind: "conflict" | "rejected";
+  readonly canKeepCopy: boolean;
+}
+
 interface BoardTarget {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
@@ -133,11 +138,10 @@ export class BoardController {
     );
   }
 
-  /** A rejected draft waiting for Keep as copy or Discard; later saves do not clear it. */
-  private rejection: "conflict" | "rejected" | null = null;
+  private rejection: BoardRejection | null = null;
   readonly getRejection = () => this.rejection;
 
-  private setRejection(next: "conflict" | "rejected" | null) {
+  private setRejection(next: BoardRejection | null) {
     if (next === this.rejection) return;
     this.rejection = next;
     for (const listener of this.listeners) listener();
@@ -409,10 +413,10 @@ export class BoardController {
       }
       const tag = boardFailureTag(squashAtomCommandFailure(outcome));
       if (isPermanentBoardFailure(tag, outcome.cause)) {
-        const contributed = rejectPending(session);
+        rejectPending(session);
         this.showCanonical();
         const kind = tag === "BoardConflictError" ? "conflict" : "rejected";
-        if (contributed) this.setRejection(kind);
+        this.setRejection({ kind, canKeepCopy: session.rejected !== null });
         this.setSaveState(kind);
         return;
       }
