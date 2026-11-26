@@ -552,7 +552,10 @@ export const make = Effect.gen(function* () {
   const setStage = Effect.fn("BoatService.setStage")(function* (
     requestId: string,
     stage: BoatOperationStage,
-    extra: { readonly failure?: BoatFailureCode; readonly provider_operation_id?: string } = {},
+    extra: {
+      readonly failure?: BoatFailureCode;
+      readonly provider_operation_id?: OperationRow["provider_operation_id"];
+    } = {},
   ) {
     const updatedAt = yield* nowIso;
     const fields = { stage, ...extra };
@@ -1021,14 +1024,14 @@ export const make = Effect.gen(function* () {
   ) {
     const sandboxId = server.sandbox_id;
     if (sandboxId === null) return yield* new OperationFailed({ code: "not-found" });
-    if (!bootstrap.available && op.stage === "queued") {
+    const unsent = op.stage === "queued" && op.provider_operation_id === null;
+    if (!bootstrap.available && unsent) {
       return yield* new OperationRefused({ code: "bootstrap-unavailable" });
     }
     // A stop queued behind this resume wins rather than waiting on Boat to accept a wake.
-    if (op.stage === "queued" && (yield* hasPendingStop(server.managed_id))) {
+    if (unsent && (yield* hasPendingStop(server.managed_id))) {
       return yield* new OperationRefused({ code: "provider-unavailable" });
     }
-    yield* setStage(op.request_id, "resuming");
     yield* setServer(server.managed_id, { lifecycle: "provisioning" });
     // Only an archived machine is woken; one already waking or live is just watched, since a
     // resume whose reply was lost may have been accepted.
@@ -1038,9 +1041,9 @@ export const make = Effect.gen(function* () {
     if (!isLiveState(current.state) && (yield* hasPendingStop(server.managed_id))) {
       return yield* new OperationRefused({ code: "provider-unavailable" });
     }
-    // Boat took this resume earlier; archived now means it woke and its deadline passed.
-    // Settle as stopped rather than waking it again with a fresh deadline.
-    if (op.provider_operation_id === ACKNOWLEDGED && current.state === "archived") {
+    // An older in-flight row with no marker may also have sent a wake. An archive can mean
+    // that run already ended, so only a provably unsent request may wake an archived sandbox.
+    if (!unsent && current.state === "archived") {
       // One statement, so a stop accepted meanwhile keeps the row Stopping.
       yield* sql`
         UPDATE boat_servers SET lifecycle = CASE WHEN EXISTS (
@@ -1062,11 +1065,12 @@ export const make = Effect.gen(function* () {
         return yield* new OperationRefused({ code: "provider-rejected" });
       }
       yield* ensureDiskRetention(trackProvider(api.account(key), () => false));
+      yield* setStage(op.request_id, "resuming", { provider_operation_id: SENDING });
       // Last look before waking it: a stop accepted since the check above still wins.
       if (yield* hasPendingStop(server.managed_id)) {
         return yield* new OperationRefused({ code: "provider-unavailable" });
       }
-      // Sent once per pass: a later pass looks at the machine again before any resend.
+      const markUnsent = setStage(op.request_id, "queued", { provider_operation_id: null });
       const sent = yield* trackProvider(
         api.resume(key, sandboxId, server.ttl_seconds, server.boat_environment),
       ).pipe(
@@ -1074,7 +1078,10 @@ export const make = Effect.gen(function* () {
         Effect.catchIf(isTransient, () => Effect.succeed("unknown" as const)),
         Effect.catchIf(
           (error) => error.category === "conflict",
-          () => Effect.succeed("refused" as const),
+          () => markUnsent.pipe(Effect.as("refused" as const)),
+        ),
+        Effect.tapError((error) =>
+          error._tag === "BoatApiError" && isRejectedKey(error) ? markUnsent : Effect.void,
         ),
         refuseForbidden,
       );

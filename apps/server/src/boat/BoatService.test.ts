@@ -980,8 +980,93 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("settles as Stopped a resume Boat took whose machine its deadline archived", () => {
-    const { layer, fake } = setup();
+  it.effect.each(["acknowledged", "legacy"] as const)(
+    "settles an archived %s resume as Stopped",
+    (state) => {
+      const { layer, fake } = setup();
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+        yield* boat.resume({ requestId: requestId(), managedId });
+        yield* settle;
+        const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
+        // As if the confirmation reads failed after Boat took the resume, then the TTL archived it.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE boat_operations SET stage = 'resuming' WHERE kind = 'resume'`;
+        if (state === "legacy") {
+          yield* sql`UPDATE boat_operations SET provider_operation_id = NULL WHERE kind = 'resume'`;
+        }
+        fake.archiveExternally(sandboxId, 0);
+        yield* settle;
+        expect(fake.calls.filter((name) => name === "resume")).toHaveLength(1);
+        expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("does not wake a sandbox again after a lost resume reply and auto-stop", () => {
+    const applied = Deferred.makeUnsafe<void>();
+    let loseReply = true;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      resume: Effect.fnUntraced(function* (key, id, ttlSeconds, environment) {
+        yield* api.resume(key, id, ttlSeconds, environment);
+        if (loseReply) {
+          loseReply = false;
+          yield* Deferred.succeed(applied, undefined);
+          return yield* new BoatApiError({ category: "unavailable" });
+        }
+      }),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      const sandboxId = (yield* server(managedId))!.sandboxId!;
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+
+      const resume = { requestId: requestId(), managedId };
+      const receipt = yield* boat.resume(resume);
+      yield* Deferred.await(applied);
+      expect(fake.sandboxes.get(sandboxId)?.sandbox.state).toBe("running");
+      yield* TestClock.adjust("1 hour");
+      fake.archiveExternally(sandboxId, 3600 * 1000);
+      yield* settle;
+
+      expect(yield* boat.resume(resume)).toEqual(receipt);
+      expect(fake.calls.filter((call) => call === "resume")).toHaveLength(1);
+      expect(yield* server(managedId)).toMatchObject({
+        lifecycle: "stopped",
+        operation: { kind: "resume", stage: "completed" },
+      });
+
+      yield* boat.resume({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(fake.calls.filter((call) => call === "resume")).toHaveLength(2);
+      expect((yield* server(managedId))?.lifecycle).toBe("running");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("retries a resume whose retention check failed before dispatch", () => {
+    const failed = Deferred.makeUnsafe<void>();
+    let failPreflight = false;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      account: Effect.fnUntraced(function* (key) {
+        if (failPreflight) {
+          failPreflight = false;
+          yield* Deferred.succeed(failed, undefined);
+          return yield* new BoatApiError({ category: "unavailable" });
+        }
+        return yield* api.account(key);
+      }),
+    }));
     return Effect.gen(function* () {
       const boat = yield* BoatService.BoatService;
       yield* configure;
@@ -989,16 +1074,15 @@ describe("BoatService", () => {
       yield* settle;
       yield* boat.stop({ requestId: requestId(), managedId });
       yield* settle;
+
+      failPreflight = true;
       yield* boat.resume({ requestId: requestId(), managedId });
+      yield* Deferred.await(failed);
+      expect(fake.calls).not.toContain("resume");
+
       yield* settle;
-      const sandboxId = (yield* server(managedId))?.sandboxId ?? "";
-      // As if the confirmation reads failed after Boat took the resume, then the TTL archived it.
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`UPDATE boat_operations SET stage = 'resuming' WHERE kind = 'resume'`;
-      fake.archiveExternally(sandboxId, 0);
-      yield* settle;
-      expect(fake.calls.filter((name) => name === "resume")).toHaveLength(1);
-      expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+      expect(fake.calls.filter((call) => call === "resume")).toHaveLength(1);
+      expect((yield* server(managedId))?.lifecycle).toBe("running");
     }).pipe(Effect.provide(layer));
   });
 
