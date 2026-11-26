@@ -5768,5 +5768,8 @@
   "e16f555fb4418961": "Oublier l’enregistrement",
   "8e4aa4a84fad1a44": "Oublier {name} dans T3 Code ? Confirmez que la machine a été supprimée dans Boat. Oublier son enregistrement n’arrête pas la facturation.",
   "f8834c10f2f6ffca": "Affiche les actions de la machine",
-  "6aa24de268c569ca": "Les données de Boat sont obsolètes. Dernier état connu affiché."
+  "6aa24de268c569ca": "Les données de Boat sont obsolètes. Dernier état connu affiché.",
+  "2071b2fd6f98fef6": "Abandonner la demande enregistrée",
+  "d0d899462992d802": "Abandonner la demande enregistrée pour {name} sur cet appareil ? La machine existe peut-être déjà et peut entraîner des frais. Consultez le tableau de bord Boat avant de créer une autre machine.",
+  "a0835bedf98f9525": "Reconnectez-vous à l’environnement d’origine avec les droits de maintenance pour relancer la création de {name}."
 }

@@ -5768,5 +5768,8 @@
   "e16f555fb4418961": "Esquecer registro",
   "8e4aa4a84fad1a44": "Esquecer {name} no T3 Code? Confirme que a máquina foi excluída no Boat. Esquecer o registro não interrompe a cobrança.",
   "f8834c10f2f6ffca": "Mostra as ações da máquina",
-  "6aa24de268c569ca": "Os dados do Boat estão desatualizados. Exibindo o último estado conhecido."
+  "6aa24de268c569ca": "Os dados do Boat estão desatualizados. Exibindo o último estado conhecido.",
+  "2071b2fd6f98fef6": "Descartar solicitação salva",
+  "d0d899462992d802": "Descartar a solicitação salva para {name} neste dispositivo? A máquina pode já existir e gerar cobranças. Consulte o painel do Boat antes de criar outra máquina.",
+  "a0835bedf98f9525": "Reconecte-se ao ambiente original com acesso de manutenção para tentar criar {name} novamente."
 }

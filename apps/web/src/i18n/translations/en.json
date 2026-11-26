@@ -12952,5 +12952,8 @@
   "9e91e9a77b664e4e": "Could not start a review guide",
   "e16f555fb4418961": "Forget record",
   "8e4aa4a84fad1a44": "Forget {name} from T3 Code? Confirm it has been deleted in Boat. Forgetting its record does not stop billing.",
-  "6aa24de268c569ca": "Boat data is stale. Showing last known state."
+  "6aa24de268c569ca": "Boat data is stale. Showing last known state.",
+  "d0d899462992d802": "Discard the saved create for {name} on this device? The machine may already exist and incur charges. Check the Boat dashboard before creating another machine.",
+  "2071b2fd6f98fef6": "Discard saved create",
+  "a0835bedf98f9525": "Reconnect to the original environment with maintenance access to retry {name}."
 }

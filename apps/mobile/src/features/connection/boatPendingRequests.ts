@@ -10,7 +10,12 @@ import {
   runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { BoatLifecycleInput, BoatOperationReceipt, EnvironmentId } from "@t3tools/contracts";
+import {
+  AuthEnvironmentMaintainScope,
+  type BoatLifecycleInput,
+  type BoatOperationReceipt,
+  type EnvironmentId,
+} from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import * as SecureStore from "expo-secure-store";
 import { msg } from "gt-react-native";
@@ -20,6 +25,7 @@ import { whenProtectedDataAvailable } from "../../lib/protectedData";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentPresentations } from "../../state/presentation";
 import { serverEnvironment } from "../../state/server";
+import { environmentSession, readEnvironmentScope, sessionHasScope } from "../../state/session";
 
 const storageKey = "t3code.boat-pending.v1";
 const AUTOMATIC_REPLAY_WINDOW_MS = 60 * 60 * 1000;
@@ -119,7 +125,8 @@ export async function resendPendingBoatRequests(connected: ReadonlySet<Environme
   for (const entry of boatCreateJournal.getSnapshot().entries ?? []) {
     if (
       Date.now() - entry.savedAt <= AUTOMATIC_REPLAY_WINDOW_MS &&
-      connected.has(entry.environmentId)
+      connected.has(entry.environmentId) &&
+      readEnvironmentScope(entry.environmentId, AuthEnvironmentMaintainScope)
     ) {
       await sendBoatRequest(entry, true);
     }
@@ -130,7 +137,11 @@ const connectedBoatControllersAtom = Atom.make((get) =>
   [...get(environmentPresentations.presentationsAtom).entries()]
     .flatMap(([environmentId, presentation]) =>
       presentation.connection.phase === "connected" &&
-      presentation.serverConfig?.boatEnvironments === true
+      presentation.serverConfig?.boatEnvironments === true &&
+      sessionHasScope(
+        get(environmentSession.sessionStateAtom(environmentId)),
+        AuthEnvironmentMaintainScope,
+      )
         ? [environmentId]
         : [],
     )

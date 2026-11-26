@@ -254,6 +254,79 @@ describe("boatCost", () => {
 });
 
 describe("Boat create journal", () => {
+  it("reflects a discard in another tab during overlapping refreshes", async () => {
+    const stale = Promise.withResolvers<ReadonlyArray<SavedBoatCreate>>();
+    const fresh = Promise.withResolvers<ReadonlyArray<SavedBoatCreate>>();
+    const reads = [stale.promise, fresh.promise];
+    const journal = createBoatCreateJournal(
+      () => reads.shift()!,
+      () => "Storage failed",
+      () => nowMs,
+    );
+    const first = journal.refresh();
+    const second = journal.refresh();
+    stale.resolve([
+      {
+        kind: "create",
+        environmentId: CONTROLLER,
+        input: {
+          requestId: BoatRequestId.make("00000000-0000-4000-8000-000000000012"),
+          displayName: "Scratch",
+          size: "small",
+          ttlSeconds: 3600,
+        },
+        savedAt: nowMs,
+      },
+    ]);
+    await first;
+    fresh.resolve([]);
+    await second;
+    expect(journal.getSnapshot()).toEqual({ entries: [], busy: false });
+  });
+
+  it("discards only the confirmed unanswered create and unblocks a different controller", async () => {
+    let saved: ReadonlyArray<SavedBoatCreate> = [];
+    let writable = true;
+    const journal = createBoatCreateJournal(
+      async (change) => {
+        const next = change(saved);
+        if (!writable && next !== saved) throw new Error("Storage failed");
+        return (saved = next);
+      },
+      () => "Storage failed",
+      () => nowMs,
+    );
+    const original = {
+      kind: "create" as const,
+      environmentId: CONTROLLER,
+      input: {
+        requestId: BoatRequestId.make("00000000-0000-4000-8000-000000000005"),
+        displayName: "Scratch",
+        size: "small" as const,
+        ttlSeconds: 3600,
+      },
+    };
+    const replacement = {
+      ...original,
+      environmentId: EnvironmentId.make("reinstalled-controller"),
+    };
+    const unanswered = async () => ({ ok: false as const, error: null, answered: false });
+    await journal.submit(original, false, unanswered);
+    const [orphan] = saved;
+    expect(await journal.submit(replacement, false, unanswered)).toBeUndefined();
+
+    writable = false;
+    expect(await journal.discard(orphan!)).toEqual({ ok: false, error: "Storage failed" });
+    expect(journal.getSnapshot()).toEqual({ entries: [orphan], busy: false });
+    writable = true;
+    expect(await journal.discard(orphan!)).toEqual({ ok: true });
+    expect(saved).toEqual([]);
+    expect(await journal.submit(replacement, false, unanswered)).toMatchObject({ answered: false });
+    await journal.discard(orphan!);
+    expect(saved).toEqual([{ ...replacement, savedAt: nowMs }]);
+    expect(journal.getSnapshot()).toEqual({ entries: saved, busy: false });
+  });
+
   it("clears a persisted create after the server rejects its authorization", async () => {
     let saved: ReadonlyArray<SavedBoatCreate> = [];
     const journal = createBoatCreateJournal(

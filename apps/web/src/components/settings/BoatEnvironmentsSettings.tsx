@@ -549,11 +549,42 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
   const controller = pending
     ? owners.find((entry) => entry.environment.environmentId === pending.environmentId)
     : (capable.find((entry) => entry.environment.environmentId === controllerId) ?? capable[0]);
+  const discard =
+    pending === undefined ? null : (
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost-muted"
+        disabled={creating}
+        onClick={async (event) => {
+          const message = gt(
+            "Discard the saved create for {name} on this device? The machine may already exist and incur charges. Check the Boat dashboard before creating another machine.",
+            { name },
+          );
+          // A standalone confirmation portal cannot receive clicks from inside Add Environment.
+          const confirmed = event.currentTarget.closest('[role="dialog"]')
+            ? window.confirm(message)
+            : ((await requestConfirmDialog(message, { variant: "destructive" })) ??
+              window.confirm(message));
+          if (!confirmed) return;
+          const outcome = await boatCreateJournal.discard(pending);
+          if (outcome?.ok === false) toastManager.add({ type: "error", title: outcome.error });
+        }}
+      >
+        <Trash2Icon aria-hidden className="size-3" />
+        {gt("Discard saved create")}
+      </Button>
+    );
   if (controller === undefined && pending !== undefined) {
     return (
-      <p className="text-sm text-muted-foreground">
-        {gt("Reconnect to the environment and try again.")}
-      </p>
+      <div className="space-y-2">
+        <p className="text-sm text-muted-foreground">
+          {gt("Reconnect to the original environment with maintenance access to retry {name}.", {
+            name,
+          })}
+        </p>
+        {discard}
+      </div>
     );
   }
   const blocked = eligible.find((entry) => entry.snapshot.createAvailable === false);
@@ -683,18 +714,21 @@ export function BoatCreateForm({ onCreated }: { readonly onCreated: () => void }
         </label>
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">
-        {rate
-          ? gt(
-              "{rate}/hour list price, billed by Boat to {account}. Boat stops it {hours} h after each start; stopping interrupts running work and keeps the disk.",
-              {
-                rate: `$${rate.usdPerHour.toFixed(3)}`,
-                account: controller.snapshot.account.label ?? "Boat",
-                hours,
-              },
-            )
-          : null}
+        {controller.subscriptionStale
+          ? gt("Boat data is stale. Showing last known state.")
+          : rate
+            ? gt(
+                "{rate}/hour list price, billed by Boat to {account}. Boat stops it {hours} h after each start; stopping interrupts running work and keeps the disk.",
+                {
+                  rate: `$${rate.usdPerHour.toFixed(3)}`,
+                  account: controller.snapshot.account.label ?? "Boat",
+                  hours,
+                },
+              )
+            : null}
       </p>
-      <div className="flex justify-end">
+      <div className="flex flex-wrap justify-end gap-2">
+        {discard}
         <Button type="submit" size="sm" disabled={creating || name.trim() === ""}>
           {creating ? <Spinner size="sm" /> : null}
           {gt("Create machine")}

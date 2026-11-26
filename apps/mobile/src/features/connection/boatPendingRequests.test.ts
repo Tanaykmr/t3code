@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   store: new Map<string, string>(),
   failRead: false,
   failWrite: false,
+  canMaintain: true,
   run: vi.fn(),
 }));
 
@@ -24,6 +25,7 @@ vi.mock("../../lib/protectedData", () => ({ whenProtectedDataAvailable: async ()
 vi.mock("../../i18n/messages", () => ({ m: (text: string) => text }));
 vi.mock("../../state/atom-registry", () => ({ appAtomRegistry: {} }));
 vi.mock("../../state/presentation", () => ({ environmentPresentations: {} }));
+vi.mock("../../state/session", () => ({ readEnvironmentScope: () => mocks.canMaintain }));
 vi.mock("../../state/server", () => ({
   serverEnvironment: {
     createBoat: "create",
@@ -67,6 +69,7 @@ describe("Boat pending requests", () => {
     mocks.store.clear();
     mocks.failRead = false;
     mocks.failWrite = false;
+    mocks.canMaintain = true;
     mocks.run.mockReset();
   });
 
@@ -93,6 +96,12 @@ describe("Boat pending requests", () => {
     await resendPendingBoatRequests(new Set([otherId]));
     expect(mocks.run).toHaveBeenCalledTimes(1);
 
+    mocks.canMaintain = false;
+    await resendPendingBoatRequests(new Set([CONTROLLER]));
+    expect(mocks.run).toHaveBeenCalledTimes(1);
+    expect(saved()).toHaveLength(1);
+
+    mocks.canMaintain = true;
     expect(selectBoatCreateController([other, original], null, create)).toBe(original);
     mocks.run.mockResolvedValueOnce(AsyncResult.success(receipt));
     await resendPendingBoatRequests(new Set([CONTROLLER]));

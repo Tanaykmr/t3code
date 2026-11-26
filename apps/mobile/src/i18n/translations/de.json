@@ -5774,5 +5774,8 @@
   "e16f555fb4418961": "Eintrag entfernen",
   "8e4aa4a84fad1a44": "{name} aus T3 Code entfernen? Bestätige, dass der Rechner in Boat gelöscht wurde. Durch Entfernen des Eintrags endet die Abrechnung nicht.",
   "f8834c10f2f6ffca": "Zeigt Rechneraktionen",
-  "6aa24de268c569ca": "Die Boat-Daten sind veraltet. Der letzte bekannte Zustand wird angezeigt."
+  "6aa24de268c569ca": "Die Boat-Daten sind veraltet. Der letzte bekannte Zustand wird angezeigt.",
+  "2071b2fd6f98fef6": "Gespeicherte Anfrage verwerfen",
+  "d0d899462992d802": "Die gespeicherte Anfrage für {name} auf diesem Gerät verwerfen? Die Maschine könnte bereits existieren und Kosten verursachen. Prüfe das Boat-Dashboard, bevor du eine weitere Maschine erstellst.",
+  "a0835bedf98f9525": "Verbinde dich mit Wartungszugriff erneut mit der ursprünglichen Umgebung, um {name} erneut anzufordern."
 }

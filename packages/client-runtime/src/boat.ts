@@ -204,6 +204,8 @@ export function createBoatCreateJournal(
     readonly busy: boolean;
   } = { entries: undefined, busy: false };
   const listeners = new Set<() => void>();
+  let refreshRequested = false;
+  let refreshVersion = 0;
 
   const publish = (next: typeof snapshot) => {
     snapshot = next;
@@ -211,13 +213,47 @@ export function createBoatCreateJournal(
   };
 
   async function refresh() {
-    if (snapshot.busy) return;
+    if (snapshot.busy) {
+      refreshRequested = true;
+      return;
+    }
     const previous = snapshot;
+    const version = ++refreshVersion;
     try {
       const entries = await update((saved) => saved);
-      if (snapshot === previous) publish({ entries, busy: false });
+      if (snapshot === previous && version === refreshVersion) publish({ entries, busy: false });
     } catch {
       // Admission will check storage again before sending.
+    }
+  }
+
+  const finish = () => {
+    publish({ ...snapshot, busy: false });
+    if (refreshRequested) {
+      refreshRequested = false;
+      void refresh();
+    }
+  };
+
+  async function discard(entry: SavedBoatCreate) {
+    if (snapshot.busy) return;
+    publish({ ...snapshot, busy: true });
+    try {
+      const entries = await update((saved) => {
+        const index = saved.findIndex(
+          (candidate) =>
+            candidate.environmentId === entry.environmentId &&
+            candidate.input.requestId === entry.input.requestId &&
+            candidate.savedAt === entry.savedAt,
+        );
+        return index === -1 ? saved : saved.filter((_, position) => position !== index);
+      });
+      publish({ entries, busy: true });
+      return { ok: true as const };
+    } catch {
+      return { ok: false as const, error: storageError() };
+    } finally {
+      finish();
     }
   }
 
@@ -261,7 +297,7 @@ export function createBoatCreateJournal(
     } catch {
       return { ok: false, error: storageError(), answered: false };
     } finally {
-      publish({ ...snapshot, busy: false });
+      finish();
     }
   }
 
@@ -274,6 +310,7 @@ export function createBoatCreateJournal(
     },
     refresh,
     submit,
+    discard,
   };
 }
 

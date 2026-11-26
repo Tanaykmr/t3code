@@ -151,12 +151,13 @@ function BoatMachineRow({
     !row.stale && server.lifecycle === "failed" && server.observedPower === "running"
       ? gt("Boat reports it running")
       : null,
+  ].filter((part): part is string => part !== null);
+  const stale =
     row.staleReason === "controller-offline"
       ? gt("Controller offline")
       : row.staleReason === "provider"
         ? gt("Boat data is stale. Showing last known state.")
-        : null,
-  ].filter((part): part is string => part !== null);
+        : null;
   const failure =
     server.operation?.stage === "failed" && server.operation.failure != null
       ? labels.failure[server.operation.failure]
@@ -272,6 +273,7 @@ function BoatMachineRow({
           {labels.lifecycle[server.lifecycle]}
           {details.length > 0 ? ` · ${details.join(" · ")}` : ""}
         </Text>
+        {stale ? <Text className="text-sm text-foreground-muted">{stale}</Text> : null}
         {failure ? <Text className="text-sm text-danger-foreground">{failure}</Text> : null}
       </View>
     </Pressable>
@@ -497,11 +499,39 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
   const ttlSeconds = pending?.input.ttlSeconds ?? draftTtl;
   const selectable = pending === null ? eligible : owners;
   const controller = selectBoatCreateController(selectable, controllerId, pending);
+  const discard =
+    pending === null ? null : (
+      <Button
+        label={gt("Discard saved create")}
+        tone="text"
+        disabled={creating}
+        onPress={() =>
+          Dialog.confirm({
+            title: gt("Discard saved create"),
+            message: gt(
+              "Discard the saved create for {name} on this device? The machine may already exist and incur charges. Check the Boat dashboard before creating another machine.",
+              { name },
+            ),
+            confirmText: gt("Discard saved create"),
+            destructive: true,
+            onConfirm: async () => {
+              const outcome = await boatCreateJournal.discard(pending);
+              if (outcome?.ok === false) Dialog.alert(outcome.error);
+            },
+          })
+        }
+      />
+    );
   if (controller === undefined && pending !== null) {
     return (
-      <Text className="px-4 text-sm text-foreground-muted">
-        {gt("Reconnect to the environment and try again.")}
-      </Text>
+      <View className="gap-2">
+        <Text className="px-4 text-sm text-foreground-muted">
+          {gt("Reconnect to the original environment with maintenance access to retry {name}.", {
+            name,
+          })}
+        </Text>
+        {discard}
+      </View>
     );
   }
   if (controller === undefined) return null;
@@ -575,7 +605,11 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
             onSelect={setTtlSeconds}
           />
         </View>
-        {rate ? (
+        {controller.subscriptionStale ? (
+          <Text className="text-sm text-foreground-muted">
+            {gt("Boat data is stale. Showing last known state.")}
+          </Text>
+        ) : rate ? (
           <Text className="text-sm leading-normal text-foreground-muted">
             {gt(
               "{rate}/hour list price, billed by Boat to {account}. Boat stops it {hours} h after each start; stopping interrupts running work and keeps the disk.",
@@ -594,6 +628,7 @@ export function BoatCreateSection(props: { readonly onCreated: () => void }) {
           disabled={creating || name.trim() === ""}
           onPress={() => void submit()}
         />
+        {discard}
       </View>
     </View>
   );

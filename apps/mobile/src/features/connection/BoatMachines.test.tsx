@@ -1,19 +1,27 @@
 import { RegistryProvider } from "@effect/atom-react";
-import { BoatManagedId, type BoatSnapshot, EnvironmentId } from "@t3tools/contracts";
+import { BoatManagedId, BoatRequestId, type BoatSnapshot, EnvironmentId } from "@t3tools/contracts";
+import { createBoatCreateJournal, type SavedBoatCreate } from "@t3tools/client-runtime/boat";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
 
-const setKey = vi.hoisted(() => vi.fn());
+const { setKey, confirm } = vi.hoisted(() => ({
+  setKey: vi.fn(),
+  confirm: vi.fn<(request: { message?: string; onConfirm: () => void }) => void>(({ onConfirm }) =>
+    onConfirm(),
+  ),
+}));
 
 vi.mock("react-native", () => ({
   Pressable: ({ children }: { children: ReactNode }) => <button>{children}</button>,
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../../components/ui/AppText", () => ({
-  AppText: ({ children }: { children: ReactNode }) => <span>{children}</span>,
+  AppText: ({ children, numberOfLines }: { children: ReactNode; numberOfLines?: number }) => (
+    <span data-number-of-lines={numberOfLines}>{children}</span>
+  ),
   AppTextInput: ({ value }: { value: string }) => <input readOnly value={value} />,
 }));
 vi.mock("../../components/ui/Button", () => ({
@@ -22,7 +30,7 @@ vi.mock("../../components/ui/Button", () => ({
   ),
 }));
 vi.mock("../../components/ui/Dialog", () => ({
-  confirm: ({ onConfirm }: { onConfirm: () => void }) => onConfirm(),
+  confirm,
 }));
 vi.mock("../../components/ui/SecretTextInput", () => ({
   SecretTextInput: ({ onSubmitEditing }: { onSubmitEditing: (value: string) => void }) => (
@@ -40,7 +48,12 @@ vi.mock("../settings/components/SettingsSection", () => ({
 }));
 vi.mock("../../lib/clock", () => ({ useNowMinuteMs: () => 0 }));
 vi.mock("../../lib/uuid", () => ({}));
-vi.mock("./boatPendingRequests", () => ({}));
+vi.mock("./boatPendingRequests", () => ({
+  get boatCreateJournal() {
+    return journal;
+  },
+  selectBoatCreateController: () => undefined,
+}));
 vi.mock("../../state/atom-registry", () => ({
   appAtomRegistry: { get: () => privateRoute },
 }));
@@ -65,7 +78,14 @@ vi.mock("../../state/server", () => ({
 }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => setKey }));
 
-import { BoatMachinesSection, useBoatControllers } from "./BoatMachines";
+import { BoatCreateSection, BoatMachinesSection, useBoatControllers } from "./BoatMachines";
+
+let saved: ReadonlyArray<SavedBoatCreate> = [];
+const journal = createBoatCreateJournal(
+  async (change) => (saved = change(saved)),
+  () => "Storage error",
+  () => 0,
+);
 
 const environmentId = EnvironmentId.make("controller");
 const privateRoute = Option.some({ socketUrl: "wss://controller.example/ws" });
@@ -136,8 +156,51 @@ it("marks Boat data stale while the controller is connected", () => {
         </RegistryProvider>,
       ),
     );
-    expect(element.textContent).toContain("Boat data is stale. Showing last known state.");
+    const warning = Array.from(element.querySelectorAll("span")).find(
+      (node) => node.textContent === "Boat data is stale. Showing last known state.",
+    );
+    expect(warning?.getAttribute("data-number-of-lines")).toBeNull();
     expect(element.textContent).not.toContain("Stops in");
+  } finally {
+    act(() => root.unmount());
+  }
+});
+
+it("requires confirmation to discard a create for the removed controller", async () => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  confirm.mockImplementationOnce(() => {});
+  await journal.submit(
+    {
+      kind: "create",
+      environmentId: EnvironmentId.make("removed-controller"),
+      input: {
+        requestId: BoatRequestId.make("00000000-0000-4000-8000-000000000011"),
+        displayName: "Scratch",
+        size: "small",
+        ttlSeconds: 3600,
+      },
+    },
+    false,
+    async () => ({ ok: false, error: null, answered: false }),
+  );
+  const element = document.createElement("div");
+  const root = createRoot(element);
+  try {
+    await act(async () =>
+      root.render(
+        <RegistryProvider>
+          <BoatCreateSection onCreated={() => {}} />
+        </RegistryProvider>,
+      ),
+    );
+    act(() => element.querySelector("button")!.click());
+    const prompt = confirm.mock.lastCall?.[0];
+    expect(prompt?.message).toContain("may already exist and incur charges");
+    expect(saved).toHaveLength(1);
+
+    await act(async () => prompt?.onConfirm());
+    expect(saved).toEqual([]);
+    expect(element.querySelector("button")).toBeNull();
   } finally {
     act(() => root.unmount());
   }

@@ -9,6 +9,16 @@ import { m } from "../i18n/messages";
 
 const databaseName = "t3code:boat-create-journal";
 const storeName = "pending";
+let channel: BroadcastChannel | undefined;
+
+function journalChannel() {
+  try {
+    if (typeof BroadcastChannel !== "undefined") channel ??= new BroadcastChannel(databaseName);
+  } catch {
+    // Focus still refreshes the journal when browser messaging is unavailable.
+  }
+  return channel;
+}
 
 async function updateJournal(
   change: (saved: ReadonlyArray<SavedBoatCreate>) => ReadonlyArray<SavedBoatCreate>,
@@ -25,13 +35,18 @@ async function updateJournal(
       const store = transaction.objectStore(storeName);
       const read = store.get("creates");
       let entries: ReadonlyArray<SavedBoatCreate> = [];
-      transaction.oncomplete = () => resolve(entries);
+      let changed = false;
+      transaction.oncomplete = () => {
+        resolve(entries);
+        if (changed) journalChannel()?.postMessage(null);
+      };
       transaction.onabort = () => reject(transaction.error);
       read.onsuccess = () => {
         try {
           const saved = decodeSavedBoatCreates(read.result ?? []);
           entries = change(saved);
-          if (entries !== saved) store.put(entries, "creates");
+          changed = entries !== saved;
+          if (changed) store.put(entries, "creates");
         } catch (error) {
           transaction.abort();
           reject(error);
@@ -49,12 +64,17 @@ export const boatCreateJournal = createBoatCreateJournal(
   () => Date.now(),
 );
 
+export const hasSavedBoatCreate = () => (boatCreateJournal.getSnapshot().entries?.length ?? 0) > 0;
+
 export function subscribeBoatCreateJournal(listener: () => void) {
   const unsubscribe = boatCreateJournal.subscribe(listener);
   const refresh = () => void boatCreateJournal.refresh();
+  const messages = journalChannel();
+  messages?.addEventListener("message", refresh);
   window.addEventListener("focus", refresh);
   return () => {
     window.removeEventListener("focus", refresh);
+    messages?.removeEventListener("message", refresh);
     unsubscribe();
   };
 }

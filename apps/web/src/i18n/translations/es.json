@@ -12938,5 +12938,8 @@
   "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión",
   "e16f555fb4418961": "Olvidar registro",
   "8e4aa4a84fad1a44": "¿Olvidar {name} en T3 Code? Confirma que la máquina se ha eliminado en Boat. Olvidar el registro no detiene la facturación.",
-  "6aa24de268c569ca": "Los datos de Boat están desactualizados. Se muestra el último estado conocido."
+  "6aa24de268c569ca": "Los datos de Boat están desactualizados. Se muestra el último estado conocido.",
+  "d0d899462992d802": "¿Descartar la solicitud guardada para {name} en este dispositivo? Es posible que la máquina ya exista y genere cargos. Consulta el panel de Boat antes de crear otra máquina.",
+  "2071b2fd6f98fef6": "Descartar solicitud guardada",
+  "a0835bedf98f9525": "Vuelve a conectarte al entorno original con permisos de mantenimiento para reintentar la creación de {name}."
 }

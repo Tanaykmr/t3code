@@ -3,7 +3,14 @@ import { m } from "~/i18n/messages";
 import { pipe } from "effect/Function";
 import { ChevronsLeftRightEllipsisIcon, PlusIcon, SailboatIcon, TerminalIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { T, useGT, useMessages, Var } from "gt-react";
 import {
   type DesktopDiscoveredSshHost,
@@ -20,6 +27,7 @@ import {
 import * as Option from "effect/Option";
 
 import { cn } from "../../lib/utils";
+import { hasSavedBoatCreate, subscribeBoatCreateJournal } from "../../state/boatCreateJournal";
 import { formatDesktopSshTarget } from "./EnvironmentRow";
 import { BoatCreateForm } from "./BoatEnvironmentsSettings";
 import { Input } from "../ui/input";
@@ -114,10 +122,14 @@ export function AddEnvironmentDialog({
   });
   const relayDiscoveryState = useRelayEnvironmentDiscovery();
   const { environments } = useEnvironments();
+  const savedBoatCreate = useSyncExternalStore(subscribeBoatCreateJournal, hasSavedBoatCreate);
+  const [savedBackendMode, setSavedBackendMode] = useState<"remote" | "ssh" | "boat">("remote");
   const offersBoat =
     routeTarget === null &&
     prefill === null &&
-    environments.some((environment) => environment.serverConfig?.boatEnvironments === true);
+    (savedBoatCreate ||
+      savedBackendMode === "boat" ||
+      environments.some((environment) => environment.serverConfig?.boatEnvironments === true));
   const savedDesktopSshEnvironmentKeys = (() => {
     const keys = new Set<string>();
     for (const environment of savedEnvironments) {
@@ -135,7 +147,6 @@ export function AddEnvironmentDialog({
     }
     return keys;
   })();
-  const [savedBackendMode, setSavedBackendMode] = useState<"remote" | "ssh" | "boat">("remote");
   const [savedBackendHost, setSavedBackendHost] = useState(prefill?.host ?? initialHost);
   const [savedBackendPairingCode, setSavedBackendPairingCode] = useState("");
   const [savedBackendSshHost, setSavedBackendSshHost] = useState("");

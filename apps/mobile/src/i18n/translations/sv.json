@@ -5774,5 +5774,8 @@
   "e16f555fb4418961": "Glöm posten",
   "8e4aa4a84fad1a44": "Glöm {name} i T3 Code? Bekräfta att maskinen har tagits bort i Boat. Faktureringen upphör inte när du glömmer posten.",
   "f8834c10f2f6ffca": "Visar maskinåtgärder",
-  "6aa24de268c569ca": "Boat-data är inaktuella. Visar det senast kända tillståndet."
+  "6aa24de268c569ca": "Boat-data är inaktuella. Visar det senast kända tillståndet.",
+  "2071b2fd6f98fef6": "Kassera den sparade begäran",
+  "d0d899462992d802": "Vill du kassera den sparade begäran för {name} på den här enheten? Maskinen kan redan finnas och medföra kostnader. Kontrollera Boat-instrumentpanelen innan du skapar en annan maskin.",
+  "a0835bedf98f9525": "Återanslut till den ursprungliga miljön med underhållsbehörighet för att försöka skapa {name} igen."
 }
