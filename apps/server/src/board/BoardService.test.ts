@@ -373,6 +373,56 @@ describe("BoardService subscriptions", () => {
       ),
     ),
   );
+  it.effect(
+    "replaces an oversized UTF-8 delta with a fresh snapshot for a lagging subscriber",
+    () =>
+      Effect.gen(function* () {
+        const boards = yield* BoardService.BoardService;
+        const board = yield* boards.create(threadId);
+        const ready = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        const fiber = yield* boards.subscribe(threadId).pipe(
+          Stream.tap((event) =>
+            event.type === "snapshot" && event.snapshot.board.revision === 0
+              ? Deferred.succeed(ready, undefined).pipe(Effect.andThen(Deferred.await(resume)))
+              : Effect.void,
+          ),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Deferred.await(ready);
+        const text = "é".repeat(110_000);
+        const operations = Array.from({ length: 40 }, (_, index) => ({
+          type: "create" as const,
+          element: element(`large-${index}`, { type: "text", text, index: null }),
+        }));
+        expect(Buffer.byteLength(text) * operations.length).toBeGreaterThan(8 * 1024 * 1024);
+        yield* boards.apply({ actor: "session-a", batch: batch(board, "large", operations) });
+        const settings = { viewBackgroundColor: "#eeeeee" };
+        yield* boards.apply({
+          actor: "session-a",
+          batch: batch(board, "settings", [], { settings }),
+        });
+
+        yield* Deferred.succeed(resume, undefined);
+        const [, event] = yield* Fiber.join(fiber);
+        expect(event).toMatchObject({
+          type: "snapshot",
+          snapshot: { board: { revision: 2 }, settings },
+        });
+        assert(event?.type === "snapshot");
+        expect(event.snapshot.elements).toHaveLength(40);
+      }).pipe(
+        Effect.provide(
+          BoardService.layer.pipe(
+            Layer.provide(SqlitePersistence.layerMemory),
+            Layer.provide(layerThreads),
+            Layer.provide(SecureRandom.layerWebCrypto),
+          ),
+        ),
+      ),
+  );
   it.effect("removes a deleted thread's board and tells its subscribers", () =>
     Effect.gen(function* () {
       const boards = yield* BoardService.BoardService;

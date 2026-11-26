@@ -19,6 +19,7 @@ import {
   BoardMutationReuseError,
   BoardNotFoundError,
   BoardStorageError,
+  BoardStreamEvent,
   type BoardConflict,
   type BoardDelta,
   type BoardElementToken,
@@ -29,7 +30,6 @@ import {
   type BoardHeader,
   type BoardSettings,
   type BoardSnapshot,
-  type BoardStreamEvent,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -81,9 +81,10 @@ export class BoardService extends Context.Service<
 const boardOwnerKey = (threadId: ThreadId): string => threadId;
 
 const DEFAULT_SETTINGS: BoardSettings = { viewBackgroundColor: "#ffffff" };
-// A delta can carry the board's entire element payload. Keep at most two in the backlog;
-// a subscriber that falls behind sees a revision gap and reopens with a snapshot.
+// Keep at most 16 MiB of serialized deltas per channel. Oversized deltas are
+// replaced with a revision so a subscriber can read the latest snapshot on demand.
 const SUBSCRIBER_BUFFER = 2;
+const SUBSCRIBER_DELTA_MAX_BYTES = 8 * 1024 * 1024;
 // Leaves room below the largest safe integer for many stamped successors.
 const MAX_PROPOSAL_VERSION = Number.MAX_SAFE_INTEGER - 2 ** 20;
 const MAX_VERSION_NONCE = 2 ** 31;
@@ -119,6 +120,7 @@ const decodeElementJson = Schema.decodeUnknownSync(Schema.fromJsonString(BoardEl
 const decodeApplyResultJson = Schema.decodeUnknownEffect(Schema.fromJsonString(BoardApplyResult));
 const encodeApplyResultJson = Schema.encodeEffect(Schema.fromJsonString(BoardApplyResult));
 const encodeElementJson = Schema.encodeEffect(Schema.fromJsonString(BoardElement));
+const encodeBoardEventJson = Schema.encodeEffect(Schema.fromJsonString(BoardStreamEvent));
 const encodeBatchJson = Schema.encodeEffect(Schema.fromJsonString(BoardEditBatch));
 const isBoardInvalidBatchError = Schema.is(BoardInvalidBatchError);
 const isBoardMimeType = Schema.is(BoardFileMimeType);
@@ -314,9 +316,11 @@ const transitionAllowed = (
   }
 };
 
+type BoardNotification = BoardStreamEvent | { readonly type: "resync"; readonly revision: number };
+
 interface BoardChannel {
   readonly lock: Semaphore.Semaphore;
-  readonly events: PubSub.PubSub<BoardStreamEvent>;
+  readonly events: PubSub.PubSub<BoardNotification>;
   users: number;
 }
 
@@ -334,7 +338,7 @@ const make = Effect.gen(function* () {
           existing.users += 1;
           return existing;
         }
-        const events = yield* PubSub.sliding<BoardStreamEvent>(SUBSCRIBER_BUFFER);
+        const events = yield* PubSub.sliding<BoardNotification>(SUBSCRIBER_BUFFER);
         const raced = channels.get(ownerKey);
         if (raced !== undefined) {
           raced.users += 1;
@@ -817,6 +821,16 @@ const make = Effect.gen(function* () {
       ...(settings === undefined ? {} : { settings }),
       ...(newFiles.length === 0 ? {} : { files: newFiles.map((file) => file.ref) }),
     };
+    const envelopeJson = yield* encodeBoardEventJson({
+      type: "delta",
+      delta: { ...delta, elements: [] },
+    }).pipe(Effect.orDie);
+    const envelopeBytes = Buffer.byteLength(envelopeJson);
+    const deltaBytes = envelopeBytes + addedBytes + Math.max(0, rows.length - 1);
+    const notification: BoardNotification =
+      deltaBytes > SUBSCRIBER_DELTA_MAX_BYTES
+        ? { type: "resync", revision }
+        : { type: "delta", delta };
     // A durable receipt without a published delta would leave other editors stale.
     yield* sql
       .withTransaction(
@@ -860,7 +874,7 @@ const make = Effect.gen(function* () {
       )
       .pipe(
         storage("write"),
-        Effect.andThen(PubSub.publish(channel.events, { type: "delta", delta })),
+        Effect.andThen(PubSub.publish(channel.events, notification)),
         Effect.uninterruptible,
       );
     return result;
@@ -945,6 +959,26 @@ const make = Effect.gen(function* () {
         return Stream.concat(
           Stream.make(initial),
           Stream.fromSubscription(subscription).pipe(
+            Stream.mapAccumEffect(
+              () => snapshot?.board.revision ?? -1,
+              (snapshotRevision, event) =>
+                Effect.gen(function* () {
+                  if (event.type === "resync") {
+                    if (event.revision <= snapshotRevision) return [snapshotRevision, []] as const;
+                    const latest = yield* readSnapshot(ownerKey, threadId);
+                    return latest === null
+                      ? ([snapshotRevision, [{ type: "missing" }]] as const)
+                      : ([
+                          latest.board.revision,
+                          [{ type: "snapshot", snapshot: latest }],
+                        ] as const);
+                  }
+                  if (event.type === "delta" && event.delta.revision <= snapshotRevision) {
+                    return [snapshotRevision, []] as const;
+                  }
+                  return [snapshotRevision, [event]] as const;
+                }),
+            ),
             Stream.takeUntil((event) => event.type === "missing"),
           ),
         );
