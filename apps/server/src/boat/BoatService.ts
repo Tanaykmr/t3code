@@ -1002,7 +1002,7 @@ export const make = Effect.gen(function* () {
 
   /** BoatErrors reach the caller; any other failure in the transaction is a persistence error. */
   const accept = Effect.fn("BoatService.accept")(function* <E, R>(
-    effect: Effect.Effect<BoatOperationReceipt, E, R>,
+    effect: Effect.Effect<BoatOperationReceipt | BoatError, E, R>,
   ) {
     const outcome = yield* sql.withTransaction(effect).pipe(Effect.result);
     if (outcome._tag === "Failure") {
@@ -1010,6 +1010,8 @@ export const make = Effect.gen(function* () {
       return yield* persistence(Effect.fail(outcome.failure));
     }
     yield* publish;
+    // A rejection returned by the transaction has state changes to commit and publish.
+    if (isBoatError(outcome.success)) return yield* outcome.success;
     yield* kick(outcome.success.managedId);
     return outcome.success;
   });
@@ -1033,6 +1035,14 @@ export const make = Effect.gen(function* () {
               "not-configured",
               "Add a working Boat API key on this server first.",
             );
+          }
+          if (Option.isNone(yield* readKey)) {
+            yield* sql`UPDATE boat_account SET status = 'missing' WHERE id = 1`;
+            return new BoatError({
+              code: "not-configured",
+              message:
+                "The saved Boat API key is missing. Enter it again in Settings → Environments → Boat machines.",
+            });
           }
           if (account.zero_data_retention !== 0) {
             return yield* fail(

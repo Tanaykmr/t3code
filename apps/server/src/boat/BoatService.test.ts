@@ -94,6 +94,22 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("refuses to create when the saved key disappears from the secret store", () => {
+    const { layer, fake, secrets } = setup();
+    return Effect.gen(function* () {
+      yield* configure;
+      secrets.clear();
+
+      const error = yield* Effect.flip(createSmall);
+      expect(error).toMatchObject({
+        code: "not-configured",
+        message: expect.stringContaining("Enter it again in Settings"),
+      });
+      expect(yield* snapshot).toMatchObject({ account: { status: "missing" }, servers: [] });
+      expect(fake.calls).not.toContain("create");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("creates one machine per request ID and reaches Running with a verified guest", () => {
     const { layer, fake } = setup();
     return Effect.gen(function* () {
