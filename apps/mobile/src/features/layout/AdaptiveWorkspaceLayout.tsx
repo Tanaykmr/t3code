@@ -55,6 +55,7 @@ import {
   nativeInspectorColumnWidth,
 } from "../../lib/layout";
 import type { ThreadListFilters } from "../../persistence/mobile-preferences";
+import { botByDmThreadKeyAtom } from "../../state/bots";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useProjects } from "../../state/entities";
 import { environmentThreadShells } from "../../state/threads";
@@ -583,7 +584,8 @@ function AdaptiveWorkspaceLayoutContent(
       setFileInspectorPreferredVisible(false);
       setInspectorSheetRoute(null);
       if (layout.variant === "medium") setPrimarySidebarVisible(false);
-      workspace?.dispatch({ type: "select", tab: workspaceTabOf(detail.name) });
+      const tab = workspaceTabOf(detail, appAtomRegistry.get(botByDmThreadKeyAtom));
+      if (tab !== undefined) workspace?.dispatch({ type: "select", tab });
       startOpeningDetail(detail);
       navigation.dispatch(selectWorkspaceDetail(detail, sheet));
     });

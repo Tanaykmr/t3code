@@ -1,4 +1,6 @@
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
+import type { BotAvatar, BotId } from "@t3tools/contracts";
+import { BotAvatarIcon } from "../bots/BotAvatarIcon";
 import type { ComposerPathSearchTarget } from "@t3tools/client-runtime/state/threads";
 import {
   resolveProviderSkillSourceKind,
@@ -90,6 +92,14 @@ export type ComposerCommandItem =
       type: "environment";
       environmentId: EnvironmentId;
       machine: EnvironmentMachineKind;
+      label: string;
+      description: string;
+    }
+  | {
+      id: string;
+      type: "bot";
+      botId: BotId;
+      avatar: BotAvatar;
       label: string;
       description: string;
     }
@@ -248,6 +258,12 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         <EnvironmentMachineIcon
           kind={props.item.machine}
           aria-hidden="true"
+          className="size-4 shrink-0 text-secondary-label"
+        />
+      ) : null}
+      {props.item.type === "bot" ? (
+        <BotAvatarIcon
+          avatar={props.item.avatar}
           className="size-4 shrink-0 text-secondary-label"
         />
       ) : null}

@@ -1,3 +1,5 @@
+import { botChatIsArchived } from "../bots/bot-list";
+import { useBotForThread } from "../../state/bots";
 import * as Dialog from "../../components/ui/Dialog";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { useRememberThreadProject } from "./useRememberThreadProject";
@@ -173,6 +175,7 @@ function OpeningThreadLoadingScreen() {
 type ThreadRouteScreenRouteProps = StaticScreenProps<{
   readonly environmentId?: string;
   readonly threadId?: string;
+  readonly botDm?: true;
   readonly draft?: NewTaskDraftRouteParams;
   readonly inspector?: ThreadInspectorTarget;
   readonly prompt?: string | string[];
@@ -546,6 +549,9 @@ function ThreadRouteContent(
       : scopeThreadRef(delegatedFrom.environmentId, delegatedFrom.threadId);
   // The title it had at delegation, until this client sees the parent itself.
   const delegatedFromThread = useThreadShell(delegatedFromRef);
+  const activeBot = useBotForThread(
+    selectedThread ? scopeThreadRef(selectedThread.environmentId, selectedThread.id) : null,
+  )?.bot;
   const headerSubtitle = [
     selectedThreadProject?.title ?? null,
     selectedEnvironmentConnection?.environmentLabel ?? null,
@@ -988,11 +994,12 @@ function ThreadRouteContent(
     connectionRetrying ? routeConnectionError : null,
     RECONNECT_ERROR_DELAY_MS,
   );
+  const awaitingApproval = routeEnvironmentRuntime?.connectionAwaitingApproval === true;
   const connectionStatusLabel = connectionRetryLabel(
     {
       connectionError: retryConnectionError,
       connectionState: routeConnectionState,
-      connectionAwaitingApproval: routeEnvironmentRuntime?.connectionAwaitingApproval === true,
+      connectionAwaitingApproval: awaitingApproval,
     },
     m,
   );
@@ -1013,7 +1020,7 @@ function ThreadRouteContent(
   );
   const inspectorHeader = props.inspectorPresentation ? (
     <ThreadInspectorHeader
-      title={selectedThread?.title ?? gt("Thread")}
+      title={activeBot?.name ?? selectedThread?.title ?? gt("Thread")}
       subtitle={threadStatusLabel ?? undefined}
       {...props.inspectorPresentation}
     />
@@ -1027,6 +1034,14 @@ function ThreadRouteContent(
     );
   }
 
+  const botChat = activeBot
+    ? {
+        bot: activeBot,
+        thread: selectedThread,
+        archived: botChatIsArchived(activeBot, selectedThread),
+        canOperate: canOperateThread,
+      }
+    : undefined;
   const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
   const renderThreadRouteBody = () => (
     <>
@@ -1041,8 +1056,14 @@ function ThreadRouteContent(
           header={
             props.inspectorPresentation ? null : (
               <ThreadHeader
-                title={selectedThread.title}
-                subtitle={threadStatusLabel ?? headerSubtitle}
+                title={activeBot?.name ?? selectedThread.title}
+                subtitle={
+                  activeBot
+                    ? ((connectionRetrying && !awaitingApproval ? null : threadStatusLabel) ??
+                      activeBot.title)
+                    : (threadStatusLabel ?? headerSubtitle)
+                }
+                botChat={botChat}
                 gitControls={threadGitControlProps}
                 hasThreadCwd={selectedThreadCwd !== null}
                 inspectorMode={inspectorMode}
@@ -1052,6 +1073,7 @@ function ThreadRouteContent(
             )
           }
           canOperateThread={canOperateThread}
+          botChat={botChat}
           selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
           selectedThreadDetailRef={selectedThreadDetailRef}
           contentPresentation={contentPresentation}

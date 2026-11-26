@@ -3,6 +3,13 @@
 function buildFormatters(timeZone: string) {
   return {
     timeZone,
+    calendarDay: new Intl.DateTimeFormat("en-CA", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      timeZone,
+    }),
+    weekday: new Intl.DateTimeFormat(undefined, { weekday: "short", timeZone }),
     time: new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZone }),
     date: new Intl.DateTimeFormat(undefined, { month: "numeric", day: "numeric", timeZone }),
     dateWithYear: new Intl.DateTimeFormat(undefined, {
@@ -45,7 +52,11 @@ export function formatMessageTimestamp(
 }
 
 /** `is24Hour` overrides the locale's hour cycle with the system clock preference when known. */
-export function createMessageTimeFormatter(is24Hour: boolean | undefined, locale?: string) {
+export function createMessageTimeFormatter(
+  is24Hour: boolean | undefined,
+  locale?: string,
+  inbox?: { readonly yesterday: string },
+) {
   let cached: { timeZone: string; formatter: Intl.DateTimeFormat } | null = null;
   return (input: string, nowMs?: number): string => {
     const { timeZone } = currentFormatters();
@@ -60,6 +71,19 @@ export function createMessageTimeFormatter(is24Hour: boolean | undefined, locale
         }),
       };
     }
-    return formatMessageTimestamp(input, nowMs, cached.formatter);
+    if (inbox === undefined) return formatMessageTimestamp(input, nowMs, cached.formatter);
+    const timestamp = Date.parse(input);
+    if (Number.isNaN(timestamp)) return "";
+    const f = currentFormatters();
+    const daysAgo =
+      (Date.parse(f.calendarDay.format(nowMs ?? Date.now())) -
+        Date.parse(f.calendarDay.format(timestamp))) /
+      86_400_000;
+    if (daysAgo === 0) return cached.formatter.format(timestamp);
+    if (daysAgo === 1) return inbox.yesterday;
+    if (daysAgo > 1 && daysAgo < 7) return f.weekday.format(timestamp);
+    return f.year.format(timestamp) === f.year.format(nowMs ?? Date.now())
+      ? f.date.format(timestamp)
+      : f.dateWithYear.format(timestamp);
   };
 }

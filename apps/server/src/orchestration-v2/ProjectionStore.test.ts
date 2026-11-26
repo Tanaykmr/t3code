@@ -1375,6 +1375,68 @@ it.effect("a compacted thread reads every run, but records and prompts only for 
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect(
+  "projects a bounded, completed reply only for a bot DM on snapshots and point reads",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = yield* addRolledBackRecoveryCandidate("bot-inbox");
+      const regularThreadId = yield* addRolledBackRecoveryCandidate("regular-inbox");
+      const now = DateTime.makeUnsafe("2026-11-24T09:38:00.000Z");
+      const text = "The release is ready. " + "x".repeat(400);
+      yield* sql`
+      INSERT INTO bots (
+        bot_id, name, title, avatar, persona, persona_revision, project_id, model_selection_json,
+        dm_thread_id, created_at, updated_at
+      ) VALUES ('ada', 'Ada', '', 'bot', '', 1, 'project:test', '{}', ${threadId},
+        ${DateTime.formatIso(now)}, ${DateTime.formatIso(now)})
+    `;
+      for (const [id, target, offset, streaming] of [
+        ["reply", threadId, 0, false],
+        ["streaming", threadId, 1, true],
+        ["ordinary", regularThreadId, 0, false],
+      ] as const) {
+        const at = DateTime.add(now, { minutes: offset });
+        yield* store.apply({
+          id: EventId.make(`bot-inbox:${id}`),
+          type: "message.updated",
+          threadId: target,
+          occurredAt: at,
+          payload: {
+            id: MessageId.make(id),
+            threadId: target,
+            runId: null,
+            nodeId: null,
+            role: "assistant",
+            text,
+            attachments: [],
+            streaming,
+            createdBy: "agent",
+            creationSource: "server",
+            createdAt: at,
+            updatedAt: at,
+          },
+        });
+      }
+      const snapshot = yield* store.getShellSnapshot();
+      const expected = {
+        id: MessageId.make("reply"),
+        role: "assistant",
+        text: text.slice(0, 180),
+        updatedAt: now,
+      };
+      assert.deepEqual(
+        snapshot.threads.find((thread) => thread.id === threadId)?.latestVisibleMessage,
+        expected,
+      );
+      assert.deepEqual((yield* store.getThreadShell(threadId))?.latestVisibleMessage, expected);
+      assert.isNull(
+        snapshot.threads.find((thread) => thread.id === regularThreadId)?.latestVisibleMessage,
+      );
+    }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("record reads filter notification sources without dropping matching message bodies", () =>
   Effect.gen(function* () {
     const store = yield* ProjectionStore.ProjectionStoreV2;

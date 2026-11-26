@@ -135,6 +135,9 @@ import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as Boat from "./boat/BoatService.ts";
 import { isLoopbackHost } from "./startupAccess.ts";
 import { deriveAuthClientMetadata } from "./auth/utils.ts";
+import * as BotService from "./bots/BotService.ts";
+import * as BotChannelService from "./bots/BotChannelService.ts";
+import * as BotKnowledgeService from "./bots/BotKnowledgeService.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -1513,6 +1516,9 @@ export const layerWsRpc = (
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const boat = yield* Boat.BoatService;
+      const bots = yield* BotService.BotService;
+      const botChannels = yield* BotChannelService.BotChannelService;
+      const botKnowledge = yield* BotKnowledgeService.BotKnowledgeService;
       const workflows = yield* Workflows.Workflows;
       const workflowDefinitions = yield* WorkflowRuntime.WorkflowDefinitions;
       // The service's messages are built from its own attributes, so they are safe to send.
@@ -2423,6 +2429,32 @@ export const layerWsRpc = (
                 }),
               )
             : boat.setApiKey(input),
+        [WS_METHODS.botsSubscribe]: (_input) => bots.subscribeDirectory(),
+        [WS_METHODS.botsCreate]: (input) =>
+          Effect.annotateCurrentSpan({ "bot.id": input.botId }).pipe(
+            Effect.andThen(bots.create(input)),
+          ),
+        [WS_METHODS.botsUpdate]: (input) =>
+          Effect.annotateCurrentSpan({ "bot.id": input.botId }).pipe(
+            Effect.andThen(bots.update(input)),
+          ),
+        [WS_METHODS.botsArchive]: (input) =>
+          Effect.annotateCurrentSpan({ "bot.id": input.botId }).pipe(
+            Effect.andThen(bots.archive(input)),
+          ),
+        [WS_METHODS.botsRestore]: (input) =>
+          Effect.annotateCurrentSpan({ "bot.id": input.botId }).pipe(
+            Effect.andThen(bots.restore(input)),
+          ),
+        [WS_METHODS.botsCreateRoom]: (input) => botChannels.createRoom(input),
+        [WS_METHODS.botsUpdateRoom]: (input) => botChannels.updateRoom(input),
+        [WS_METHODS.botsSubscribeChannel]: (input) => botChannels.subscribeChannel(input),
+        [WS_METHODS.botsSendRoomMessage]: (input) => botChannels.sendRoomMessage(input),
+        [WS_METHODS.botsHandoff]: (input) => botChannels.handoff(input),
+        [WS_METHODS.botsSubscribeKnowledge]: (input) => botKnowledge.subscribe(input.botId),
+        [WS_METHODS.botsSaveMemory]: (input) => botKnowledge.saveMemory(input),
+        [WS_METHODS.botsSaveSkill]: (input) => botKnowledge.saveSkill(input),
+        [WS_METHODS.botsDeleteKnowledge]: (input) => botKnowledge.remove(input),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
           scheduledTasks.subscribeList().pipe(Stream.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksUpsert]: (input) => scheduledTasks.upsert(input),

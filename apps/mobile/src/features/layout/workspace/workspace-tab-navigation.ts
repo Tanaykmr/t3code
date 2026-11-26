@@ -4,7 +4,7 @@ import {
   type SettingsPageTarget,
 } from "../../settings/components/settings-page-targets";
 import { settingsNavigationState } from "../../settings/settings-navigation";
-import type { WorkspaceTab } from "./workspace-tabs-state";
+import { workspaceTabOf, type WorkspaceTab } from "./workspace-tabs-state";
 
 type RouteLike = {
   readonly name: string;
@@ -116,9 +116,10 @@ function sameIssue(left: IssueSelection | undefined, right: Omit<IssueSelection,
 export function workspaceSelectionsIn(
   routes: readonly RouteLike[],
   previous: WorkspaceSelections,
+  botDms?: Parameters<typeof workspaceTabOf>[1],
 ): WorkspaceSelections {
   let next = previous;
-  const thread = routes.findLast((route) => route.name === "Thread");
+  const thread = routes.findLast((route) => workspaceTabOf(route, botDms) === "threads");
   const environmentId = stringParam(thread?.params, "environmentId");
   const threadId = stringParam(thread?.params, "threadId");
   if (

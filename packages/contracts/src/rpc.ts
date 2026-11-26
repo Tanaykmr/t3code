@@ -463,6 +463,26 @@ import {
   BoatSnapshot,
   BoatSubscribeInput,
 } from "./boat.ts";
+import {
+  BotChannelQuery,
+  BotChannelSnapshot,
+  BotCreateInput,
+  BotDirectory,
+  BotError,
+  BotHandoffInput,
+  BotKnowledge,
+  BotKnowledgeDeleteInput,
+  BotMemorySaveInput,
+  BotSkillSaveInput,
+  BotMutationResult,
+  BotRefInput,
+  BotRoomCreateInput,
+  BotRoomMutationResult,
+  BotRoomSendInput,
+  BotRoomUpdateInput,
+  BotSendResult,
+  BotUpdateInput,
+} from "./bots.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import { AgentFeedbackAnswerInput, AgentFeedbackRequestError } from "./agentFeedback.ts";
 import {
@@ -659,6 +679,21 @@ export const WS_METHODS = {
   boatResume: "boat.resume",
   boatDelete: "boat.delete",
   boatSetApiKey: "boat.setApiKey",
+
+  botsSubscribe: "bots.subscribe",
+  botsCreate: "bots.create",
+  botsUpdate: "bots.update",
+  botsArchive: "bots.archive",
+  botsRestore: "bots.restore",
+  botsCreateRoom: "bots.createRoom",
+  botsUpdateRoom: "bots.updateRoom",
+  botsSubscribeChannel: "bots.subscribeChannel",
+  botsSendRoomMessage: "bots.sendRoomMessage",
+  botsHandoff: "bots.handoff",
+  botsSubscribeKnowledge: "bots.subscribeKnowledge",
+  botsSaveMemory: "bots.saveMemory",
+  botsSaveSkill: "bots.saveSkill",
+  botsDeleteKnowledge: "bots.deleteKnowledge",
 
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksUpsert: "scheduledTasks.upsert",
@@ -2421,6 +2456,93 @@ const WsBoatSetApiKeyRpc = Rpc.make(WS_METHODS.boatSetApiKey, {
   error: BoatRpcError,
 });
 
+const WsBotsSubscribeRpc = Rpc.make(WS_METHODS.botsSubscribe, {
+  payload: Schema.Struct({}),
+  success: BotDirectory,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsBotsCreateRpc = Rpc.make(WS_METHODS.botsCreate, {
+  payload: BotCreateInput,
+  success: BotMutationResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsUpdateRpc = Rpc.make(WS_METHODS.botsUpdate, {
+  payload: BotUpdateInput,
+  success: BotMutationResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsArchiveRpc = Rpc.make(WS_METHODS.botsArchive, {
+  payload: BotRefInput,
+  success: BotMutationResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsRestoreRpc = Rpc.make(WS_METHODS.botsRestore, {
+  payload: BotRefInput,
+  success: BotMutationResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsCreateRoomRpc = Rpc.make(WS_METHODS.botsCreateRoom, {
+  payload: BotRoomCreateInput,
+  success: BotRoomMutationResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsUpdateRoomRpc = Rpc.make(WS_METHODS.botsUpdateRoom, {
+  payload: BotRoomUpdateInput,
+  success: BotRoomMutationResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsSubscribeChannelRpc = Rpc.make(WS_METHODS.botsSubscribeChannel, {
+  payload: BotChannelQuery,
+  success: BotChannelSnapshot,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsBotsSendRoomMessageRpc = Rpc.make(WS_METHODS.botsSendRoomMessage, {
+  payload: BotRoomSendInput,
+  success: BotSendResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsHandoffRpc = Rpc.make(WS_METHODS.botsHandoff, {
+  payload: BotHandoffInput,
+  success: BotSendResult,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsSubscribeKnowledgeRpc = Rpc.make(WS_METHODS.botsSubscribeKnowledge, {
+  payload: BotRefInput,
+  success: BotKnowledge,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsBotsSaveMemoryRpc = Rpc.make(WS_METHODS.botsSaveMemory, {
+  payload: BotMemorySaveInput,
+  success: BotKnowledge,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsSaveSkillRpc = Rpc.make(WS_METHODS.botsSaveSkill, {
+  payload: BotSkillSaveInput,
+  success: BotKnowledge,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
+const WsBotsDeleteKnowledgeRpc = Rpc.make(WS_METHODS.botsDeleteKnowledge, {
+  payload: BotKnowledgeDeleteInput,
+  success: BotKnowledge,
+  error: Schema.Union([BotError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2611,6 +2733,20 @@ export const WsRpcGroup = RpcGroup.make(
   WsBoatResumeRpc,
   WsBoatDeleteRpc,
   WsBoatSetApiKeyRpc,
+  WsBotsSubscribeRpc,
+  WsBotsCreateRpc,
+  WsBotsUpdateRpc,
+  WsBotsArchiveRpc,
+  WsBotsRestoreRpc,
+  WsBotsCreateRoomRpc,
+  WsBotsUpdateRoomRpc,
+  WsBotsSubscribeChannelRpc,
+  WsBotsSendRoomMessageRpc,
+  WsBotsHandoffRpc,
+  WsBotsSubscribeKnowledgeRpc,
+  WsBotsSaveMemoryRpc,
+  WsBotsSaveSkillRpc,
+  WsBotsDeleteKnowledgeRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,

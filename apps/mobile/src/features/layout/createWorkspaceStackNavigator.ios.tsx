@@ -688,7 +688,10 @@ function WorkspaceStackNavigator({
   return (
     <NativeWorkspaceModeContext value={usesNativeWorkspaceColumns}>
       <NavigationContent>
-        <WorkspaceTabsProvider settingsOpen={settingsOpen}>
+        <WorkspaceTabsProvider
+          settingsOpen={settingsOpen}
+          route={state.routes.find((route) => route.name !== "Home")}
+        >
           <WorkspaceStackView
             nativeColumns={usesNativeWorkspaceColumns}
             {...rest}

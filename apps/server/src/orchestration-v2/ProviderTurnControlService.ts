@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -125,6 +126,7 @@ export const layer: Layer.Layer<
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const mcpAppModelContext = yield* McpAppModelContext.McpAppModelContext;
+    const botTurnContext = yield* BotTurnContext.optional;
 
     const load = Effect.fn("ProviderTurnControlService.load")(function* (input: {
       readonly threadId: ThreadId;
@@ -448,10 +450,10 @@ export const layer: Layer.Layer<
               cause: "The persisted steering message or target run is missing.",
             });
           }
-          const appContext = yield* McpAppModelContext.forProvider(
-            mcpAppModelContext,
-            input.threadId,
-          );
+          const appContext = [
+            ...(yield* BotTurnContext.forProvider(botTurnContext, input.threadId)),
+            ...(yield* McpAppModelContext.forProvider(mcpAppModelContext, input.threadId)),
+          ];
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,

@@ -103,7 +103,7 @@ const handlers = {
           return yield* service.scheduleTask(scope, { ...input, prompt, schedule });
         }),
       // A scheduled run starts long after its caller, with nothing to carry the link.
-      { refused: "schedule tasks in this environment" },
+      { refused: "schedule tasks in this environment", routine: true },
     ),
     McpToolAccess.writes(
       ({ scheduledTaskId, prompt, title, schedule, enabled, freshSession, bindToCurrentThread }) =>

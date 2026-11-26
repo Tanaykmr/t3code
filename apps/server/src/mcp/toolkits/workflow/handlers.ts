@@ -3,6 +3,8 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 
 import * as Workflows from "../../../workflows/Workflows.ts";
+import * as BotMcpPolicy from "../../BotMcpPolicy.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { WORKFLOW_READ_ACTIONS, WorkflowToolkit } from "./tools.ts";
 
@@ -43,6 +45,10 @@ export const layer = McpToolAccess.toLayer(WorkflowToolkit, {
     ),
     McpToolAccess.writes((input) =>
       Effect.gen(function* () {
+        yield* BotMcpPolicy.assertNonBot(
+          yield* McpInvocationContext.McpInvocationContext,
+          "workflow",
+        );
         const workflows = yield* Workflows.Workflows;
         // A hook's path holds its secret, and posting to it starts a run.
         if (input.action === "hooks") {

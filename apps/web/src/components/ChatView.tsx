@@ -1,6 +1,7 @@
 import { m } from "../i18n/messages";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useGT, useMessages } from "gt-react";
+import { ReadOnlyComposerBar, ReadOnlyComposerStatus } from "./chat/ReadOnlyComposerBar";
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
@@ -314,6 +315,9 @@ import { ProviderSubagentBar } from "./chat/ProviderSubagentBar";
 import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
+import { useBotForThread, useIsRoomSeat } from "../state/bots";
+import { ArchivedBotComposerBar } from "./bots/ArchivedBotComposerBar";
+import { useBotHandoffSend } from "./bots/useBotHandoffSend";
 import { useSideChat } from "./chat/useSideChat";
 import { sideThreadComposer, sideThreadKindOf } from "@t3tools/client-runtime/side-thread";
 import { useOpenSurfaceInMainView } from "../hooks/useOpenSurfaceInMainView";
@@ -1083,6 +1087,12 @@ export default function ChatView(props: ChatViewProps) {
     return labels;
   })();
   const activeThreadRef = useActiveThreadRef(activeThread);
+  const activeBot = useBotForThread(activeThreadRef);
+  const isRoomSeat = useIsRoomSeat(activeThreadRef);
+  const archivedBot =
+    activeBot !== null && (activeBot.bot.archivedAt !== null || serverThread?.archivedAt != null)
+      ? activeBot
+      : null;
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   const activeEnvironmentServerBrowser = useEnvironmentSupportsServerBrowser(
     activeThreadRef?.environmentId ?? null,
@@ -1860,7 +1870,10 @@ export default function ChatView(props: ChatViewProps) {
     turnDiffSummaries.some((summary) => summary.repositories !== undefined);
   // Provider-native subagents cannot take messages; approvals and questions go to the top-level parent.
   const showProviderSubagentBar = isProviderSubagent;
-  const composerMounted = !showProviderSubagentBar;
+  const composerMounted =
+    !showProviderSubagentBar &&
+    archivedBot === null &&
+    (!isRoomSeat || activePendingUserInput !== null);
   const providerSubagentModels = selectedProviderEntry?.models ?? EMPTY_PROVIDER_MODELS;
   // Providers can report dated model ids or aliases.
   const providerSubagentModelSlug = selectedProviderEntry
@@ -1889,7 +1902,7 @@ export default function ChatView(props: ChatViewProps) {
     shouldShowComposerContextStrip({
       isDraftHeroState,
       persistInActiveThreads: settings.persistComposerContextStrip,
-      hasActiveProject: activeProject !== null && !showProviderSubagentBar,
+      hasActiveProject: activeProject !== null && composerMounted,
       isGitRepo,
       showEnvironmentIndicator: showComposerEnvironmentIndicator,
     });
@@ -3186,7 +3199,25 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
   const onWorktreeSetupWorkLocallyStable = useStableCallback(onWorktreeSetupWorkLocally);
-  const onComposerSendStable = useStableCallback(onSend);
+  const sendBotHandoff = useBotHandoffSend({
+    activeBot,
+    targetKey: composerTargetKey(composerDraftTarget),
+    hasAttachments: composerHasNonPromptContent,
+  });
+  const onSendOrHandoff: typeof onSend = async (...args) => {
+    // A bot DM's picked @-chips go to those bots; the DM's own bot runs only when picked too.
+    const plainSend = args[3] === undefined && args[4] === undefined;
+    const outcome = plainSend ? await sendBotHandoff(promptRef.current) : "none";
+    if (outcome === "failed") return;
+    if (outcome === "handed-off-only") {
+      if (composerDraftTarget !== null) setComposerDraftPrompt(composerDraftTarget, "");
+      promptRef.current = "";
+      composerRef.current?.resetCursorState();
+      return;
+    }
+    return onSend(...args);
+  };
+  const onComposerSendStable = useStableCallback(onSendOrHandoff);
   const sendPreviewAnnotation = (
     annotation: PreviewAnnotationPayload,
     image: ComposerImageAttachment | null,
@@ -3558,7 +3589,7 @@ export default function ChatView(props: ChatViewProps) {
               activeThreadEnvironmentId={activeThread.environmentId}
               activeThreadId={activeThread.id}
               isServerThread={isServerThread}
-              activeThreadTitle={activeThread.title}
+              activeThreadTitle={activeBot?.bot.name ?? activeThread.title}
               activeThreadLinkOrigin={activeThreadShell?.linkOrigin?.label ?? null}
               activeProject={activeProject ?? null}
               parentThreadLink={headerParentThreadLink}
@@ -3630,8 +3661,12 @@ export default function ChatView(props: ChatViewProps) {
                   detailLoading={threadDetailLoading}
                   citationRequest={citationRequest}
                   citationHistory={citationHistory}
-                  onCiteAssistantText={citeAssistantTextStable}
-                  onReplyToResponse={replyToResponseStable}
+                  {...(isRoomSeat
+                    ? {}
+                    : {
+                        onCiteAssistantText: citeAssistantTextStable,
+                        onReplyToResponse: replyToResponseStable,
+                      })}
                   {...(activeProject && !runsOutsideHostCheckout
                     ? { onRunShellCommand: parentPanel?.runShellCommand ?? runShellCommandStable }
                     : {})}
@@ -3719,7 +3754,9 @@ export default function ChatView(props: ChatViewProps) {
                   onIsAtEndChange={onIsAtEndChangeStable}
                   onViewportAttach={attachTimelineViewport}
                   onFooterGrow={onTimelineFooterGrowStable}
-                  hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
+                  hideEmptyPlaceholder={
+                    isDraftHeroState || threadDetailLoading || archivedBot !== null
+                  }
                   emptyPlaceholderInset={composerReservedHeight}
                   topFadeEnabled={!hasTimelineTopBanner}
                   {...(threadHistoryControls === undefined
@@ -3795,7 +3832,18 @@ export default function ChatView(props: ChatViewProps) {
                           aria-busy={queuedRunEdit.isSaving}
                         >
                           <div className="relative z-10">
-                            {showProviderSubagentBar ? (
+                            {archivedBot !== null ? (
+                              <ArchivedBotComposerBar
+                                key={activeThreadKey}
+                                environmentId={archivedBot.environmentId}
+                                botId={archivedBot.bot.id}
+                                disabled={!canOperateThread || activeEnvironmentUnavailable}
+                              />
+                            ) : isRoomSeat && !composerMounted ? (
+                              <ReadOnlyComposerBar>
+                                <ReadOnlyComposerStatus>{gt("Read-only")}</ReadOnlyComposerStatus>
+                              </ReadOnlyComposerBar>
+                            ) : showProviderSubagentBar ? (
                               <ProviderSubagentBar
                                 provider={selectedProviderEntry ?? null}
                                 showInstanceBadge={

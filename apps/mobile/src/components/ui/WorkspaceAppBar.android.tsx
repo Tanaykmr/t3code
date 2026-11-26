@@ -1,3 +1,4 @@
+import type { AppBarAction } from "./AppBar.types";
 import { useGT } from "gt-react-native";
 import { Box, Icon, IconButton, RNHostView } from "@expo/ui/jetpack-compose";
 import { semantics, size } from "@expo/ui/jetpack-compose/modifiers";
@@ -28,6 +29,7 @@ const ACTION_END_INSET = 4;
 
 export interface WorkspaceAppBarProps {
   readonly title: string;
+  readonly action?: AppBarAction;
   readonly titleContent?: ReactNode;
   readonly search?: {
     readonly accessibilityLabel: string;
@@ -129,7 +131,7 @@ export function WorkspaceAppBar(props: WorkspaceAppBarProps) {
  */
 function WorkspaceAppBarView(props: WorkspaceAppBarProps) {
   const gt = useGT();
-  const { search, filter } = props;
+  const { search, filter, action } = props;
   const searching = search?.active === true;
   const { colors } = useControlTheme();
   const tint = colors["--color-header-foreground"];
@@ -222,12 +224,21 @@ function WorkspaceAppBarView(props: WorkspaceAppBarProps) {
               </>
             }
           />
-          {filter ? (
+          {filter || action ? (
             <View
               className="absolute"
               style={{ right: ACTION_END_INSET, top: (height - ACTION_SIZE) / 2 }}
             >
-              {filterMenu}
+              {action ? (
+                <AndroidHeaderIconButton
+                  accessibilityLabel={action.accessibilityLabel}
+                  icon={action.icon}
+                  disabled={action.disabled}
+                  onPress={action.onPress}
+                />
+              ) : (
+                filterMenu
+              )}
             </View>
           ) : null}
         </View>

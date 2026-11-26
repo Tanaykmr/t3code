@@ -1672,6 +1672,18 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:boat:live",
       tag: WS_METHODS.boatSubscribe,
     }),
+    botsLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:bots:live",
+      tag: WS_METHODS.botsSubscribe,
+    }),
+    botKnowledgeLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:bots:knowledge",
+      tag: WS_METHODS.botsSubscribeKnowledge,
+    }),
+    botChannelLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:bots:channel",
+      tag: WS_METHODS.botsSubscribeChannel,
+    }),
     scheduledTasksLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,
@@ -1961,6 +1973,50 @@ export function createServerEnvironmentAtoms<R, E>(
     setBoatApiKey: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:boat:set-api-key",
       tag: WS_METHODS.boatSetApiKey,
+    }),
+    createBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:create",
+      tag: WS_METHODS.botsCreate,
+    }),
+    updateBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:update",
+      tag: WS_METHODS.botsUpdate,
+    }),
+    archiveBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:archive",
+      tag: WS_METHODS.botsArchive,
+    }),
+    restoreBot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:restore",
+      tag: WS_METHODS.botsRestore,
+    }),
+    createBotRoom: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot-room:create",
+      tag: WS_METHODS.botsCreateRoom,
+    }),
+    updateBotRoom: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot-room:update",
+      tag: WS_METHODS.botsUpdateRoom,
+    }),
+    sendBotRoomMessage: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot-room:send",
+      tag: WS_METHODS.botsSendRoomMessage,
+    }),
+    saveBotMemory: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:memory-save",
+      tag: WS_METHODS.botsSaveMemory,
+    }),
+    saveBotSkill: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:skill-save",
+      tag: WS_METHODS.botsSaveSkill,
+    }),
+    deleteBotKnowledge: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:knowledge-delete",
+      tag: WS_METHODS.botsDeleteKnowledge,
+    }),
+    handoffToBots: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:bot:handoff",
+      tag: WS_METHODS.botsHandoff,
     }),
     upsertScheduledTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:upsert",
