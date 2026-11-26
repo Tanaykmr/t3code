@@ -110,6 +110,22 @@ describe("BoatService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("publishes an invalid account when Boat rejects the saved key during create", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      yield* configure;
+
+      fake.failNext("account", new BoatApiError({ category: "unavailable" }));
+      expect((yield* Effect.flip(createSmall)).code).toBe("provider-unavailable");
+      expect((yield* snapshot).account.status).toBe("configured");
+
+      fake.failNext("account", new BoatApiError({ category: "unauthorized" }));
+      expect((yield* Effect.flip(createSmall)).code).toBe("unauthorized");
+      expect(yield* snapshot).toMatchObject({ account: { status: "invalid" }, servers: [] });
+      expect(fake.calls).not.toContain("create");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("creates one machine per request ID and reaches Running with a verified guest", () => {
     const { layer, fake } = setup();
     return Effect.gen(function* () {

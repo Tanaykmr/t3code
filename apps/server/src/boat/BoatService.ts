@@ -1046,15 +1046,19 @@ export const make = Effect.gen(function* () {
                 "The saved Boat API key is missing. Enter it again in Settings → Environments → Boat machines.",
             });
           }
-          const policy = yield* api
-            .account(key.value)
-            .pipe(
-              Effect.mapError(
-                () =>
-                  new BoatError({ code: "provider-unavailable", message: "Could not reach Boat." }),
-              ),
-            );
-          if (policy.zeroDataRetention !== false) {
+          const accountResult = yield* api.account(key.value).pipe(Effect.result);
+          if (accountResult._tag === "Failure") {
+            if (accountResult.failure.category === "unauthorized") {
+              yield* sql`UPDATE boat_account SET status = 'invalid' WHERE id = 1`;
+              return new BoatError({
+                code: "unauthorized",
+                message:
+                  "The saved Boat API key is invalid. Replace it in Settings → Environments → Boat machines.",
+              });
+            }
+            return yield* fail("provider-unavailable", "Could not reach Boat.");
+          }
+          if (accountResult.success.zeroDataRetention !== false) {
             return yield* fail(
               "invalid-state",
               "Boat did not confirm that this account keeps stopped disks, so a stopped machine might not resume.",
