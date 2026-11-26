@@ -67,6 +67,7 @@ import {
 } from "../../apps/server/src/feedback/FeedbackReport.ts";
 import { scrubFeedback } from "../../apps/server/src/feedback/scrubFeedback.ts";
 import { EnvironmentToolkit } from "../../apps/server/src/mcp/toolkits/environment/tools.ts";
+import { BoatToolkit } from "../../apps/server/src/mcp/toolkits/boat/tools.ts";
 import { HtmlToolkit } from "../../apps/server/src/mcp/toolkits/html/tools.ts";
 import { IssuesToolkit } from "../../apps/server/src/mcp/toolkits/issues/tools.ts";
 import { MessageToolkit } from "../../apps/server/src/mcp/toolkits/message/tools.ts";
@@ -502,6 +503,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   AttachmentToolkit,
   ProjectToolkit,
   EnvironmentToolkit,
+  BoatToolkit,
   ThemeToolkit,
   FeedbackToolkit,
   PreviewControlsToolkit,

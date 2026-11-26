@@ -1,16 +1,28 @@
 import { describe, expect, it } from "@effect/vitest";
-import { BoatRequestId, type BoatSnapshot, EnvironmentId } from "@t3tools/contracts";
+import {
+  BoatOperationReceipt,
+  BoatRequestId,
+  type BoatSnapshot,
+  EnvironmentId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
+import * as McpHttpServer from "../mcp/McpHttpServer.ts";
+import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import { liveThreadsLayer } from "../mcp/McpToolAccess.testkit.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { BoatApi, BoatApiError, type BoatKey } from "./BoatApi.ts";
 import {
@@ -66,6 +78,143 @@ const settle = BoatService.BoatService.use((boat) => boat.reconcile);
 const createSmall = BoatService.BoatService.use((boat) =>
   boat.create({ requestId: requestId(), displayName: "Scratch", size: "small", ttlSeconds: 3600 }),
 );
+
+const boatCaller: McpInvocationContext.McpInvocationScope = {
+  environmentId: EnvironmentId.make("env-controller"),
+  requestNamespace: "provider:boat",
+  capabilities: new Set(["orchestration"]),
+  thread: {
+    threadId: ThreadId.make("thread:boat"),
+    providerSessionId: "provider:boat",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+  },
+  client: undefined,
+  issuedAt: 0,
+};
+const mcpClient = McpSchema.McpServerClient.of({
+  clientId: 1,
+  protocolVersion: "2025-06-18",
+  clientCapabilities: {},
+  clientInfo: { name: "mcp-test", version: "1" },
+  initializePayload: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "mcp-test", version: "1" },
+  },
+  getClient: Effect.die("unused"),
+});
+const boatTools = McpHttpServer.layerBoatToolkit.pipe(
+  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provide(liveThreadsLayer),
+);
+const callBoatTool = (name: string, args: Record<string, unknown>, caller = boatCaller) =>
+  McpServer.McpServer.use((mcp) => mcp.callTool({ name, arguments: args })).pipe(
+    Effect.provideService(McpInvocationContext.McpInvocationContext, caller),
+    Effect.provideService(McpSchema.McpServerClient, mcpClient),
+  );
+const decodeBoatReceipt = Schema.decodeUnknownEffect(BoatOperationReceipt);
+
+describe("Boat MCP lifecycle", () => {
+  it.effect("lets a full-access thread discover and stop a running Boat machine", () => {
+    const { layer, fake } = setup();
+    return Effect.gen(function* () {
+      yield* configure;
+      const created = yield* callBoatTool("t3_boat_lifecycle", {
+        action: "create",
+        requestId: requestId(),
+        displayName: "Scratch",
+        size: "small",
+        ttlSeconds: 3600,
+      });
+      const { managedId } = yield* decodeBoatReceipt(created.structuredContent);
+      yield* settle;
+      const list = yield* callBoatTool("t3_boat_list", {});
+      expect(list.structuredContent).toMatchObject({
+        servers: [{ managedId, lifecycle: "running" }],
+      });
+      const input = { action: "stop", managedId, requestId: requestId() };
+      const foreign = yield* callBoatTool("t3_boat_lifecycle", input, {
+        ...boatCaller,
+        environmentId: EnvironmentId.make("other-controller"),
+      });
+      expect(foreign).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining('"capability_denied"') }],
+      });
+      expect(fake.calls).not.toContain("stop");
+      const result = yield* callBoatTool("t3_boat_lifecycle", input);
+      expect(result.structuredContent).toMatchObject({
+        managedId,
+        requestId: input.requestId,
+        kind: "stop",
+      });
+      yield* settle;
+      const replay = yield* callBoatTool("t3_boat_lifecycle", input);
+      expect(replay.structuredContent).toEqual(result.structuredContent);
+      expect(fake.calls.filter((call) => call === "stop")).toHaveLength(1);
+      expect((yield* server(managedId))?.lifecycle).toBe("stopped");
+      const wake = yield* callBoatTool("t3_boat_lifecycle", {
+        action: "resume",
+        managedId,
+        requestId: requestId(),
+      });
+      expect(wake.structuredContent).toMatchObject({ managedId, kind: "resume" });
+      yield* settle;
+      expect((yield* server(managedId))?.lifecycle).toBe("running");
+      yield* callBoatTool("t3_boat_lifecycle", { ...input, requestId: requestId() });
+      yield* settle;
+      const removal = { action: "delete", managedId, requestId: requestId() };
+      expect(yield* Effect.flip(callBoatTool("t3_boat_lifecycle", removal))).toMatchObject({
+        _tag: "InvalidParams",
+      });
+      const deleted = yield* callBoatTool("t3_boat_lifecycle", { ...removal, confirmed: true });
+      expect(deleted.structuredContent).toMatchObject({ managedId, kind: "delete" });
+      yield* settle;
+      expect(fake.sandboxes.size).toBe(0);
+    }).pipe(Effect.provide(boatTools.pipe(Layer.provideMerge(layer))));
+  });
+
+  it.effect.each([true, null, "invalid-key"] as const)(
+    "refuses a stop from an agent when retention or the key is unsafe (%s)",
+    (blocked) => {
+      let policy: boolean | null = false;
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        account: (key) =>
+          api.account(key).pipe(
+            Effect.map((account) => ({
+              ...account,
+              zeroDataRetention: policy,
+            })),
+          ),
+      }));
+      return Effect.gen(function* () {
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        if (blocked === "invalid-key") {
+          fake.failNext("account", new BoatApiError({ category: "unauthorized" }));
+        } else {
+          policy = blocked;
+        }
+        const result = yield* callBoatTool("t3_boat_lifecycle", {
+          action: "stop",
+          managedId,
+          requestId: requestId(),
+        });
+        // The UI and MCP acknowledge admission; the durable worker reports the refusal.
+        expect(result.structuredContent).toMatchObject({ managedId, kind: "stop" });
+        yield* settle;
+        expect(fake.calls).not.toContain("stop");
+        expect((yield* server(managedId))?.operation).toMatchObject({
+          kind: "stop",
+          stage: "failed",
+          failure: blocked === "invalid-key" ? "unauthorized" : "provider-rejected",
+        });
+      }).pipe(Effect.provide(boatTools.pipe(Layer.provideMerge(layer))));
+    },
+  );
+});
 
 describe("BoatService", () => {
   it.effect("stores only a key Boat accepts and shows its account, never the key", () => {
