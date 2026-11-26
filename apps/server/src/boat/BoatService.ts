@@ -173,6 +173,34 @@ const isRejectedKey = (error: BoatApiError) =>
 const isHiddenMachine = (error: BoatApiError) =>
   error.category === "not-found" || error.category === "forbidden";
 
+const ProviderRead = Context.Reference<((observed: boolean) => void) | null>(
+  "t3/boat/ProviderRead",
+  { defaultValue: () => null },
+);
+
+const trackProvider = <A>(
+  request: Effect.Effect<A, BoatApiError>,
+  hasEvidence: (value: A) => boolean = () => true,
+) =>
+  Effect.flatMap(ProviderRead, (record) =>
+    record === null
+      ? request
+      : request.pipe(
+          Effect.tap((value) =>
+            Effect.sync(() => {
+              if (hasEvidence(value)) record(true);
+            }),
+          ),
+          Effect.tapError((error) =>
+            Effect.sync(() => {
+              if (isTransient(error) || isRejectedKey(error) || error.code === "decode") {
+                record(false);
+              }
+            }),
+          ),
+        ),
+  );
+
 const isUnsentCreate = (server: ServerRow, operation: OperationRow | null) =>
   server.sandbox_id === null &&
   operation?.kind === "create" &&
@@ -224,6 +252,8 @@ export const make = Effect.gen(function* () {
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const controllerId = yield* (yield* ServerEnvironment).getEnvironmentId;
   const scope = yield* Effect.scope;
+  const readSandbox = (key: BoatKey, sandboxId: string) =>
+    trackProvider(retryTransient(api.get(key, sandboxId)));
 
   const persistence = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
@@ -418,14 +448,20 @@ export const make = Effect.gen(function* () {
     }
     return lock;
   };
+  const fieldsChanged = (fields: Record<string, unknown>) =>
+    sql.or(Object.entries(fields).map(([field, value]) => sql`${sql(field)} IS NOT ${value}`));
 
   const setServer = Effect.fn("BoatService.setServer")(function* (
     managedId: string,
     fields: Partial<Omit<ServerRow, "managed_id">>,
     notify: Effect.Effect<void> = publish,
   ) {
-    yield* sql`UPDATE boat_servers SET ${sql.update(fields)} WHERE managed_id = ${managedId}`;
-    yield* notify;
+    const changed = yield* sql`
+      UPDATE boat_servers SET ${sql.update(fields)} WHERE managed_id = ${managedId}
+        AND ${fieldsChanged(fields)}
+      RETURNING managed_id
+    `;
+    if (changed.length > 0) yield* notify;
   });
 
   const setStage = Effect.fn("BoatService.setStage")(function* (
@@ -434,11 +470,13 @@ export const make = Effect.gen(function* () {
     extra: { readonly failure?: BoatFailureCode; readonly provider_operation_id?: string } = {},
   ) {
     const updatedAt = yield* nowIso;
-    yield* sql`
-      UPDATE boat_operations SET ${sql.update({ stage, updated_at: updatedAt, ...extra })}
-      WHERE request_id = ${requestId}
+    const fields = { stage, ...extra };
+    const changed = yield* sql`
+      UPDATE boat_operations SET ${sql.update({ ...fields, updated_at: updatedAt })}
+      WHERE request_id = ${requestId} AND ${fieldsChanged(fields)}
+      RETURNING request_id
     `;
-    yield* publish;
+    if (changed.length > 0) yield* publish;
   });
 
   const observe = Effect.fn("BoatService.observe")(function* (
@@ -484,7 +522,7 @@ export const make = Effect.gen(function* () {
     options: { readonly yieldTo?: Effect.Effect<boolean, SqlError.SqlError> } = {},
   ) {
     for (let attempt = 0; ; attempt++) {
-      const sandbox = yield* retryTransient(api.get(key, sandboxId));
+      const sandbox = yield* readSandbox(key, sandboxId);
       yield* observe(managedId, sandbox);
       if (done(sandbox)) return Option.some(sandbox);
       // Returns the unfinished observation when other queued work should go first.
@@ -505,7 +543,7 @@ export const make = Effect.gen(function* () {
       sandboxId: string,
       notify: Effect.Effect<void> = publish,
     ) {
-      const usage = yield* api.usage(key, sandboxId);
+      const usage = yield* trackProvider(api.usage(key, sandboxId), () => false);
       const current = (yield* readServer(managedId))?.usage_json;
       const previous = current == null ? null : Option.getOrNull(decodeUsage(current));
       if (
@@ -570,13 +608,19 @@ export const make = Effect.gen(function* () {
     managedId: string,
   ) {
     const labels = allocationLabels(managedId);
-    const matches = yield* retryTransient(api.list(key, labels));
-    const [only] = matches;
-    return matches.length === 1 &&
-      only !== undefined &&
-      Object.entries(labels).every(([name, value]) => only.labels[name] === value)
-      ? only
-      : null;
+    return yield* trackProvider(
+      retryTransient(api.list(key, labels)).pipe(
+        Effect.map((matches) => {
+          const [only] = matches;
+          return matches.length === 1 &&
+            only !== undefined &&
+            Object.entries(labels).every(([name, value]) => only.labels[name] === value)
+            ? only
+            : null;
+        }),
+      ),
+      (match) => match !== null,
+    );
   });
 
   // Each run returns false when it must wait for a later pass (Boat still settling).
@@ -628,16 +672,16 @@ export const make = Effect.gen(function* () {
     if (sandboxId === null) {
       let sandbox: BoatSandbox;
       if (canAllocate) {
-        const created = yield* api
-          .create(key, {
+        const created = yield* trackProvider(
+          api.create(key, {
             idempotencyKey: op.request_id,
             name: server.display_name,
             size: server.size,
             ttlSeconds: server.ttl_seconds,
             labels: allocationLabels(server.managed_id),
             environment: server.boat_environment,
-          })
-          .pipe(Effect.result);
+          }),
+        ).pipe(Effect.result);
         if (created._tag === "Failure") {
           const error = created.failure;
           // An earlier attempt might have allocated even if the current key is refused.
@@ -697,7 +741,7 @@ export const make = Effect.gen(function* () {
   const ensureDiskRetention = Effect.fn("BoatService.ensureDiskRetention")(function* (
     key: BoatKey,
   ) {
-    const policy = yield* refuseForbidden(api.account(key));
+    const policy = yield* refuseForbidden(trackProvider(api.account(key), () => false));
     if (policy.zeroDataRetention !== false) {
       return yield* new OperationRefused({ code: "provider-rejected" });
     }
@@ -706,7 +750,7 @@ export const make = Effect.gen(function* () {
   const cleanupStop = Effect.fn("BoatService.cleanupStop")(
     function* (key: BoatKey, sandboxId: string) {
       yield* ensureDiskRetention(key);
-      yield* api.stop(key, sandboxId);
+      yield* trackProvider(api.stop(key, sandboxId));
     },
     (effect) => Effect.ignore(effect),
   );
@@ -736,7 +780,7 @@ export const make = Effect.gen(function* () {
       });
     yield* setStage(op.request_id, "stopping");
     yield* setServer(server.managed_id, { lifecycle: "stopping" });
-    const current = yield* retryTransient(api.get(key, sandboxId)).pipe(
+    const current = yield* readSandbox(key, sandboxId).pipe(
       Effect.asSome,
       Effect.catchIf(isTransient, () => Effect.succeedNone),
     );
@@ -765,7 +809,7 @@ export const make = Effect.gen(function* () {
           provider_operation_id: SENDING + (before ?? ""),
         });
         // Sent once per pass: a lost reply leaves the operation pending for the next look.
-        ourStopId = yield* refuseForbidden(api.stop(key, sandboxId));
+        ourStopId = yield* refuseForbidden(trackProvider(api.stop(key, sandboxId)));
         yield* record(ourStopId);
       }
     }
@@ -816,7 +860,7 @@ export const make = Effect.gen(function* () {
     yield* setServer(server.managed_id, { lifecycle: "provisioning" });
     // Only an archived machine is woken; one already waking or live is just watched, since a
     // resume whose reply was lost may have been accepted.
-    const current = yield* retryTransient(api.get(key, sandboxId));
+    const current = yield* readSandbox(key, sandboxId);
     yield* observe(server.managed_id, current);
     // A stop is waiting and the machine is not up: never wake it again, hand off to the stop.
     if (!isLiveState(current.state) && (yield* hasPendingStop(server.managed_id))) {
@@ -851,17 +895,17 @@ export const make = Effect.gen(function* () {
         return yield* new OperationRefused({ code: "provider-unavailable" });
       }
       // Sent once per pass: a later pass looks at the machine again before any resend.
-      const sent = yield* api
-        .resume(key, sandboxId, server.ttl_seconds, server.boat_environment)
-        .pipe(
-          Effect.as("sent" as const),
-          Effect.catchIf(isTransient, () => Effect.succeed("unknown" as const)),
-          Effect.catchIf(
-            (error) => error.category === "conflict",
-            () => Effect.succeed("refused" as const),
-          ),
-          refuseForbidden,
-        );
+      const sent = yield* trackProvider(
+        api.resume(key, sandboxId, server.ttl_seconds, server.boat_environment),
+      ).pipe(
+        Effect.as("sent" as const),
+        Effect.catchIf(isTransient, () => Effect.succeed("unknown" as const)),
+        Effect.catchIf(
+          (error) => error.category === "conflict",
+          () => Effect.succeed("refused" as const),
+        ),
+        refuseForbidden,
+      );
       if (sent === "sent") {
         yield* setStage(op.request_id, "resuming", { provider_operation_id: ACKNOWLEDGED });
       }
@@ -869,7 +913,7 @@ export const make = Effect.gen(function* () {
         if (!(yield* hasPendingStop(server.managed_id))) return false;
         // A stop is waiting: look once. Only a machine already live continues (the stop then
         // runs); anything else, including a failed look, hands off to the stop.
-        const after = yield* retryTransient(api.get(key, sandboxId)).pipe(
+        const after = yield* readSandbox(key, sandboxId).pipe(
           Effect.asSome,
           Effect.catch(() => Effect.succeedNone),
         );
@@ -879,7 +923,7 @@ export const make = Effect.gen(function* () {
         }
       }
       if (sent === "refused") {
-        const after = yield* retryTransient(api.get(key, sandboxId));
+        const after = yield* readSandbox(key, sandboxId);
         yield* observe(server.managed_id, after);
         if (after.state === "archiving") return false;
         // Still archived after a refusal is a definite no: nothing woke, so nothing to stop.
@@ -921,7 +965,7 @@ export const make = Effect.gen(function* () {
       if (operationId === null) {
         // A scoped key can miss a live machine in both GET and list. Without a purge receipt,
         // neither 404 nor inventory under that key releases the controller's cleanup obligation.
-        const current = yield* retryTransient(api.get(key, target));
+        const current = yield* readSandbox(key, target);
         if (
           current.state !== "archived" &&
           current.state !== "error" &&
@@ -931,13 +975,15 @@ export const make = Effect.gen(function* () {
           if (current.state === "archiving") return false;
           return yield* new OperationFailed({ code: "machine-running" });
         }
-        operationId = yield* api.delete(key, target);
+        operationId = yield* trackProvider(api.delete(key, target));
         yield* setStage(op.request_id, "deleting", { provider_operation_id: operationId });
       }
       let completed = false;
       for (let attempt = 0; !completed && attempt < POLL_ATTEMPTS; attempt++) {
         if (attempt > 0) yield* Effect.sleep(POLL_INTERVAL);
-        const status = yield* retryTransient(api.deletionCompleted(key, operationId, target)).pipe(
+        const status = yield* trackProvider(
+          retryTransient(api.deletionCompleted(key, operationId, target)),
+        ).pipe(
           // Boat documents that accepting a purge irreversibly removes the sandbox from use.
           // Organization keys cannot read purge status, but we already persisted its receipt.
           Effect.catchIf(
@@ -1105,17 +1151,30 @@ export const make = Effect.gen(function* () {
     lockFor(managedId)
       .withPermits(1)(
         Effect.gen(function* () {
+          let attempted = false;
+          const evidence = { observed: false, failed: false };
+          const record = (observed: boolean) => {
+            if (observed) evidence.observed = true;
+            else evidence.failed = true;
+          };
           for (;;) {
             const op = yield* nextPending(managedId);
-            if (op === null) return;
-            if ((yield* runOperation(op)) === false) return;
+            if (op === null) break;
+            attempted = true;
+            if (
+              (yield* runOperation(op).pipe(Effect.provideService(ProviderRead, record))) === false
+            ) {
+              break;
+            }
           }
+          return attempted ? evidence.observed && !evidence.failed : null;
         }),
       )
       .pipe(
         Effect.catchCause((cause) =>
           Effect.logError("Boat worker stopped on an unexpected error.").pipe(
             Effect.annotateLogs({ cause }),
+            Effect.as(false),
           ),
         ),
       );
@@ -1426,14 +1485,14 @@ export const make = Effect.gen(function* () {
     function* (key: BoatKey, managedId: string, notify: typeof publish) {
       // Read under the machine's lock; the list read before it may be stale.
       const server = yield* readServer(managedId);
-      if (server === null || (yield* nextPending(managedId)) !== null) return true;
+      if (server === null || (yield* nextPending(managedId)) !== null) return null;
       if (server.sandbox_id === null) {
         const create = yield* readCreate(managedId);
         if (create?.stage !== "failed" || create.provider_operation_id === NO_ALLOCATION)
-          return true;
+          return null;
         // Empty scoped inventory leaves ownership intact. A later exact match can be recovered.
         const recovered = yield* findAllocation(key, managedId);
-        if (recovered === null) return true;
+        if (recovered === null) return null;
         yield* setServer(managedId, { sandbox_id: recovered.id }, notify);
         yield* observe(managedId, recovered, notify);
         if (isLiveState(recovered.state)) yield* cleanupStop(key, recovered.id);
@@ -1454,7 +1513,7 @@ export const make = Effect.gen(function* () {
             notify,
           );
         }
-        return true;
+        return null;
       }
       const seen = sandbox.value;
       yield* observe(server.managed_id, seen, notify);
@@ -1503,7 +1562,11 @@ export const make = Effect.gen(function* () {
         changed = true;
       }
     };
-    const publishChanges = Effect.suspend(() => (changed ? publish : Effect.void));
+    const publishChanges = Effect.suspend(() => {
+      if (!changed) return Effect.void;
+      changed = false;
+      return publish;
+    });
     const checked = yield* checkCredential(key).pipe(Effect.option);
     if (Option.isSome(checked)) {
       yield* recordCredentialStatus(checked.value.status, generation, notify);
@@ -1517,15 +1580,17 @@ export const make = Effect.gen(function* () {
       yield* publishChanges;
       return;
     }
+    const accountReadFailed = Option.isNone(checked);
+    if (accountReadFailed) setProviderStale(true);
     const credential = key.value;
     const pending: string[] = [];
     const settled: string[] = [];
     for (const { managed_id } of servers) {
       ((yield* nextPending(managed_id)) === null ? settled : pending).push(managed_id);
     }
-    yield* Effect.all(
+    const [drained, refreshed] = yield* Effect.all(
       [
-        Effect.forEach(pending, drain, { concurrency: 4, discard: true }),
+        Effect.forEach(pending, drain, { concurrency: 4 }),
         Effect.forEach(
           settled,
           (id) => lockFor(id).withPermits(1)(refresh(credential, id, notify)),
@@ -1534,13 +1599,21 @@ export const make = Effect.gen(function* () {
           },
         ).pipe(
           Effect.tap((reads) =>
-            Effect.sync(() => setProviderStale(Option.isNone(checked) || reads.includes(false))),
+            Effect.sync(() => {
+              if (reads.includes(false)) setProviderStale(true);
+            }),
           ),
           Effect.ensuring(publishChanges),
         ),
       ],
-      { concurrency: 2, discard: true },
+      { concurrency: 2 },
     );
+    if (accountReadFailed || drained.includes(false) || refreshed.includes(false)) {
+      setProviderStale(true);
+    } else if (drained.includes(true) || refreshed.includes(true)) {
+      setProviderStale(false);
+    }
+    yield* publishChanges;
   }).pipe(
     Effect.catchCause((cause) =>
       Effect.logWarning("Boat reconcile failed.").pipe(Effect.annotateLogs({ cause })),

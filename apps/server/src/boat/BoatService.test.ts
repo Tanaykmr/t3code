@@ -561,10 +561,10 @@ describe("BoatService", () => {
         VALUES ('00000000-0000-4000-8000-0000000000fe', 'boat_sent', 'create', '', 'allocating', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z')
       `;
       yield* settle;
-      expect((yield* server("boat_sent"))?.operation).toMatchObject({
-        stage: "allocating",
-        failure: null,
-      });
+      const [operation] = yield* sql`
+        SELECT stage, failure FROM boat_operations WHERE managed_id = 'boat_sent'
+      `;
+      expect(operation).toEqual({ stage: "allocating", failure: null });
       expect(fake.calls).toContain("list");
       expect(fake.calls).not.toContain("create");
     }).pipe(Effect.provide(layer));
@@ -1117,6 +1117,81 @@ describe("BoatService", () => {
         expect(yield* snapshot).toBe(stale);
         yield* settle;
         expect(yield* snapshot).toMatchObject({ providerStale: false, servers: current.servers });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "keeps provider data stale when only the account endpoint answers pending creates",
+    () => {
+      let unavailable = true;
+      const { layer } = setup({}, (api) => ({
+        ...api,
+        create: (key, input) =>
+          unavailable
+            ? Effect.fail(new BoatApiError({ category: "unavailable" }))
+            : api.create(key, input),
+      }));
+      return Effect.gen(function* () {
+        yield* configure;
+        yield* createSmall;
+        yield* createSmall;
+        yield* settle;
+        const stale = yield* snapshot;
+        expect(stale).toMatchObject({ account: { status: "configured" }, providerStale: true });
+        expect(stale.servers.map((row) => row.operation?.stage)).toEqual([
+          "allocating",
+          "allocating",
+        ]);
+
+        const sql = yield* SqlClient.SqlClient;
+        const changes = sql<{ count: number }>`SELECT total_changes() AS count`;
+        const before = yield* changes;
+        yield* TestClock.adjust("1 minute");
+        yield* settle;
+        expect(yield* changes).toEqual(before);
+        expect(yield* snapshot).toBe(stale);
+
+        unavailable = false;
+        yield* settle;
+        const recovered = yield* snapshot;
+        expect(recovered.providerStale).toBe(false);
+        expect(recovered.servers.map((row) => row.lifecycle)).toEqual(["running", "running"]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "keeps provider data stale when a pending stop fails despite successful sandbox reads",
+    () => {
+      let stopUnavailable = true;
+      const { layer } = setup({}, (api) => ({
+        ...api,
+        stop: (key, id) =>
+          stopUnavailable
+            ? Effect.fail(new BoatApiError({ category: "unavailable" }))
+            : api.stop(key, id),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        yield* settle;
+        expect((yield* snapshot).providerStale).toBe(true);
+
+        const { managedId } = yield* createSmall;
+        yield* createSmall;
+        yield* settle;
+        expect((yield* snapshot).providerStale).toBe(false);
+
+        yield* boat.stop({ managedId, requestId: requestId() });
+        yield* settle;
+        expect(yield* snapshot).toMatchObject({ providerStale: true });
+        expect(yield* server(managedId)).toMatchObject({ lifecycle: "stopping" });
+
+        stopUnavailable = false;
+        yield* settle;
+        expect(yield* snapshot).toMatchObject({ providerStale: false });
+        expect(yield* server(managedId)).toMatchObject({ lifecycle: "stopped" });
       }).pipe(Effect.provide(layer));
     },
   );
