@@ -249,7 +249,30 @@ describe("boatCost", () => {
 
     const cost = boatCost(running, snapshot.rates, later);
     expect(cost?.source).toBe("estimate");
-    expect(cost?.usd).toBeCloseTo(0.015, 6);
+    expect(cost?.usd).toBeCloseTo(0.0153, 6);
+  });
+
+  it.each([false, true])("keeps the unreported usage through Stop (stale: %s)", (stale) => {
+    const stopped = byId(rows(true), "boat_stopped")!.server;
+    const lastStartedAt = "2026-11-23T10:10:00.000Z";
+    const retained = {
+      ...stopped,
+      createdAt: "2026-11-23T09:30:00.000Z",
+      lastStartedAt,
+      usage: {
+        ...stopped.usage!,
+        windowStart: "2026-11-23T09:30:00.000Z",
+        windowEnd: "2026-11-23T10:00:00.000Z",
+        observedAt: "2026-11-23T10:01:00.000Z",
+      },
+    };
+    const stopTime = Date.parse(stopped.lastStoppedAt!);
+    const live = boatCost({ ...retained, lifecycle: "running" }, snapshot.rates, stopTime);
+    const afterStop = boatCost(retained, snapshot.rates, stopTime + 3_600_000, stale);
+
+    expect(live?.usd).toBeCloseTo(0.015, 6);
+    expect(afterStop).toEqual(live);
+    expect(afterStop?.source).toBe("estimate");
   });
 });
 

@@ -31,9 +31,9 @@ export interface BoatRow {
 
 export interface BoatCost {
   readonly usd: number;
-  /** "usage" is Boat's reported list price; "estimate" is wall time at the list rate. */
+  /** "usage" is Boat's reported list-price cost; "estimate" includes wall time at the list rate. */
   readonly source: "usage" | "estimate";
-  /** When Boat reported the usage; null for a live estimate. */
+  /** When Boat reported the usage; null for an estimate. */
   readonly asOf: string | null;
 }
 
@@ -60,16 +60,21 @@ export function boatCost(
   stale = false,
 ): BoatCost | null {
   const rate = rates.find((entry) => entry.size === server.size);
+  const running = server.lifecycle === "running";
+  const canEstimate = !running || !stale;
+  const startedAt = server.lastStartedAt === null ? null : Date.parse(server.lastStartedAt);
+  const end = running
+    ? nowMs
+    : server.lastStoppedAt === null
+      ? null
+      : Date.parse(server.lastStoppedAt);
   if (server.usage !== null) {
-    if (!stale && server.lifecycle === "running" && rate !== undefined) {
-      const observedAt = Date.parse(server.usage.observedAt);
-      const since =
-        server.lastStartedAt === null
-          ? observedAt
-          : Math.max(observedAt, Date.parse(server.lastStartedAt));
-      if (nowMs > since) {
+    if (canEstimate && rate !== undefined && end !== null) {
+      const windowEnd = Date.parse(server.usage.windowEnd);
+      const since = Math.max(windowEnd, startedAt ?? windowEnd);
+      if (end > since) {
         return {
-          usd: server.usage.listPriceUsd + ((nowMs - since) / 3_600_000) * rate.usdPerHour,
+          usd: server.usage.listPriceUsd + ((end - since) / 3_600_000) * rate.usdPerHour,
           source: "estimate",
           asOf: null,
         };
@@ -77,13 +82,8 @@ export function boatCost(
     }
     return { usd: server.usage.listPriceUsd, source: "usage", asOf: server.usage.observedAt };
   }
-  if (stale && server.lifecycle === "running") return null;
-  if (rate === undefined || server.lastStartedAt === null) return null;
-  const end =
-    server.lifecycle === "running"
-      ? nowMs
-      : Date.parse(server.lastStoppedAt ?? server.lastStartedAt);
-  const hours = Math.max(0, end - Date.parse(server.lastStartedAt)) / 3_600_000;
+  if (!canEstimate || rate === undefined || startedAt === null) return null;
+  const hours = Math.max(0, (end ?? startedAt) - startedAt) / 3_600_000;
   return { usd: hours * rate.usdPerHour, source: "estimate", asOf: null };
 }
 
