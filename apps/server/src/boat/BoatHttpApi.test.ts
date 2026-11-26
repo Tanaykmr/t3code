@@ -43,35 +43,46 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 describe("BoatHttpApi", () => {
-  it.effect("pins the personal wallet and sends the create idempotency key", () => {
-    const { requests, layer } = fakeBoat(() =>
-      json(
-        {
-          ok: true,
-          sandbox: { id: SANDBOX_ID, state: "provisioning", snapshotAvailable: false },
-        },
-        202,
-      ),
-    );
-    return Effect.gen(function* () {
-      const api = yield* BoatApi;
-      yield* api.create(KEY, {
-        idempotencyKey: "00000000-0000-4000-8000-000000000001",
-        name: "Scratch",
-        size: "small",
-        ttlSeconds: 3600,
-        labels: { "t3.managed": "boat_1" },
-        environment: "t3code",
-      });
-      const request = requests.at(-1);
-      expect(request?.method).toBe("POST");
-      expect(request?.url.pathname).toBe("/api/v1/sandboxes");
-      expect(request?.headers.get("x-boat-org")).toBe("personal");
-      expect(request?.headers.get("idempotency-key")).toBe("00000000-0000-4000-8000-000000000001");
-      expect(request?.headers.get("authorization")).toBe("Bearer boat_test_key");
-      expect(request?.body).toMatchObject({ environment: "t3code", noEnv: true });
-    }).pipe(Effect.provide(layer));
-  });
+  it.effect.each(["personal", "organization"] as const)(
+    "requests a private sandbox with the create idempotency key in the %s wallet",
+    (wallet) => {
+      const { requests, layer } = fakeBoat((_url, init) =>
+        wallet === "organization" && new Headers(init.headers).get("x-boat-org") === "personal"
+          ? json({ ok: false, code: "api_key_org_mismatch" }, 403)
+          : json(
+              {
+                ok: true,
+                sandbox: { id: SANDBOX_ID, state: "provisioning", snapshotAvailable: false },
+              },
+              202,
+            ),
+      );
+      return Effect.gen(function* () {
+        const api = yield* BoatApi;
+        yield* api.create(KEY, {
+          idempotencyKey: "00000000-0000-4000-8000-000000000001",
+          name: "Scratch",
+          size: "small",
+          ttlSeconds: 3600,
+          labels: { "t3.managed": "boat_1" },
+          environment: "t3code",
+        });
+        const request = requests.at(-1);
+        expect(request?.method).toBe("POST");
+        expect(request?.url.pathname).toBe("/api/v1/sandboxes");
+        expect(request?.headers.get("x-boat-org")).toBe(wallet === "personal" ? "personal" : null);
+        expect(request?.headers.get("idempotency-key")).toBe(
+          "00000000-0000-4000-8000-000000000001",
+        );
+        expect(request?.headers.get("authorization")).toBe("Bearer boat_test_key");
+        expect(request?.body).toMatchObject({
+          environment: "t3code",
+          noEnv: true,
+          visibility: "private",
+        });
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("lets an organization's key act in its own wallet", () => {
     const { requests, layer } = fakeBoat((_url, init) =>

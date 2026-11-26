@@ -202,6 +202,7 @@ const make = Effect.gen(function* () {
             labels: request.labels,
             name: request.name,
             ...(request.environment === null ? {} : { environment: request.environment }),
+            visibility: "private",
             noEnv: true,
             snapshots: true,
           }),
