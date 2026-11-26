@@ -56,6 +56,8 @@ export interface BoatSandbox {
   readonly stopStatus: "pending" | "failing" | "completed" | "superseded" | null;
 }
 
+export const BOAT_LOGIN_ACCOUNT_ID_PREFIX = "login:";
+
 export interface BoatAccount {
   readonly accountId: string;
   readonly label: string;

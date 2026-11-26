@@ -77,13 +77,19 @@ describe("BoatHttpApi", () => {
     const { requests, layer } = fakeBoat((_url, init) =>
       new Headers(init.headers).get("x-boat-org") === "personal"
         ? json({ ok: false, code: "api_key_org_mismatch", message: "org key" }, 403)
-        : json({ ok: true, sandboxes: [], pageInfo: { nextCursor: null, hasMore: false } }),
+        : json({
+            ok: true,
+            sandboxes: [{ id: SANDBOX_ID, state: "idle" }],
+            pageInfo: { nextCursor: null, hasMore: false },
+          }),
     );
     return Effect.gen(function* () {
       const api = yield* BoatApi;
-      expect(yield* api.list(KEY, { "t3.managed": "boat_1" })).toEqual([]);
+      const [sandbox] = yield* api.list(KEY, { "t3.managed": "boat_1" });
+      expect(sandbox?.id).toBe(SANDBOX_ID);
+      expect(sandbox?.access).toBeUndefined();
       // A probe under the pin, then the real request without it; later calls skip the probe.
-      expect(yield* api.list(KEY, { "t3.managed": "boat_2" })).toEqual([]);
+      expect(yield* api.list(KEY, { "t3.managed": "boat_2" })).toHaveLength(1);
       expect(requests.map((request) => request.headers.get("x-boat-org"))).toEqual([
         "personal",
         null,
@@ -293,7 +299,7 @@ describe("BoatHttpApi", () => {
     return Effect.gen(function* () {
       const api = yield* BoatApi;
       expect(yield* api.list(KEY, {})).toMatchObject([
-        { id: SANDBOX_ID, state: "idle", archiveAfter: "2026-05-31T13:00:00Z" },
+        { id: SANDBOX_ID, access: "owner", state: "idle", archiveAfter: "2026-05-31T13:00:00Z" },
       ]);
     }).pipe(Effect.provide(layer));
   });

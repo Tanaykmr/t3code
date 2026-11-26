@@ -43,6 +43,7 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { telemetryChannel } from "../config.ts";
 import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
 import {
+  BOAT_LOGIN_ACCOUNT_ID_PREFIX,
   BoatApi,
   type BoatAccount,
   type BoatApiError,
@@ -1474,14 +1475,23 @@ export const make = Effect.gen(function* () {
     );
     if (account.status !== "configured") return { status: "invalid" as const };
     const next = account.account;
-    if (servers.some((server) => server.account_id !== next.accountId)) {
+    const previousAccountId = servers[0]?.account_id;
+    const rebind = previousAccountId !== undefined && previousAccountId !== next.accountId;
+    const previousIsLogin = previousAccountId?.startsWith(BOAT_LOGIN_ACCOUNT_ID_PREFIX) === true;
+    if (
+      servers.some((server) => server.account_id !== previousAccountId) ||
+      (rebind &&
+        ((!previousIsLogin && !next.accountId.startsWith(BOAT_LOGIN_ACCOUNT_ID_PREFIX)) ||
+          !servers.some((server) => server.sandbox_id !== null)))
+    ) {
       return yield* fail(
         "conflict",
         "This key belongs to a different Boat account than the machines this server manages.",
       );
     }
+    const accountId = rebind && !previousIsLogin ? previousAccountId : next.accountId;
     const recovered = new Map<string, string>();
-    if (replacing) {
+    if (replacing || rebind) {
       for (const server of servers) {
         if (server.sandbox_id === null) {
           const create = yield* persistence(readCreate(server.managed_id));
@@ -1503,15 +1513,25 @@ export const make = Effect.gen(function* () {
             "The replacement key must see every managed machine in the same Boat wallet.",
           );
         }
-        const visible = yield* api.get(key, match.id).pipe(
-          Effect.map((sandbox) => sandbox.id === match.id),
-          Effect.catchIf(isHiddenMachine, () => Effect.succeed(false)),
+        const sandbox = yield* api.get(key, match.id).pipe(
+          Effect.catchIf(isHiddenMachine, () => Effect.succeed(null)),
           Effect.mapError(providerUnavailable),
         );
-        if (!visible) {
+        if (sandbox?.id !== match.id) {
           return yield* fail(
             "conflict",
             "The replacement key must be able to read every managed machine.",
+          );
+        }
+        // A changed login must be tied to the original provider resources.
+        if (
+          rebind &&
+          ((sandbox.access !== undefined && sandbox.access !== "owner") ||
+            (match.access !== "owner" && sandbox.access !== "owner"))
+        ) {
+          return yield* fail(
+            "conflict",
+            "The replacement key must prove it owns every managed machine.",
           );
         }
         if (server.sandbox_id === null) recovered.set(server.managed_id, match.id);
@@ -1525,6 +1545,9 @@ export const make = Effect.gen(function* () {
     yield* storeCredentials(
       input.apiKey,
       Effect.gen(function* () {
+        if (rebind && previousAccountId !== accountId)
+          yield* sql`UPDATE boat_servers SET account_id = ${accountId}
+            WHERE deleted_at IS NULL AND account_id = ${previousAccountId}`;
         if (replacing)
           yield* sql`UPDATE boat_servers SET cleanup_denied = 0 WHERE cleanup_denied <> 0`;
         for (const [managedId, sandboxId] of recovered) {
@@ -1533,7 +1556,7 @@ export const make = Effect.gen(function* () {
         }
         yield* sql`
       INSERT INTO boat_account (id, account_id, label, status, zero_data_retention, boat_environment)
-      VALUES (1, ${next.accountId}, ${next.label}, 'configured', ${
+      VALUES (1, ${accountId}, ${next.label}, 'configured', ${
         next.zeroDataRetention === false ? 0 : 1
       }, ${environment})
       ON CONFLICT (id) DO UPDATE SET account_id = excluded.account_id, label = excluded.label,

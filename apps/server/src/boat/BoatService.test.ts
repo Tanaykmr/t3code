@@ -955,6 +955,82 @@ describe("BoatService", () => {
     },
   );
 
+  it.effect.each([
+    ["login:original", "login:renamed", "login:renamed"],
+    ["login:original", "usr_1", "usr_1"],
+    ["usr_1", "login:renamed", "usr_1"],
+  ] as const)(
+    "recovers identity %s → %s only after the candidate proves ownership",
+    ([originalId, renamedId, storedId]) => {
+      const replacement = `${FAKE_BOAT_KEY}_renamed`;
+      const keyForWallet = (key: BoatKey) =>
+        Redacted.value(key) === replacement ? Redacted.make(FAKE_BOAT_KEY) : key;
+      let revoked = false;
+      let access: "owner" | "view" | undefined;
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        account: (key) => {
+          const value = Redacted.value(key);
+          if (revoked && value === FAKE_BOAT_KEY) {
+            return Effect.fail(new BoatApiError({ category: "unauthorized" }));
+          }
+          return api.account(keyForWallet(key)).pipe(
+            Effect.map((account) => ({
+              ...account,
+              accountId: value === FAKE_BOAT_KEY ? originalId : renamedId,
+            })),
+          );
+        },
+        get: (key, id) => api.get(keyForWallet(key), id),
+        list: (key, labels) =>
+          api
+            .list(keyForWallet(key), labels)
+            .pipe(
+              Effect.map((rows) =>
+                rows.map((row) => (access === undefined ? row : { ...row, access })),
+              ),
+            ),
+        stop: (key, id) => api.stop(keyForWallet(key), id),
+        delete: (key, id) => api.delete(keyForWallet(key), id),
+        deletionCompleted: (key, operationId, id) =>
+          api.deletionCompleted(keyForWallet(key), operationId, id),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        revoked = true;
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: replacement }))).code).toBe("conflict");
+        access = "view";
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: replacement }))).code).toBe("conflict");
+        access = "owner";
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY }))).code).toBe(
+          "conflict",
+        );
+        const sql = yield* SqlClient.SqlClient;
+        const sandboxId = (yield* server(managedId))!.sandboxId;
+        yield* sql`UPDATE boat_servers SET sandbox_id = NULL WHERE managed_id = ${managedId}`;
+        expect((yield* Effect.flip(boat.setApiKey({ apiKey: replacement }))).code).toBe("conflict");
+        yield* sql`UPDATE boat_servers SET sandbox_id = ${sandboxId} WHERE managed_id = ${managedId}`;
+        expect(yield* Effect.result(boat.setApiKey({ apiKey: replacement }))).toMatchObject({
+          _tag: "Success",
+          success: { status: "configured" },
+        });
+        const ids = yield* sql`
+        SELECT account_id FROM boat_account
+        UNION ALL SELECT account_id FROM boat_servers WHERE managed_id = ${managedId}
+      `;
+        expect(ids).toEqual([{ account_id: storedId }, { account_id: storedId }]);
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+        yield* boat.delete({ requestId: requestId(), managedId });
+        yield* settle;
+        expect(fake.sandboxes.size).toBe(0);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("recovers cleanup with a same-wallet key after Boat rejects the saved key", () => {
     const replacement = `${FAKE_BOAT_KEY}_recovery`;
     const sameWallet = (key: BoatKey) =>

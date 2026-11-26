@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import {
+  BOAT_LOGIN_ACCOUNT_ID_PREFIX,
   BoatApi,
   BoatApiError,
   type BoatApiErrorCategory,
@@ -181,7 +182,8 @@ const make = Effect.gen(function* () {
         Effect.flatMap(decode(UserEnvelope)),
       );
       const login = user.login?.trim();
-      const accountId = user.id?.trim() || (login ? `login:${login.toLowerCase()}` : null);
+      const accountId =
+        user.id?.trim() || (login ? BOAT_LOGIN_ACCOUNT_ID_PREFIX + login.toLowerCase() : null);
       if (accountId === null) return yield* invalidResponse();
       return {
         accountId,
@@ -215,6 +217,7 @@ const make = Effect.gen(function* () {
       return toSandbox(sandbox);
     }),
     list: Effect.fn("BoatHttpApi.list")(function* (key, labels) {
+      const pinPersonal = !(yield* isOrgBound(key));
       const sandboxes: Array<BoatSandbox> = [];
       const seenCursors = new Set<string>();
       let cursor: string | null = null;
@@ -227,11 +230,19 @@ const make = Effect.gen(function* () {
           ]),
           ...(cursor === null ? [] : [["cursor", cursor] as [string, string]]),
         ];
-        const page: typeof ListEnvelope.Type = yield* send(
+        const page: typeof ListEnvelope.Type = yield* sendOnce(
           key,
           HttpClientRequest.get("/sandboxes").pipe(HttpClientRequest.setUrlParams(params)),
+          pinPersonal,
         ).pipe(Effect.flatMap(decode(ListEnvelope)));
-        sandboxes.push(...page.sandboxes.map(toSandbox));
+        for (const body of page.sandboxes) {
+          // The personal inventory contains only the caller's own sandboxes.
+          sandboxes.push(
+            toSandbox(
+              pinPersonal && body.access === undefined ? { ...body, access: "owner" } : body,
+            ),
+          );
+        }
         if (page.pageInfo === undefined) {
           // The documented unpaginated shape can only establish completeness below the limit.
           if (page.sandboxes.length >= SANDBOX_PAGE_LIMIT) return yield* invalidResponse();
