@@ -106,9 +106,11 @@ vi.mock("../../connection/catalog", () => ({
   },
 }));
 vi.mock("../../components/ui/ScreenScrollView", () => ({ ScreenScrollView: passthrough }));
+vi.mock("../../state/bot-inbox", () => ({
+  useBotInbox: () => ({ ordered: entries(), pinned: [] }),
+}));
 vi.mock("../../state/bots", () => ({
   useBotEnvironmentIds: () => state.environmentIds,
-  useBotInbox: () => ({ ordered: entries(), pinned: [] }),
   useEnvironmentBots: entries,
   useEnvironmentBotRooms: () => [],
 }));

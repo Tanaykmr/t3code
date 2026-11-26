@@ -11,9 +11,6 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { scopedThreadKey } from "../lib/scopedEntities";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { orderBotInbox, pinnedBots } from "../features/bots/bot-list";
-import { environmentThreadShells } from "./threads";
 import { connectedEnvironmentIdsAtom, environmentPresentations } from "./presentation";
 import { serverEnvironment } from "./server";
 
@@ -36,7 +33,7 @@ export const botEnvironmentIdsAtom = Atom.make((get) => {
 }).pipe(Atom.withLabel("mobile-bot-environment-ids"));
 
 /** Every bot, archived ones included, across connected environments, sorted by name. */
-const environmentBotsAtom = Atom.make((get): ReadonlyArray<EnvironmentBot> => {
+export const environmentBotsAtom = Atom.make((get): ReadonlyArray<EnvironmentBot> => {
   const entries = get(botEnvironmentIdsAtom).flatMap((environmentId) => {
     const directory = AsyncResult.getOrElse(
       get(serverEnvironment.botsLive({ environmentId, input: {} })),
@@ -46,28 +43,6 @@ const environmentBotsAtom = Atom.make((get): ReadonlyArray<EnvironmentBot> => {
   });
   return entries.length === 0 ? EMPTY_BOTS : sortBots(entries);
 }).pipe(Atom.withLabel("mobile-environment-bots"));
-
-const botInboxAtom = Atom.make((get) => {
-  const entries = get(environmentBotsAtom);
-  const shellFor = ({ environmentId, bot }: EnvironmentBot) =>
-    get(
-      environmentThreadShells.quietThreadShellAtom(scopeThreadRef(environmentId, bot.dmThreadId)),
-    );
-  const ordered = orderBotInbox(entries, shellFor);
-  const pinned = pinnedBots(entries, shellFor);
-  const previous = Option.getOrNull(get.self<{ ordered: typeof ordered; pinned: typeof pinned }>());
-  return previous !== null &&
-    previous.ordered.length === ordered.length &&
-    ordered.every((entry, index) => entry === previous.ordered[index]) &&
-    previous.pinned.length === pinned.length &&
-    pinned.every((entry, index) => entry === previous.pinned[index])
-    ? previous
-    : { ordered, pinned };
-}).pipe(Atom.withLabel("mobile-bot-inbox"));
-
-export function useBotInbox() {
-  return useAtomValue(botInboxAtom);
-}
 
 const EMPTY_ROOMS: ReadonlyArray<EnvironmentBotRoom> = Object.freeze([]);
 
