@@ -1000,17 +1000,17 @@ export const make = Effect.gen(function* () {
     VALUES (${requestId}, ${managedId}, ${kind}, ${payload}, 'queued', ${now}, ${now})
   `;
 
-  /** BoatErrors reach the caller; any other failure in the transaction is a persistence error. */
+  /** BoatErrors reach the caller; any other failure is a persistence error. */
   const accept = Effect.fn("BoatService.accept")(function* <E, R>(
     effect: Effect.Effect<BoatOperationReceipt | BoatError, E, R>,
   ) {
-    const outcome = yield* sql.withTransaction(effect).pipe(Effect.result);
+    const outcome = yield* effect.pipe(Effect.result);
     if (outcome._tag === "Failure") {
       if (isBoatError(outcome.failure)) return yield* outcome.failure;
       return yield* persistence(Effect.fail(outcome.failure));
     }
     yield* publish;
-    // A rejection returned by the transaction has state changes to commit and publish.
+    // A rejection returned as a value has state changes to publish.
     if (isBoatError(outcome.success)) return yield* outcome.success;
     yield* kick(outcome.success.managedId);
     return outcome.success;
@@ -1021,7 +1021,8 @@ export const make = Effect.gen(function* () {
     return yield* accountLock.withPermits(1)(
       accept(
         Effect.gen(function* () {
-          const existing = yield* existingReceipt(input.requestId, "create", payload);
+          const lookup = existingReceipt(input.requestId, "create", payload);
+          const existing = yield* lookup;
           if (Option.isSome(existing)) return existing.value;
           if (!bootstrap.available) {
             return yield* fail(
@@ -1036,7 +1037,8 @@ export const make = Effect.gen(function* () {
               "Add a working Boat API key on this server first.",
             );
           }
-          if (Option.isNone(yield* readKey)) {
+          const key = yield* readKey;
+          if (Option.isNone(key)) {
             yield* sql`UPDATE boat_account SET status = 'missing' WHERE id = 1`;
             return new BoatError({
               code: "not-configured",
@@ -1044,20 +1046,35 @@ export const make = Effect.gen(function* () {
                 "The saved Boat API key is missing. Enter it again in Settings → Environments → Boat machines.",
             });
           }
-          if (account.zero_data_retention !== 0) {
+          const policy = yield* api
+            .account(key.value)
+            .pipe(
+              Effect.mapError(
+                () =>
+                  new BoatError({ code: "provider-unavailable", message: "Could not reach Boat." }),
+              ),
+            );
+          if (policy.zeroDataRetention !== false) {
             return yield* fail(
               "invalid-state",
               "Boat did not confirm that this account keeps stopped disks, so a stopped machine might not resume.",
             );
           }
-          const managedId = BoatManagedId.make(`boat_${input.requestId}`);
-          const now = yield* nowIso;
-          yield* sql`
-          INSERT INTO boat_servers (managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at, boat_environment)
-          VALUES (${managedId}, ${account.account_id}, ${input.displayName}, ${input.size}, ${input.ttlSeconds}, 'provisioning', 'unknown', ${now}, ${account.boat_environment})
-        `;
-          yield* insertOperation(input.requestId, managedId, "create", payload, now);
-          return { managedId, requestId: input.requestId, kind: "create" as const };
+          return yield* sql.withTransaction(
+            Effect.gen(function* () {
+              // A lifecycle command could have claimed this request ID during the account read.
+              const existing = yield* lookup;
+              if (Option.isSome(existing)) return existing.value;
+              const managedId = BoatManagedId.make(`boat_${input.requestId}`);
+              const now = yield* nowIso;
+              yield* sql`
+                INSERT INTO boat_servers (managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at, boat_environment)
+                VALUES (${managedId}, ${account.account_id}, ${input.displayName}, ${input.size}, ${input.ttlSeconds}, 'provisioning', 'unknown', ${now}, ${account.boat_environment})
+              `;
+              yield* insertOperation(input.requestId, managedId, "create", payload, now);
+              return { managedId, requestId: input.requestId, kind: "create" as const };
+            }),
+          );
         }),
       ),
     );
@@ -1095,7 +1112,7 @@ export const make = Effect.gen(function* () {
             WHERE managed_id = ${input.managedId}
           `;
           return { managedId: input.managedId, requestId: input.requestId, kind };
-        }),
+        }).pipe(sql.withTransaction),
       );
     });
 

@@ -163,14 +163,13 @@ describe("BoatService", () => {
 
   it.effect("stops a machine stopped during provisioning before exposing its guest", () => {
     const gate = Deferred.makeUnsafe<void>();
-    let hold = false;
-    const { layer, fake } = setup({
-      latency: Effect.suspend(() => (hold ? Deferred.await(gate) : Effect.void)),
-    });
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      create: (key, input) => Deferred.await(gate).pipe(Effect.andThen(api.create(key, input))),
+    }));
     return Effect.gen(function* () {
       const boat = yield* BoatService.BoatService;
       yield* configure;
-      hold = true;
       const { managedId } = yield* createSmall;
       yield* boat.stop({ requestId: requestId(), managedId });
       expect((yield* server(managedId))?.lifecycle).toBe("stopping");
@@ -906,6 +905,26 @@ describe("BoatService", () => {
       const error = yield* Effect.flip(createSmall);
       expect(error.code).toBe("invalid-state");
       expect(fake.sandboxes.size).toBe(0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refuses another create after the wallet enables zero-data retention", () => {
+    let zeroDataRetention = false;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      account: (key) =>
+        api.account(key).pipe(Effect.map((account) => ({ ...account, zeroDataRetention }))),
+    }));
+    return Effect.gen(function* () {
+      yield* configure;
+      yield* createSmall;
+      yield* settle;
+
+      zeroDataRetention = true;
+      const error = yield* Effect.flip(createSmall);
+      expect(error.code).toBe("invalid-state");
+      expect((yield* snapshot).servers).toHaveLength(1);
+      expect(fake.calls.filter((name) => name === "create")).toHaveLength(1);
     }).pipe(Effect.provide(layer));
   });
 });
