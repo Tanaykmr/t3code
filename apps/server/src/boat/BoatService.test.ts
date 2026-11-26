@@ -387,6 +387,7 @@ describe("BoatService", () => {
       const row = yield* server(managedId);
       expect(row?.lifecycle).toBe("stopped");
       expect(row?.guestEnvironmentId).toBeNull();
+      expect(row?.lastStartedAt).toBe("1970-01-01T00:00:00.000Z");
       expect(fake.calls).not.toContain("bootstrap");
       expect([...fake.sandboxes.values()][0]?.sandbox.state).toBe("archived");
     }).pipe(Effect.provide(layer));

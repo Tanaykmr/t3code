@@ -60,14 +60,23 @@ export function boatCost(
   stale = false,
 ): BoatCost | null {
   const rate = rates.find((entry) => entry.size === server.size);
-  const running = server.lifecycle === "running";
-  const canEstimate = !running || !stale;
-  const startedAt = server.lastStartedAt === null ? null : Date.parse(server.lastStartedAt);
-  const end = running
-    ? nowMs
-    : server.lastStoppedAt === null
-      ? null
-      : Date.parse(server.lastStoppedAt);
+  const powered =
+    server.observedPower === "running" ||
+    server.observedPower === "stopping" ||
+    (server.observedPower === null && server.lifecycle === "running");
+  const lastStartedAt = server.lastStartedAt === null ? null : Date.parse(server.lastStartedAt);
+  const lastStoppedAt = server.lastStoppedAt === null ? null : Date.parse(server.lastStoppedAt);
+  const startedAt =
+    powered &&
+    (lastStartedAt === null || (lastStoppedAt !== null && lastStartedAt <= lastStoppedAt))
+      ? server.observedAt === null
+        ? null
+        : Date.parse(server.observedAt)
+      : lastStartedAt;
+  const canEstimate = powered
+    ? !stale && (startedAt !== null || lastStoppedAt === null)
+    : server.observedPower !== "missing";
+  const end = powered ? nowMs : lastStoppedAt;
   if (server.usage !== null) {
     if (canEstimate && rate !== undefined && end !== null) {
       const windowEnd = Date.parse(server.usage.windowEnd);

@@ -244,12 +244,48 @@ describe("boatCost", () => {
 
   it("extends the last usage sample while a machine is running", () => {
     const stopped = byId(rows(true), "boat_stopped")!.server;
-    const running = { ...stopped, lifecycle: "running" as const };
+    const running = {
+      ...stopped,
+      lifecycle: "running" as const,
+      observedPower: "running" as const,
+      lastStoppedAt: null,
+    };
     const later = Date.parse("2026-11-23T10:51:00.000Z");
 
     const cost = boatCost(running, snapshot.rates, later);
     expect(cost?.source).toBe("estimate");
     expect(cost?.usd).toBeCloseTo(0.0153, 6);
+  });
+
+  it.each([
+    { lifecycle: "provisioning", observedPower: "running", lastStartedAt: null },
+    { lifecycle: "stopping", observedPower: "running", lastStartedAt: base.lastStartedAt },
+    { lifecycle: "stopping", observedPower: "stopping", lastStartedAt: base.lastStartedAt },
+  ] as const)(
+    "estimates billable time during $lifecycle when Boat reports $observedPower",
+    (transition) => {
+      const running = byId(rows(true), "boat_running")!.server;
+      const server = { ...running, ...transition };
+      const cost = boatCost(server, snapshot.rates, nowMs);
+
+      expect(cost?.source).toBe("estimate");
+      expect(cost?.usd).toBeCloseTo(0.009, 6);
+      expect(boatCost(server, snapshot.rates, nowMs, true)).toBeNull();
+    },
+  );
+
+  it("estimates from the first powered observation while Resume is still provisioning", () => {
+    const stopped = byId(rows(true), "boat_stopped")!.server;
+    const resumed = {
+      ...stopped,
+      lifecycle: "provisioning" as const,
+      observedPower: "running" as const,
+      observedAt: "2026-11-23T10:45:00.000Z",
+    };
+    const cost = boatCost(resumed, snapshot.rates, Date.parse("2026-11-23T10:55:00.000Z"));
+
+    expect(cost?.source).toBe("estimate");
+    expect(cost?.usd).toBeCloseTo(0.012, 6);
   });
 
   it.each([false, true])("keeps the unreported usage through Stop (stale: %s)", (stale) => {
@@ -267,10 +303,30 @@ describe("boatCost", () => {
       },
     };
     const stopTime = Date.parse(stopped.lastStoppedAt!);
-    const live = boatCost({ ...retained, lifecycle: "running" }, snapshot.rates, stopTime);
+    const live = boatCost(
+      { ...retained, lifecycle: "running", observedPower: "running", lastStoppedAt: null },
+      snapshot.rates,
+      stopTime,
+    );
+    const stopping = boatCost(
+      {
+        ...retained,
+        lifecycle: "stopping",
+        observedPower: "stopping",
+        lastStoppedAt: "2026-11-23T10:00:00.000Z",
+      },
+      snapshot.rates,
+      stopTime,
+      stale,
+    );
     const afterStop = boatCost(retained, snapshot.rates, stopTime + 3_600_000, stale);
 
     expect(live?.usd).toBeCloseTo(0.015, 6);
+    expect(stopping).toEqual(
+      stale
+        ? { usd: retained.usage.listPriceUsd, source: "usage", asOf: retained.usage.observedAt }
+        : live,
+    );
     expect(afterStop).toEqual(live);
     expect(afterStop?.source).toBe("estimate");
   });

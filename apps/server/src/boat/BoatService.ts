@@ -587,12 +587,23 @@ export const make = Effect.gen(function* () {
           : sandbox.snapshotAvailable === true
             ? "available"
             : "unknown";
+    const startedAt =
+      power === "running" || power === "stopping"
+        ? sql`CASE WHEN last_started_at IS NULL OR last_started_at < last_stopped_at OR observed_power = 'stopped'
+            THEN ${observedAt} ELSE last_started_at END`
+        : sql`last_started_at`;
+    const stoppedAt =
+      power === "stopped"
+        ? sql`COALESCE(${sandbox.stoppedAt}, CASE WHEN observed_power = 'stopped' THEN last_stopped_at END, ${observedAt})`
+        : sql`last_stopped_at`;
     const changed = yield* sql`
       UPDATE boat_servers SET observed_power = ${power}, observed_at = ${observedAt},
-        auto_stop_at = ${sandbox.archiveAfter}, retention = ${retention}
+        auto_stop_at = ${sandbox.archiveAfter}, retention = ${retention},
+        last_started_at = ${startedAt}, last_stopped_at = ${stoppedAt}
       WHERE managed_id = ${managedId} AND deleted_at IS NULL AND (
         observed_at IS NULL OR observed_power IS NOT ${power}
         OR auto_stop_at IS NOT ${sandbox.archiveAfter} OR retention IS NOT ${retention}
+        OR last_started_at IS NOT (${startedAt}) OR last_stopped_at IS NOT (${stoppedAt})
       ) RETURNING managed_id
     `;
     if (changed.length > 0) yield* notify;
@@ -674,7 +685,6 @@ export const make = Effect.gen(function* () {
     yield* setServer(server.managed_id, {
       guest_environment_id: guest.environmentId,
       origin: guest.origin,
-      last_started_at: yield* nowIso,
     });
     // One statement, so a stop accepted during bootstrap is never overwritten by Running.
     yield* sql`
@@ -825,10 +835,7 @@ export const make = Effect.gen(function* () {
     if (yield* hasPendingStop(server.managed_id)) return true;
     if (settledState.value.state === "archived") {
       // Boat's TTL archived it while the controller was away; nothing is billing.
-      yield* setServer(server.managed_id, {
-        lifecycle: "stopped",
-        last_stopped_at: settledState.value.stoppedAt ?? (yield* nowIso),
-      });
+      yield* setServer(server.managed_id, { lifecycle: "stopped" });
       return true;
     }
     yield* bootstrapGuest(key, op, server, sandboxId);
@@ -1001,10 +1008,7 @@ export const make = Effect.gen(function* () {
     if (archived.value.state !== "archived") {
       return yield* new OperationRefused({ code: "provider-rejected" });
     }
-    yield* setServer(server.managed_id, {
-      lifecycle: "stopped",
-      last_stopped_at: archived.value.stoppedAt ?? (yield* nowIso),
-    });
+    yield* setServer(server.managed_id, { lifecycle: "stopped" });
     yield* updateUsage(key, server.managed_id, sandboxId);
     return true;
   });
@@ -1037,9 +1041,6 @@ export const make = Effect.gen(function* () {
     // Boat took this resume earlier; archived now means it woke and its deadline passed.
     // Settle as stopped rather than waking it again with a fresh deadline.
     if (op.provider_operation_id === ACKNOWLEDGED && current.state === "archived") {
-      yield* setServer(server.managed_id, {
-        last_stopped_at: current.stoppedAt ?? (yield* nowIso),
-      });
       // One statement, so a stop accepted meanwhile keeps the row Stopping.
       yield* sql`
         UPDATE boat_servers SET lifecycle = CASE WHEN EXISTS (
@@ -1800,14 +1801,7 @@ export const make = Effect.gen(function* () {
       const seen = sandbox.value;
       yield* observe(server.managed_id, seen, notify);
       if (server.lifecycle === "running" && seen.state === "archived") {
-        yield* setServer(
-          server.managed_id,
-          {
-            lifecycle: "stopped",
-            last_stopped_at: seen.stoppedAt ?? (yield* nowIso),
-          },
-          notify,
-        );
+        yield* setServer(server.managed_id, { lifecycle: "stopped" }, notify);
       } else if (server.lifecycle === "failed" && isLiveState(seen.state)) {
         const latest = yield* latestOperation(managedId);
         if (
