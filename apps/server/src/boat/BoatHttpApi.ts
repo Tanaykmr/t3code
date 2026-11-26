@@ -23,6 +23,7 @@ const MANUAL_REDIRECT: RequestInit = { redirect: "manual" };
 const SandboxBody = Schema.Struct({
   id: Schema.String,
   state: BoatSandboxState,
+  access: Schema.optional(Schema.Literals(["owner", "use", "view"])),
   labels: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   archiveAfter: Schema.optional(Schema.NullOr(Schema.String)),
   stoppedAt: Schema.optional(Schema.NullOr(Schema.String)),
@@ -72,6 +73,7 @@ const ErrorEnvelope = Schema.Struct({ code: Schema.optional(Schema.String) });
 
 const toSandbox = (body: typeof SandboxBody.Type): BoatSandbox => ({
   id: body.id,
+  ...(body.access === undefined ? {} : { access: body.access }),
   state: body.state,
   labels: body.labels ?? {},
   archiveAfter: body.archiveAfter ?? null,

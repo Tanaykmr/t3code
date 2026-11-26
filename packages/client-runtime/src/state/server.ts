@@ -1970,6 +1970,11 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.boatDelete,
       concurrency: boatConcurrency,
     }),
+    forgetBoat: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:boat:forget",
+      tag: WS_METHODS.boatForget,
+      concurrency: boatConcurrency,
+    }),
     setBoatApiKey: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:boat:set-api-key",
       tag: WS_METHODS.boatSetApiKey,

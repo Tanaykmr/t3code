@@ -12947,5 +12947,7 @@
   "27d76249d09eb69f": "Granskningsguiden är klar",
   "faa3bb26abb39c93": "Granskningsguiden misslyckades",
   "b7df38b7d8792d78": "Öppna guiden",
-  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide"
+  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide",
+  "e16f555fb4418961": "Glöm posten",
+  "8e4aa4a84fad1a44": "Glöm {name} i T3 Code? Bekräfta att maskinen har tagits bort i Boat. Faktureringen upphör inte när du glömmer posten."
 }

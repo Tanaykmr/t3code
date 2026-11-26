@@ -115,6 +115,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.boatStop]: AuthEnvironmentMaintainScope,
   [WS_METHODS.boatResume]: AuthEnvironmentMaintainScope,
   [WS_METHODS.boatDelete]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.boatForget]: AuthEnvironmentMaintainScope,
   [WS_METHODS.boatSetApiKey]: AuthEnvironmentMaintainScope,
   // Send stores and sends a report from a thread's turn: the bar of running that thread.
   [WS_METHODS.agentFeedbackAnswerRequest]: AuthOrchestrationOperateScope,

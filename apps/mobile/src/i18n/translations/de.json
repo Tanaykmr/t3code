@@ -2117,7 +2117,6 @@
   "706dc056a90627c8": "Sein Arbeitsbereich, seine Threads und Dateien auf Boat werden gelöscht. Dies kann nicht rückgängig gemacht werden.",
   "46e2a0e828785d97": "{environment} verwalten",
   "5fb5d5b1d8144be3": "{name}, {state}",
-  "9a4cafae417129e7": "Zeigt Stoppen, Fortsetzen oder Löschen",
   "ae365bd7ab23718c": "Diese Verbindung nutzt unverschlüsseltes HTTP über das Netzwerk. Gib den Schlüssel über HTTPS, T3 Connect oder direkt auf diesem Rechner ein.",
   "1aeaff95749c06f0": "Boat-Schlüssel konnte nicht entfernt werden",
   "bdc3443bc4723319": "Boat-Schlüssel konnte nicht gespeichert werden",
@@ -5771,5 +5770,8 @@
   "4b4e43ea5e283a36": "{name} fragen",
   "665221438c39054e": "Verbindung zu {environmentLabel} wird wiederhergestellt…",
   "39fe65193718be5d": "Verbindung fehlgeschlagen. Neuer Versuch für {environmentLabel}…",
-  "085f3d64c434cafd": "Bots"
+  "085f3d64c434cafd": "Bots",
+  "e16f555fb4418961": "Eintrag entfernen",
+  "8e4aa4a84fad1a44": "{name} aus T3 Code entfernen? Bestätige, dass der Rechner in Boat gelöscht wurde. Durch Entfernen des Eintrags endet die Abrechnung nicht.",
+  "f8834c10f2f6ffca": "Zeigt Rechneraktionen"
 }

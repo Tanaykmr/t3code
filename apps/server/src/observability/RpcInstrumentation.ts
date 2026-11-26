@@ -119,6 +119,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.boatStop]: "boat",
   [WS_METHODS.boatResume]: "boat",
   [WS_METHODS.boatDelete]: "boat",
+  [WS_METHODS.boatForget]: "boat",
   [WS_METHODS.boatSetApiKey]: "boat",
   [WS_METHODS.botsSubscribe]: "bots",
   [WS_METHODS.botsCreate]: "bots",

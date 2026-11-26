@@ -43,6 +43,7 @@ export type BoatSandboxState = typeof BoatSandboxState.Type;
 
 export interface BoatSandbox {
   readonly id: string;
+  readonly access?: "owner" | "use" | "view";
   readonly state: BoatSandboxState;
   readonly labels: Readonly<Record<string, string>>;
   readonly archiveAfter: string | null;

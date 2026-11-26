@@ -2117,7 +2117,6 @@
   "706dc056a90627c8": "Son espace de travail, ses fils et ses fichiers sur Boat sont purgés. Cette action est irréversible.",
   "46e2a0e828785d97": "Gérer {environment}",
   "5fb5d5b1d8144be3": "{name}, {state}",
-  "9a4cafae417129e7": "Affiche Arrêter, Reprendre ou Supprimer",
   "ae365bd7ab23718c": "Cette connexion utilise HTTP non chiffré sur le réseau. Saisissez la clé via HTTPS, T3 Connect ou sur cette machine.",
   "1aeaff95749c06f0": "Impossible de supprimer la clé Boat",
   "bdc3443bc4723319": "Impossible d’enregistrer la clé Boat",
@@ -5765,5 +5764,8 @@
   "4b4e43ea5e283a36": "Demander à {name}",
   "665221438c39054e": "Reconnexion à {environmentLabel}…",
   "39fe65193718be5d": "Échec de la connexion. Nouvelle tentative avec {environmentLabel}…",
-  "085f3d64c434cafd": "Bots"
+  "085f3d64c434cafd": "Bots",
+  "e16f555fb4418961": "Oublier l’enregistrement",
+  "8e4aa4a84fad1a44": "Oublier {name} dans T3 Code ? Confirmez que la machine a été supprimée dans Boat. Oublier son enregistrement n’arrête pas la facturation.",
+  "f8834c10f2f6ffca": "Affiche les actions de la machine"
 }

@@ -12940,5 +12940,7 @@
   "27d76249d09eb69f": "Guide de revue prêt",
   "faa3bb26abb39c93": "Échec du guide de revue",
   "b7df38b7d8792d78": "Ouvrir le guide",
-  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue"
+  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue",
+  "e16f555fb4418961": "Oublier l’enregistrement",
+  "8e4aa4a84fad1a44": "Oublier {name} dans T3 Code ? Confirmez que la machine a été supprimée dans Boat. Oublier son enregistrement n’arrête pas la facturation."
 }

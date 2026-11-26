@@ -98,9 +98,9 @@ const wireSnapshot = {
 const snapshot = Schema.decodeUnknownSync(BoatSnapshot)(wireSnapshot);
 const decodeReceipt = Schema.decodeUnknownSync(BoatOperationReceipt);
 const nowMs = Date.parse("2026-11-23T10:30:00.000Z");
-const rows = (connected: boolean, canManage = true) =>
+const rows = (connected: boolean, canManage = true, current = snapshot) =>
   boatRows({
-    controllers: [{ environmentId: CONTROLLER, snapshot, connected }],
+    controllers: [{ environmentId: CONTROLLER, snapshot: current, connected }],
     pairedEnvironmentIds: new Set([EnvironmentId.make("env-guest")]),
     canManage: () => canManage,
     nowMs,
@@ -138,6 +138,20 @@ describe("boatRows", () => {
 
   it("offers no actions to a session without the management permission", () => {
     expect(rows(true, false).every((row) => row.actions.size === 0)).toBe(true);
+  });
+
+  it("offers local recovery to managers on controllers that support it", () => {
+    const recovery = {
+      ...snapshot,
+      account: { status: "invalid" as const, label: null },
+      forgetAvailable: true,
+    };
+    const canForget = (list: ReturnType<typeof rows>) =>
+      list.every((row) => row.actions.has("forget"));
+    expect(canForget(rows(true, true, recovery))).toBe(true);
+    expect(canForget(rows(false, true, recovery))).toBe(false);
+    expect(canForget(rows(true, false, recovery))).toBe(false);
+    expect(canForget(rows(true, true, { ...recovery, forgetAvailable: false }))).toBe(false);
   });
 
   it("disables Resume once the snapshot expired", () => {

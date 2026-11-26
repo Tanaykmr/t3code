@@ -121,6 +121,7 @@ function useBoatLabels() {
   };
   const action: Record<BoatAction, string> = {
     stop: gt("Stop"),
+    forget: gt("Forget record"),
     resume: gt("Resume"),
     delete: gt("Delete"),
   };
@@ -151,6 +152,7 @@ function BoatRowView({
   const stop = useAtomCommand(serverEnvironment.stopBoat, { label: "boat stop" });
   const resume = useAtomCommand(serverEnvironment.resumeBoat, { label: "boat resume" });
   const remove = useAtomCommand(serverEnvironment.deleteBoat, { label: "boat delete" });
+  const forget = useAtomCommand(serverEnvironment.forgetBoat, { label: "boat forget" });
   const { server } = row;
   const operation = server.operation;
   const stage = operation === null ? null : labels.stage[operation.stage];
@@ -170,23 +172,32 @@ function BoatRowView({
       );
       if (!((await requestConfirmDialog(message)) ?? window.confirm(message))) return;
     }
-    if (action === "delete") {
-      const message = gt(
-        "Permanently delete {name}? Its workspace, threads and files on Boat are purged. This cannot be undone.",
-        { name: server.displayName },
-      );
+    if (action === "delete" || action === "forget") {
+      const message =
+        action === "forget"
+          ? gt(
+              "Forget {name} from T3 Code? Confirm it has been deleted in Boat. Forgetting its record does not stop billing.",
+              { name: server.displayName },
+            )
+          : gt(
+              "Permanently delete {name}? Its workspace, threads and files on Boat are purged. This cannot be undone.",
+              { name: server.displayName },
+            );
       const confirmed =
         (await requestConfirmDialog(message, { variant: "destructive" })) ??
         window.confirm(message);
       if (!confirmed) return;
     }
     setBusy(action);
-    const input = {
-      environmentId: row.controllerEnvironmentId,
-      input: { requestId: newRequestId(), managedId: server.managedId },
-    };
-    const command = action === "stop" ? stop : action === "resume" ? resume : remove;
-    const result = await command(input);
+    const environmentId = row.controllerEnvironmentId;
+    const managedId = server.managedId;
+    const result =
+      action === "forget"
+        ? await forget({ environmentId, input: { managedId, confirmed: true } })
+        : await (action === "stop" ? stop : action === "resume" ? resume : remove)({
+            environmentId,
+            input: { requestId: newRequestId(), managedId },
+          });
     setBusy(null);
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       toastManager.add({
@@ -236,7 +247,7 @@ function BoatRowView({
       <span className="text-muted-foreground/80">{details.join(" · ")}</span>
     </span>
   );
-  const actions = (["resume", "stop", "delete"] as const)
+  const actions = (["resume", "stop", "delete", "forget"] as const)
     .filter((action) => row.actions.has(action))
     .map((action) => {
       const Icon = action === "stop" ? SquareIcon : action === "resume" ? PlayIcon : Trash2Icon;
@@ -244,7 +255,7 @@ function BoatRowView({
         <Button
           key={action}
           size="xs"
-          variant={action === "delete" ? "ghost-destructive" : "ghost-muted"}
+          variant={action === "delete" || action === "forget" ? "ghost-destructive" : "ghost-muted"}
           disabled={busy !== null}
           onClick={() => void act(action)}
         >

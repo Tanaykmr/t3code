@@ -143,6 +143,7 @@ export const BoatSnapshot = Schema.Struct({
   servers: ForwardCompatibleArray(BoatServer),
   /** False while this server cannot install T3 on a new machine; Create and Resume are refused. */
   createAvailable: Schema.optionalKey(Schema.Boolean),
+  forgetAvailable: Schema.optionalKey(Schema.Boolean),
 });
 export type BoatSnapshot = typeof BoatSnapshot.Type;
 
@@ -162,6 +163,12 @@ export const BoatLifecycleInput = Schema.Struct({
   managedId: BoatManagedId,
 });
 export type BoatLifecycleInput = typeof BoatLifecycleInput.Type;
+
+export const BoatForgetInput = Schema.Struct({
+  managedId: BoatManagedId,
+  confirmed: Schema.Literal(true),
+});
+export type BoatForgetInput = typeof BoatForgetInput.Type;
 
 export const BoatOperationReceipt = Schema.Struct({
   managedId: BoatManagedId,

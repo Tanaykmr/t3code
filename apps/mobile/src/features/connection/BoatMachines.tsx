@@ -108,6 +108,7 @@ function useBoatLabels() {
     "bootstrap-unavailable": gt("This server cannot set up T3 Code on a Boat machine yet."),
   };
   const action: Record<BoatAction, string> = {
+    forget: gt("Forget record"),
     stop: gt("Stop"),
     resume: gt("Resume"),
     delete: gt("Delete"),
@@ -135,6 +136,7 @@ function BoatMachineRow({
   const gt = useGT();
   const labels = useBoatLabels();
   const [busy, setBusy] = useState(false);
+  const forget = useAtomCommand(serverEnvironment.forgetBoat, { label: "boat forget" });
   const { server } = row;
   const minutesLeft =
     server.autoStopAt === null || server.lifecycle !== "running"
@@ -157,6 +159,20 @@ function BoatMachineRow({
 
   const run = async (action: BoatAction) => {
     setBusy(true);
+    if (action === "forget") {
+      const result = await forget({
+        environmentId: row.controllerEnvironmentId,
+        input: { managedId: server.managedId, confirmed: true },
+      });
+      setBusy(false);
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        Dialog.alert(
+          gt("Could not update {name}", { name: server.displayName }),
+          String(squashAtomCommandFailure(result)),
+        );
+      }
+      return;
+    }
     const outcome = await sendBoatRequest({
       kind: action,
       environmentId: row.controllerEnvironmentId,
@@ -169,6 +185,19 @@ function BoatMachineRow({
   };
   const confirmThen = (action: BoatAction) => {
     if (action === "resume") return void run(action);
+    if (action === "forget") {
+      Dialog.confirm({
+        title: labels.action.forget,
+        message: gt(
+          "Forget {name} from T3 Code? Confirm it has been deleted in Boat. Forgetting its record does not stop billing.",
+          { name: server.displayName },
+        ),
+        confirmText: labels.action.forget,
+        destructive: true,
+        onConfirm: () => void run("forget"),
+      });
+      return;
+    }
     Dialog.confirm(
       action === "stop"
         ? {
@@ -190,7 +219,7 @@ function BoatMachineRow({
           },
     );
   };
-  const actions = (["resume", "stop", "delete"] as const).filter((action) =>
+  const actions = (["resume", "stop", "delete", "forget"] as const).filter((action) =>
     row.actions.has(action),
   );
   const guestId = row.paired ? server.guestEnvironmentId : null;
@@ -199,7 +228,10 @@ function BoatMachineRow({
     Dialog.alert(server.displayName, labels.lifecycle[server.lifecycle], [
       ...actions.map((action) => ({
         text: labels.action[action],
-        style: action === "delete" ? ("destructive" as const) : ("default" as const),
+        style:
+          action === "delete" || action === "forget"
+            ? ("destructive" as const)
+            : ("default" as const),
         onPress: () => confirmThen(action),
       })),
       ...(guestId === null
@@ -220,7 +252,7 @@ function BoatMachineRow({
         name: server.displayName,
         state: labels.lifecycle[server.lifecycle],
       })}
-      accessibilityHint={actions.length > 0 ? gt("Shows Stop, Resume or Delete") : undefined}
+      accessibilityHint={actions.length > 0 ? gt("Shows machine actions") : undefined}
       accessibilityState={{ disabled, busy }}
       disabled={disabled}
       onPress={openActions}

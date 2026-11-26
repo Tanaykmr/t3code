@@ -12940,5 +12940,7 @@
   "27d76249d09eb69f": "Guia de revisão pronto",
   "faa3bb26abb39c93": "O guia de revisão falhou",
   "b7df38b7d8792d78": "Abrir guia",
-  "9e91e9a77b664e4e": "Não foi possível iniciar um guia de revisão"
+  "9e91e9a77b664e4e": "Não foi possível iniciar um guia de revisão",
+  "e16f555fb4418961": "Esquecer registro",
+  "8e4aa4a84fad1a44": "Esquecer {name} no T3 Code? Confirme que a máquina foi excluída no Boat. Esquecer o registro não interrompe a cobrança."
 }

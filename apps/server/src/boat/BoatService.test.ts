@@ -313,7 +313,7 @@ describe("BoatService", () => {
       yield* settle;
       expect(yield* server(managedId)).toMatchObject({
         lifecycle: "stopped",
-        observedPower: "stopped",
+        observedPower: "missing",
       });
       yield* boat.resume({ requestId: requestId(), managedId });
       yield* settle;
@@ -863,6 +863,145 @@ describe("BoatService", () => {
       expect(fake.sandboxes.size).toBe(0);
       expect(yield* server(managedId)).toBeUndefined();
       expect(yield* boat.setApiKey({ apiKey: replacement })).toEqual({ status: "configured" });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("recovers cleanup with a same-wallet key after Boat rejects the saved key", () => {
+    const replacement = `${FAKE_BOAT_KEY}_recovery`;
+    const sameWallet = (key: BoatKey) =>
+      Redacted.value(key) === replacement ? Redacted.make(FAKE_BOAT_KEY) : key;
+    let revoked = false;
+    const { layer, fake } = setup({}, (api) => ({
+      ...api,
+      account: (key) =>
+        revoked && Redacted.value(key) === FAKE_BOAT_KEY
+          ? Effect.fail(new BoatApiError({ category: "forbidden", code: "api_key_expired" }))
+          : api.account(sameWallet(key)),
+      get: (key, id) => api.get(sameWallet(key), id),
+      list: (key, labels) => api.list(sameWallet(key), labels),
+      stop: (key, id) => api.stop(sameWallet(key), id),
+      delete: (key, id) => api.delete(sameWallet(key), id),
+      deletionCompleted: (key, id, sandboxId) =>
+        api.deletionCompleted(sameWallet(key), id, sandboxId),
+    }));
+    return Effect.gen(function* () {
+      const boat = yield* BoatService.BoatService;
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      fake.failNext(
+        "account",
+        new BoatApiError({ category: "forbidden", code: "api_key_action_forbidden" }),
+      );
+      expect((yield* Effect.flip(boat.setApiKey({ apiKey: replacement }))).code).toBe(
+        "provider-unavailable",
+      );
+      expect((yield* snapshot).account.status).toBe("configured");
+      revoked = true;
+      yield* settle;
+      const invalid = (yield* snapshot).account.status;
+      expect((yield* Effect.flip(boat.setApiKey({ apiKey: FAKE_OTHER_WALLET_KEY }))).code).toBe(
+        "conflict",
+      );
+      expect(yield* Effect.result(boat.setApiKey({ apiKey: replacement }))).toMatchObject({
+        _tag: "Success",
+        success: { status: "configured" },
+      });
+      expect(invalid).toBe("invalid");
+      yield* boat.stop({ requestId: requestId(), managedId });
+      yield* settle;
+      yield* boat.delete({ requestId: requestId(), managedId });
+      yield* settle;
+      expect(fake.sandboxes.size).toBe(0);
+      expect(yield* boat.setApiKey({ apiKey: null })).toEqual({ status: "missing" });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each(["working", "revoked", "missing"] as const)(
+    "can forget a machine deleted in Boat and remove the %s credential binding",
+    (credential) => {
+      let revoked = false;
+      const { layer, fake, secrets } = setup({}, (api) => ({
+        ...api,
+        account: (key) =>
+          revoked ? Effect.fail(new BoatApiError({ category: "unauthorized" })) : api.account(key),
+        get: (key, id) =>
+          revoked ? Effect.fail(new BoatApiError({ category: "unauthorized" })) : api.get(key, id),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        const sandboxId = (yield* server(managedId))!.sandboxId!;
+        const input = { managedId, confirmed: true as const };
+        expect((yield* Effect.flip(boat.forget(input))).code).toBe("invalid-state");
+
+        fake.deleteExternally(sandboxId);
+        revoked = credential === "revoked";
+        if (credential === "missing") secrets.clear();
+        yield* settle;
+        const seen = yield* snapshot;
+        if (credential === "working") expect(seen.servers[0]?.observedPower).toBe("missing");
+        else expect(seen.account.status).toBe(credential === "revoked" ? "invalid" : "missing");
+
+        yield* boat.forget(input);
+        yield* boat.forget(input);
+        expect((yield* snapshot).servers).toEqual([]);
+        expect(yield* boat.setApiKey({ apiKey: null })).toEqual({ status: "missing" });
+        expect(fake.calls).not.toContain("delete");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "allows local recovery when Boat accepts deletion but its status is unavailable",
+    () => {
+      const { layer, fake } = setup({}, (api) => ({
+        ...api,
+        deletionCompleted: () => Effect.fail(new BoatApiError({ category: "not-found" })),
+      }));
+      return Effect.gen(function* () {
+        const boat = yield* BoatService.BoatService;
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+        yield* boat.stop({ requestId: requestId(), managedId });
+        yield* settle;
+        yield* boat.delete({ requestId: requestId(), managedId });
+        yield* settle;
+        expect((yield* server(managedId))?.lifecycle).toBe("deleting");
+        yield* boat.forget({ managedId, confirmed: true });
+        expect(fake.calls.filter((name) => name === "delete")).toHaveLength(1);
+        expect((yield* snapshot).servers).toEqual([]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("does not write or publish an unchanged provider observation", () => {
+    const { layer } = setup({}, (api) => ({
+      ...api,
+      usage: () =>
+        Effect.succeed({
+          seconds: 0,
+          dollars: 0,
+          since: "1970-01-01T00:00:00.000Z",
+          until: "1970-01-01T00:00:00.000Z",
+        }),
+    }));
+    return Effect.gen(function* () {
+      yield* configure;
+      const { managedId } = yield* createSmall;
+      yield* settle;
+      const before = yield* snapshot;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.adjust("1 minute");
+      yield* settle;
+      const [row] = yield* sql<{
+        observed_at: string;
+      }>`SELECT observed_at FROM boat_servers WHERE managed_id = ${managedId}`;
+      expect(row?.observed_at).toBe(before.servers[0]?.observedAt);
+      expect(yield* snapshot).toBe(before);
     }).pipe(Effect.provide(layer));
   });
 

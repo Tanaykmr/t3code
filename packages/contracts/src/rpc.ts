@@ -456,6 +456,7 @@ import {
 import {
   BoatCreateInput,
   BoatError,
+  BoatForgetInput,
   BoatLifecycleInput,
   BoatOperationReceipt,
   BoatSetApiKeyInput,
@@ -678,6 +679,7 @@ export const WS_METHODS = {
   boatStop: "boat.stop",
   boatResume: "boat.resume",
   boatDelete: "boat.delete",
+  boatForget: "boat.forget",
   boatSetApiKey: "boat.setApiKey",
 
   botsSubscribe: "bots.subscribe",
@@ -2450,6 +2452,12 @@ const WsBoatDeleteRpc = Rpc.make(WS_METHODS.boatDelete, {
   error: BoatRpcError,
 });
 
+const WsBoatForgetRpc = Rpc.make(WS_METHODS.boatForget, {
+  payload: BoatForgetInput,
+  success: Schema.Void,
+  error: BoatRpcError,
+});
+
 const WsBoatSetApiKeyRpc = Rpc.make(WS_METHODS.boatSetApiKey, {
   payload: BoatSetApiKeyInput,
   success: BoatSetApiKeyResult,
@@ -2732,6 +2740,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsBoatStopRpc,
   WsBoatResumeRpc,
   WsBoatDeleteRpc,
+  WsBoatForgetRpc,
   WsBoatSetApiKeyRpc,
   WsBotsSubscribeRpc,
   WsBotsCreateRpc,

@@ -2418,6 +2418,7 @@ export const layerWsRpc = (
         [WS_METHODS.boatStop]: (input) => boat.stop(input),
         [WS_METHODS.boatResume]: (input) => boat.resume(input),
         [WS_METHODS.boatDelete]: (input) => boat.delete(input),
+        [WS_METHODS.boatForget]: (input) => boat.forget(input),
         // A reusable account key must not cross a plain-HTTP LAN route.
         [WS_METHODS.boatSetApiKey]: (input) =>
           input.apiKey !== null && settingsClient.privateTransport !== true

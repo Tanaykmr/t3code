@@ -9,7 +9,7 @@ import {
   EnvironmentId,
 } from "@t3tools/contracts";
 
-export type BoatAction = Exclude<BoatOperationKind, "create">;
+export type BoatAction = Exclude<BoatOperationKind, "create"> | "forget";
 
 /** Only a small accent; rows stay neutral otherwise. */
 export type BoatTone = "neutral" | "progress" | "success" | "warning" | "danger";
@@ -84,9 +84,19 @@ export function boatCost(
 }
 
 function actionsFor(server: BoatServer, snapshot: BoatSnapshot): ReadonlySet<BoatAction> {
-  const actions = new Set(boatAllowedActions(server));
+  const actions = new Set<BoatAction>(boatAllowedActions(server));
   // A controller that cannot install T3 refuses Resume, so the button would only fail.
   if (snapshot.createAvailable === false) actions.delete("resume");
+  if (
+    snapshot.forgetAvailable === true &&
+    (snapshot.account.status !== "configured" ||
+      server.observedPower === "missing" ||
+      server.lifecycle === "deleting" ||
+      server.operation?.failure === "not-found" ||
+      server.operation?.failure === "unresolved-create")
+  ) {
+    actions.add("forget");
+  }
   return actions;
 }
 

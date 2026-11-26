@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
       }) => Promise<AtomCommandResult<BoatOperationReceipt, Error>>
     >(),
   setKey: vi.fn(),
+  forget: vi.fn(),
 }));
 
 vi.mock(import("../../state/environments"), async (original) => ({
@@ -62,16 +63,52 @@ vi.mock(import("../../state/server"), async (original) => {
       servers: [],
     }),
   );
+  const recovery = Atom.make(
+    AsyncResult.success<BoatSnapshot>({
+      account: { status: "invalid", label: "Boat" },
+      rates: [],
+      forgetAvailable: true,
+      servers: [
+        {
+          managedId: BoatManagedId.make("old-machine"),
+          displayName: "Old machine",
+          size: "small",
+          ttlSeconds: 3600,
+          lifecycle: "stopped",
+          operation: null,
+          sandboxId: "bx_22222222",
+          guestEnvironmentId: null,
+          origin: null,
+          observedPower: "missing",
+          observedAt: null,
+          autoStopAt: null,
+          retention: "unknown",
+          usage: null,
+          createdAt: "2026-11-01T00:00:00.000Z",
+          lastStartedAt: null,
+          lastStoppedAt: null,
+        },
+      ],
+    }),
+  );
   return {
     ...actual,
-    serverEnvironment: { ...actual.serverEnvironment, boatLive: () => snapshot },
+    serverEnvironment: {
+      ...actual.serverEnvironment,
+      boatLive: ({ environmentId }: { environmentId: EnvironmentId }) =>
+        environmentId === "controller-recovery" ? recovery : snapshot,
+    },
   };
 });
 
 vi.mock(import("../../state/use-atom-command"), async (original) => ({
   ...(await original()),
   useAtomCommand: ((_command: unknown, options: { label: string }) =>
-    options.label === "boat set api key" ? mocks.setKey : mocks.create) as never,
+    options.label === "boat forget"
+      ? mocks.forget
+      : options.label === "boat set api key"
+        ? mocks.setKey
+        : mocks.create) as never,
 }));
 
 import { ConfirmDialogHost } from "../ConfirmDialogHost";
@@ -86,6 +123,40 @@ function BoatSettings() {
   const boat = useBoatControllers(environments);
   return <BoatEnvironmentsSettings boat={boat} renderSavedGuest={() => null} />;
 }
+
+it("requires confirmation before forgetting a Boat record locally", async () => {
+  const environmentId = EnvironmentId.make("controller-recovery");
+  mocks.environments = [
+    {
+      environmentId,
+      label: "Owner",
+      serverConfig: { boatEnvironments: true },
+      connection: { phase: "connected" },
+    },
+  ];
+  mocks.forget.mockReset().mockResolvedValue(AsyncResult.success(undefined));
+  await using screen = await render(
+    <RegistryProvider>
+      <BoatSettings />
+      <ConfirmDialogHost />
+    </RegistryProvider>,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Forget record" }));
+  const dialog = page.getByRole("alertdialog");
+  await expect.element(dialog).toBeVisible();
+  expect(dialog.element().textContent).toContain("Forgetting its record does not stop billing.");
+  expect(mocks.forget).not.toHaveBeenCalled();
+  const confirm = dialog.getByRole("button", { name: "Confirm" });
+  await expect.element(confirm).toBeVisible();
+  (confirm.element() as HTMLButtonElement).focus();
+  await userEvent.keyboard("{Enter}");
+  await vi.waitFor(() =>
+    expect(mocks.forget).toHaveBeenCalledExactlyOnceWith({
+      environmentId,
+      input: { managedId: "old-machine", confirmed: true },
+    }),
+  );
+});
 
 it("removes a stored Boat key after confirmation without sending a credential", async () => {
   const environmentId = EnvironmentId.make("controller-with-key");
