@@ -5,6 +5,7 @@ import { WorkspaceRootScreen } from "./WorkspaceRootScreen.android";
 import {
   initialWorkspaceTabsState,
   workspaceTabsReducer,
+  workspaceTabOf,
   shouldRestoreNativeSearch,
   workspaceTabForNativeSlot,
   resolveWorkspaceTabOrder,
@@ -55,17 +56,37 @@ describe("Duo list clearance", () => {
 });
 
 describe("workspace root navigation", () => {
+  it("keeps a bot DM on Bots when its detail closes", () => {
+    const bots = new Set(["env:ada"]);
+    const params = { environmentId: "env", threadId: "ada" };
+    const tab = workspaceTabOf({ name: "Thread", params }, bots);
+    const opened = workspaceTabsReducer(initialWorkspaceTabsState(), {
+      type: "select",
+      tab: tab ?? "threads",
+    });
+    expect(opened.selectedTab).toBe("bots");
+    expect(
+      workspaceTabOf({ name: "Thread", params: { ...params, environmentId: "other" } }, bots),
+    ).toBe("threads");
+    expect(workspaceTabOf({ name: "Thread", params: { ...params, botDm: true } }, new Set())).toBe(
+      "bots",
+    );
+    expect(workspaceTabOf({ name: "Home" }, bots)).toBeUndefined();
+  });
+
   it("pairs Settings, chats and pull requests with a detail column, and keeps Usage one page", () => {
     expect(workspaceUsesColumns("usage")).toBe(false);
     expect(workspaceUsesColumns("workflows")).toBe(false);
     expect(workspaceUsesColumns("usage", true)).toBe(true);
     expect(workspaceUsesColumns("threads")).toBe(true);
     expect(workspaceUsesColumns("pullRequests")).toBe(true);
+    expect(workspaceUsesColumns("bots")).toBe(true);
   });
 
   it("keeps the registered defaults while customization is unavailable", () => {
     expect(resolveWorkspaceTabOrder(undefined)).toEqual([
       "threads",
+      "bots",
       "pullRequests",
       "issues",
       "usage",
@@ -267,6 +288,7 @@ vi.mock("../../pull-requests/PullRequestFilterMenuContext", () => ({
 }));
 vi.mock("../../pull-requests/PullRequestsScreen", () => ({ PullRequestsScreen: () => null }));
 vi.mock("../../issues/IssuesScreen", () => ({ IssuesScreen: () => null }));
+vi.mock("./AndroidBotsPane.android", () => ({ AndroidBotsPane: () => null }));
 vi.mock("./ListSearchToolbar.android", () => ({ ListSearchToolbar: () => null }));
 vi.mock("./AndroidWorkspaceNavigation", () => ({
   AndroidWorkspaceNavigation: () => null,

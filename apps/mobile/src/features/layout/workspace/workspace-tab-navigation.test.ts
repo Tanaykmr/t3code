@@ -39,6 +39,10 @@ const names = (state: { routes: readonly { name: string }[] }) =>
 describe("workspace tab selections", () => {
   it("remembers the chat, pull request and Settings page each tab showed", () => {
     const afterThread = workspaceSelectionsIn([home, thread], {});
+    const botDm = { ...thread, params: { ...thread.params, threadId: "ada" } };
+    expect(workspaceSelectionsIn([home, botDm], afterThread, new Set(["env:ada"]))).toBe(
+      afterThread,
+    );
     const afterPullRequest = workspaceSelectionsIn([home, pullRequest], afterThread);
     expect(afterPullRequest).toMatchObject({
       threads: thread.params,

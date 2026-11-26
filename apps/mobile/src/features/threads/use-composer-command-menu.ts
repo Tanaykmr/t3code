@@ -1,6 +1,8 @@
 import { threadPullRequestKeyOf } from "@t3tools/client-runtime/thread-pull-requests";
 import * as Dialog from "../../components/ui/Dialog";
 import type {
+  Bot,
+  BotMention,
   EnvironmentId,
   ProjectId,
   ServerProvider,
@@ -17,6 +19,7 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/model
 const EMPTY_THREAD_SHELLS: ReadonlyArray<EnvironmentThreadShell> = [];
 const EMPTY_ENVIRONMENTS: ReadonlyArray<ComposerEnvironmentCandidate> = [];
 const NO_LINKED_ENVIRONMENTS: ReadonlyMap<EnvironmentId, string> = new Map();
+const NO_BOT_MENTIONS: ReadonlyArray<Bot> = [];
 import { COMPOSER_CONTEXT_MAX_RECORDS } from "@t3tools/contracts";
 import {
   formatComposerContextReference,
@@ -272,6 +275,8 @@ export function useComposerCommandMenu({
   modelProviders,
   onFreshSession,
   offersSideChat = false,
+  botMentions = NO_BOT_MENTIONS,
+  onPickBot,
 }: {
   readonly draftMessage: string;
   readonly ownerKey: string | null;
@@ -299,6 +304,9 @@ export function useComposerCommandMenu({
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   readonly onFreshSession?: () => void;
   readonly offersSideChat?: boolean;
+  /** Other bots a bot's DM can hand a message to; empty outside bot DMs. */
+  readonly botMentions?: ReadonlyArray<Bot>;
+  readonly onPickBot?: (mention: BotMention) => void;
 }) {
   const gt = useGT();
   const messages = useMessages();
@@ -541,7 +549,19 @@ export function useComposerCommandMenu({
         modelOptions && modelProviders
           ? buildComposerModelItems(modelOptions, trigger.query, modelProviders)
           : [];
+      const query = trigger.query.trim().toLowerCase();
+      const botItems = botMentions
+        .filter((bot) => bot.name.toLowerCase().startsWith(query))
+        .map((bot) => ({
+          id: `bot:${bot.id}`,
+          type: "bot" as const,
+          botId: bot.id,
+          avatar: bot.avatar,
+          label: bot.name,
+          description: bot.title,
+        }));
       return [
+        ...botItems,
         ...threadItems,
         ...environmentItems,
         ...modelItems,
@@ -564,6 +584,19 @@ export function useComposerCommandMenu({
 
   const onSelect = (item: ComposerCommandItem) => {
     if (!trigger) return;
+    if (item.type === "bot") {
+      if (trigger.kind !== "path") return;
+      const result = replaceTextRange(
+        draftMessage,
+        trigger.rangeStart,
+        trigger.rangeEnd,
+        `@${item.label} `,
+      );
+      onChangeDraftMessage(result.text);
+      onPickBot?.({ botId: item.botId, label: item.label });
+      setSelection({ start: result.cursor, end: result.cursor });
+      return;
+    }
     if (item.type === "environment") {
       if (!ownerKey || trigger.kind !== "path") return;
       const record = environmentComposerContext(item.environmentId, item.label);

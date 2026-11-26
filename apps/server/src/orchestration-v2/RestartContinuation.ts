@@ -1,4 +1,5 @@
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { RoomSeatMessageThread } from "../bots/botStore.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
@@ -354,6 +355,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         restartContinuationOfRunId: input.sourceRunId,
       })
       .pipe(
+        Effect.provideService(RoomSeatMessageThread, input.threadId),
         // Disabled instances, and threads above a policy ceiling, cannot resume; still run success
         // cleanup so delegated children recover without futile retries.
         Effect.catchTags({

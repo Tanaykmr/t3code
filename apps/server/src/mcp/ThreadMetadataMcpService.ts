@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as BotMcpPolicy from "./BotMcpPolicy.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { threadNotFound } from "./threadAccess.ts";
 
@@ -141,6 +142,8 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
+    yield* BotMcpPolicy.assertThreadRead(threadManagement, scope, threadId, shell);
+    yield* BotMcpPolicy.assertThreadWrite(scope, threadId);
     if (shell === null || shell.deletedAt !== null) {
       return yield* threadNotFound(
         threadManagement,

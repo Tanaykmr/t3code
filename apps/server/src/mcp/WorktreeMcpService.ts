@@ -30,6 +30,7 @@ import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.t
 import * as ServerSettings from "../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as TaskFolders from "../workspace/TaskFolders.ts";
+import * as BotMcpPolicy from "./BotMcpPolicy.ts";
 import type { McpInvocationScope, McpThreadInvocationScope } from "./McpInvocationContext.ts";
 
 export class WorktreeMcpService extends Context.Service<
@@ -452,6 +453,9 @@ const make = Effect.gen(function* () {
   const handoff: WorktreeMcpService["Service"]["handoff"] = Effect.fn("WorktreeMcpService.handoff")(
     function* (callerScope, input) {
       yield* requireCapability(callerScope);
+      yield* BotMcpPolicy.assertNonBot(callerScope, "handoff").pipe(
+        Effect.mapError((error) => failure("invalid_request", error.message)),
+      );
       const scope = yield* requireThreadScope(callerScope);
       // Acquire and register cleanup atomically so cancellation cannot strand the guard until restart.
       return yield* Effect.uninterruptibleMask((restore) =>

@@ -18,6 +18,8 @@ import { rootStackState, type RootStackNavigation } from "../../../lib/root-stac
 import { workspaceRoutesOf } from "../workspace-overlay-routes";
 import type { WorkspaceSelections } from "../../../persistence/mobile-preferences";
 import { appAtomRegistry } from "../../../state/atom-registry";
+import { botByDmThreadKeyAtom } from "../../../state/bots";
+import { workspaceTabOf } from "./workspace-tabs-state";
 import { environmentPresentations } from "../../../state/presentation";
 import {
   environmentThreadShells,
@@ -96,7 +98,11 @@ export function currentWorkspaceSelections() {
  */
 export function recordWorkspaceSelections(state: NavigationState | undefined) {
   if (!REMEMBERS || !state) return;
-  selections = workspaceSelectionsIn(state.routes.slice(0, state.index + 1), selections);
+  selections = workspaceSelectionsIn(
+    state.routes.slice(0, state.index + 1),
+    selections,
+    appAtomRegistry.get(botByDmThreadKeyAtom),
+  );
 }
 
 function environmentRemoved(environmentId: string) {
@@ -115,7 +121,14 @@ function environmentRemoved(environmentId: string) {
  */
 export const workspaceSelectionCheck: WorkspaceSelectionCheck = {
   thread: (selection) => {
-    if (environmentRemoved(selection.environmentId)) return false;
+    if (
+      environmentRemoved(selection.environmentId) ||
+      workspaceTabOf(
+        { name: "Thread", params: selection },
+        appAtomRegistry.get(botByDmThreadKeyAtom),
+      ) === "bots"
+    )
+      return false;
     const environmentId = selection.environmentId as EnvironmentId;
     if (!appAtomRegistry.get(threadEnvironment.snapshotAtom(environmentId))) return true;
     return appAtomRegistry

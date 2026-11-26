@@ -42,6 +42,8 @@ export function WorkspaceTabDock(props: { readonly placement: "column" | "window
   // Floating tabs carry compose beside them, and keep its room when it's gone so the tabs hold still.
   const compact = useFloatingWorkspaceTabs();
   const onCompose = compact ? compose?.onPress : undefined;
+  const bots = !workspace.settingsOpen && workspace.state.selectedTab === "bots";
+  if (compact && bots && workspace.state.tabs.bots.searchMode !== "resting") return null;
   const width =
     props.placement === "column"
       ? undefined
@@ -87,7 +89,7 @@ export function WorkspaceTabDock(props: { readonly placement: "column" | "window
           bottom: 0,
           left: compact ? 8 : 0,
           maxWidth: layout.variant === "medium" ? 280 : undefined,
-          right: compact ? 12 + (onCompose ? 0 : 64) : 0,
+          right: compact ? 12 + (onCompose || bots ? 0 : 64) : 0,
           height: 128,
         }}
       />

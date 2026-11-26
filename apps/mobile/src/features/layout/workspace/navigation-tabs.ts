@@ -11,6 +11,7 @@ import {
   type NavigationTab,
 } from "./navigation-tab-order";
 import type { AppSymbolName } from "../../../components/ui/AppSymbol";
+import { botEnvironmentIdsAtom } from "../../../state/bots";
 import { mobilePreferencesAtom } from "../../../state/preferences";
 import { PullRequestGlyph } from "../../pull-requests/pullRequestGlyphs";
 import { useWorkspaceTabs } from "./WorkspaceTabsContext";
@@ -28,6 +29,7 @@ export const WORKSPACE_TAB_LABELS = {
 
 export const NAVIGATION_TAB_ICONS = {
   threads: "text.bubble",
+  bots: "robot",
   pullRequests: PullRequestGlyph.pullRequest,
   issues: "git.issue",
   workflows: "point.3.connected.trianglepath.dotted",
@@ -46,11 +48,14 @@ export function useHiddenNavigationTabs() {
   const preferences = useAtomValue(mobilePreferencesAtom);
   const selected = useWorkspaceTabs()?.state.selectedTab ?? "threads";
   const saved = AsyncResult.isSuccess(preferences) ? preferences.value : undefined;
+  const botsAvailable = useAtomValue(botEnvironmentIdsAtom).length > 0;
   return [
     ...(navigationCustomizationAvailable()
       ? resolveHiddenNavigationTabs(saved?.hiddenNavigationTabs)
       : []),
     sharedSlotAbsentee(selected, saved?.sharedSlotTab),
+    // Only servers that serve bots get the tab.
+    ...(botsAvailable ? [] : ["bots" as const]),
   ];
 }
 

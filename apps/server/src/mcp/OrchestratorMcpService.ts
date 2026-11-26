@@ -67,6 +67,7 @@ import {
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
+
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -91,6 +92,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as BotMcpPolicy from "./BotMcpPolicy.ts";
 import {
   SUBAGENT_RESULT_TURN_ITEM_TYPES,
   subagentResultForRun,
@@ -1468,6 +1470,7 @@ const make = Effect.gen(function* () {
     K extends "runs",
   >(scope: McpInvocationScope, threadId: ThreadId, callerFields: ReadonlyArray<K>) {
     const caller = yield* loadCaller(scope, callerFields);
+    yield* BotMcpPolicy.assertThreadRead(threadManagement, scope, threadId);
     // Only the thread row: the caller's own record holds just its active runs.
     const target: Pick<OrchestrationV2ThreadProjection, "thread"> =
       caller.parent !== undefined && threadId === caller.parent.thread.id
@@ -1857,6 +1860,7 @@ const make = Effect.gen(function* () {
     if (task.childThreadId === null) {
       return yield* readRemoteTask(scope, task, waitTimedOut, acknowledgeTerminal);
     }
+    yield* BotMcpPolicy.assertThreadRead(threadManagement, scope, task.childThreadId);
     const childControls = yield* threadManagement
       .getThreadRecords(
         task.childThreadId,
@@ -2362,7 +2366,8 @@ const make = Effect.gen(function* () {
       const modes = yield* scheduledTaskRunModes(task).pipe(Effect.option);
       return scheduledTaskSummary(
         task,
-        live &&
+        scope.bot !== true &&
+          live &&
           Option.isSome(modes) &&
           modes.value.every((mode) => withinLimits(caller.limits, mode)),
       );
@@ -2375,6 +2380,7 @@ const make = Effect.gen(function* () {
    * the caller's limits.
    */
   const loadScheduledTask = Effect.fn("OrchestratorMcpService.loadScheduledTask")(function* (
+    scope: McpInvocationScope,
     scheduledTaskId: ScheduledTask["id"],
     limits: {
       readonly runtimeMode: RuntimeMode;
@@ -2392,6 +2398,9 @@ const make = Effect.gen(function* () {
     if (task === undefined) {
       return yield* failure("task_not_found", `Scheduled task ${scheduledTaskId} was not found.`);
     }
+    if (task.threadId !== null) {
+      yield* BotMcpPolicy.assertThreadRead(threadManagement, scope, task.threadId);
+    }
     for (const modes of yield* scheduledTaskRunModes(task)) {
       yield* resolveRuntimeMode(limits.runtimeMode, modes.runtimeMode);
       yield* resolveInteractionMode(limits.interactionMode, modes.interactionMode);
@@ -2403,11 +2412,16 @@ const make = Effect.gen(function* () {
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
-      yield* assertLiveCallerForOtherProject(scope, parent, projectId);
-      const project = yield* requireProject(projectId);
       const bindToCurrentThread =
         input.bindToCurrentThread ??
         (parent !== undefined && parent.thread.projectId === projectId);
+      const threadId = bindToCurrentThread ? (parent?.thread.id ?? null) : null;
+      const binding = yield* BotMcpPolicy.authorizeRoutine(scope, parent?.thread.projectId, {
+        projectId,
+        threadId,
+      });
+      yield* assertLiveCallerForOtherProject(scope, parent, projectId);
+      const project = yield* requireProject(projectId);
       if (bindToCurrentThread && (parent === undefined || parent.thread.projectId !== projectId)) {
         return yield* failure(
           "invalid_request",
@@ -2429,7 +2443,7 @@ const make = Effect.gen(function* () {
         enabled: input.enabled ?? true,
         schedule: input.schedule,
         projectId,
-        threadId: bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
+        threadId,
         threadMode: input.freshSession
           ? "fresh_session"
           : bindToCurrentThread
@@ -2454,7 +2468,7 @@ const make = Effect.gen(function* () {
             }),
       };
       const { task } = yield* scheduledTasks
-        .upsert(upsertInput)
+        .upsert({ ...upsertInput, ...binding })
         .pipe(
           Effect.mapError((error) =>
             failure("orchestration_error", `Could not schedule task: ${error.message}`),
@@ -2473,13 +2487,15 @@ const make = Effect.gen(function* () {
               failure("orchestration_error", `Could not list scheduled tasks: ${error.message}`),
             ),
           );
+        const candidates = tasks.filter(
+          (task) =>
+            (projectId === undefined || task.projectId === projectId) &&
+            (input.scheduledTaskId === undefined || task.id === input.scheduledTaskId),
+        );
+        const canAccess = yield* BotMcpPolicy.routineVisibility(scope);
         return {
-          tasks: tasks
-            .filter(
-              (task) =>
-                (projectId === undefined || task.projectId === projectId) &&
-                (input.scheduledTaskId === undefined || task.id === input.scheduledTaskId),
-            )
+          tasks: candidates
+            .filter((task) => canAccess(task.threadId))
             .map((task) => scheduledTaskSummary(task, false)),
         };
       },
@@ -2487,8 +2503,12 @@ const make = Effect.gen(function* () {
     updateScheduledTask: Effect.fn("OrchestratorMcpService.updateScheduledTask")(
       function* (scope, input) {
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
-        const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
+        const existing = yield* loadScheduledTask(scope, input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
+        const binding = yield* BotMcpPolicy.authorizeRoutine(scope, parent?.thread.projectId, {
+          ...existing,
+          threadId: input.bindToCurrentThread === false ? null : existing.threadId,
+        });
         if (
           input.bindToCurrentThread === true &&
           (parent === undefined || parent.thread.projectId !== existing.projectId)
@@ -2552,7 +2572,7 @@ const make = Effect.gen(function* () {
           creationSource: existing.creationSource,
         };
         const { task } = yield* scheduledTasks
-          .upsert(upsertInput)
+          .upsert({ ...upsertInput, ...binding })
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
@@ -2564,10 +2584,15 @@ const make = Effect.gen(function* () {
     deleteScheduledTask: Effect.fn("OrchestratorMcpService.deleteScheduledTask")(
       function* (scope, input) {
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
-        const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
+        const existing = yield* loadScheduledTask(scope, input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
+        const binding = yield* BotMcpPolicy.authorizeRoutine(
+          scope,
+          parent?.thread.projectId,
+          existing,
+        );
         yield* scheduledTasks
-          .delete({ id: existing.id })
+          .delete({ id: existing.id, ...binding })
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not delete scheduled task: ${error.message}`),
@@ -2858,6 +2883,7 @@ const make = Effect.gen(function* () {
           ? undefined
           : PeerForwarding.remoteTarget(callerScope, input.target.environmentId);
       if (input.target !== undefined && environmentId !== undefined) {
+        yield* BotMcpPolicy.assertNonBot(callerScope, "remote");
         yield* requireCapability(callerScope);
         const scope = yield* requireThreadScope(callerScope, "delegate_task");
         // The task's child runs as an ordinary thread there; this thread keeps the task.
@@ -2870,15 +2896,17 @@ const make = Effect.gen(function* () {
           : readTask(scope, taskId, false, true);
       }
       const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
-      if (
-        input.target?.projectId !== undefined &&
-        input.target.projectId !== parent.thread.projectId
-      ) {
-        return yield* failure(
-          "invalid_request",
-          "A local task runs in this thread's project. Omit target.projectId, or pass target.environmentId to run it in that environment's project.",
-        );
-      }
+      // A bot may start work in another local project the user allowed it; others stay put.
+      const destinationProjectId =
+        input.target?.projectId !== undefined && input.target.projectId !== parent.thread.projectId
+          ? input.target.projectId
+          : undefined;
+      yield* BotMcpPolicy.assertDelegationTarget(
+        scope,
+        parent.thread.projectId,
+        destinationProjectId ?? parent.thread.projectId,
+        input.isolation,
+      );
       const parentRun =
         ThreadManagementService.latestActiveRun(parent) ??
         (yield* backgroundSubagentRun(scope, parent.thread.id));
@@ -2900,11 +2928,24 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+      // Provider enablement and workspace models come from the project the child runs in.
+      const destinationProject =
+        destinationProjectId === undefined
+          ? undefined
+          : yield* requireProject(destinationProjectId);
       const target = yield* resolveTargetRechecking({
-        parent,
+        parent:
+          destinationProject === undefined
+            ? parent
+            : {
+                thread: { ...parent.thread, projectId: destinationProject.id, worktreePath: null },
+              },
         target: input.target,
         providers,
-        cwd: yield* parentWorkspaceCwd(parent),
+        cwd:
+          destinationProject === undefined
+            ? yield* parentWorkspaceCwd(parent)
+            : destinationProject.workspaceRoot,
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
       });
       const runtimeMode = yield* resolveRuntimeMode(
@@ -2918,10 +2959,15 @@ const make = Effect.gen(function* () {
       );
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
       if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
-        const project = yield* requireProject(parent.thread.projectId);
+        const project = yield* requireProject(destinationProjectId ?? parent.thread.projectId);
+        // Another project's worktree starts from that project's own checkout.
+        const baseCheckout =
+          destinationProjectId === undefined
+            ? (parent.thread.worktreePath ?? project.workspaceRoot)
+            : project.workspaceRoot;
         const base = yield* gitDriver
           .resolveCommit({
-            cwd: parent.thread.worktreePath ?? project.workspaceRoot,
+            cwd: baseCheckout,
             revision: "HEAD",
           })
           .pipe(
@@ -2932,7 +2978,7 @@ const make = Effect.gen(function* () {
         // Launch preparation creates the worktree from the project root, so a
         // parent checkout in another repository (such as a Git folder inside
         // Scratch) would hand it a commit it cannot find.
-        if (parent.thread.worktreePath !== null) {
+        if (destinationProjectId === undefined && parent.thread.worktreePath !== null) {
           yield* gitDriver
             .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
             .pipe(
@@ -2945,6 +2991,15 @@ const make = Effect.gen(function* () {
             );
         }
         workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
+      }
+      // The grant is checked again here: the user may have revoked it while the work was prepared.
+      if (scope.bot === true) {
+        yield* BotMcpPolicy.assertDelegationTarget(
+          scope,
+          parent.thread.projectId,
+          destinationProjectId ?? parent.thread.projectId,
+          input.isolation,
+        );
       }
       const parentNodeId = parentRun.rootNodeId;
       // The command commits the child's preparing run, which only this call
@@ -2969,6 +3024,7 @@ const make = Effect.gen(function* () {
               runtimeMode,
               interactionMode,
               ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+              ...(destinationProjectId === undefined ? {} : { projectId: destinationProjectId }),
               // Async delegations wake the parent on every child terminal; wait
               // delegations deliver through the blocking tool call until `awaitTask`
               // gives up the wait (timeout, cancelled call) and upgrades the wake.
@@ -3051,6 +3107,7 @@ const make = Effect.gen(function* () {
         const shell = yield* threadManagement
           .getThreadShell(threadId)
           .pipe(Effect.mapError(threadManagementFailure));
+        yield* BotMcpPolicy.assertThreadRead(threadManagement, scope, threadId, shell);
         if (shell !== null && shell.deletedAt === null) {
           yield* resolveRuntimeMode(parentProjection.thread.runtimeMode, shell.runtimeMode);
           yield* resolveInteractionMode(
@@ -3237,6 +3294,7 @@ const make = Effect.gen(function* () {
     }),
     createThreads: Effect.fn("OrchestratorMcpService.createThreads")(
       function* (callerScope, input) {
+        yield* BotMcpPolicy.assertNonBot(callerScope, "launch");
         const { scope, parent } = yield* loadThreadCaller(callerScope, "create_threads");
         const parentRun = ThreadManagementService.latestActiveRun(parent);
         if (
@@ -3486,7 +3544,7 @@ const make = Effect.gen(function* () {
               ),
             )
           : null;
-      const candidates = projectThreads
+      const matching = projectThreads
         .filter((thread) => mayBeLiveIds === null || mayBeLiveIds.has(thread.id))
         .filter(
           (thread) =>
@@ -3502,6 +3560,13 @@ const make = Effect.gen(function* () {
             input.snoozed !== true ||
             (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs),
         );
+      const isForeign = yield* BotMcpPolicy.foreignBotThreads(threadManagement, scope);
+      const candidates =
+        scope.bot === true
+          ? yield* Effect.filter(matching, (thread) =>
+              isForeign(thread.id, thread).pipe(Effect.map((foreign) => !foreign)),
+            )
+          : matching;
       // Shells are the costly part, so build them only for the threads the page needs.
       const shellsOf = (threads: ReadonlyArray<{ readonly id: ThreadId }>) =>
         threads.length === 0
@@ -3533,15 +3598,27 @@ const make = Effect.gen(function* () {
         page = filtered.slice(cursor, cursor + limit);
       }
       const nextCursor = cursor + limit < total ? cursor + limit : null;
+      const items = page.map((shell) => listItemFromShell(scope, shell, nowMs));
       return {
         projectId,
         currentThreadId: parent?.thread.id ?? null,
-        threads: page.map((shell) => listItemFromShell(scope, shell, nowMs)),
+        threads:
+          scope.bot === true
+            ? yield* Effect.forEach(items, (item) =>
+                Effect.gen(function* () {
+                  if (item.parentThreadId !== null && (yield* isForeign(item.parentThreadId))) {
+                    return { ...item, parentThreadId: null, relationshipToParent: null };
+                  }
+                  return item;
+                }),
+              )
+            : items,
         nextCursor,
         total,
       } satisfies OrchestratorMcpThreadListResult;
     }),
     readThread: Effect.fn("OrchestratorMcpService.readThread")(function* (scope, input) {
+      yield* BotMcpPolicy.assertThreadRead(threadManagement, scope, input.threadId);
       const runLimit = input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT;
       const { parent, target, shell, runCount } = yield* loadReadableThread(
         scope,
@@ -3580,7 +3657,7 @@ const make = Effect.gen(function* () {
         { concurrency: 1 },
       );
       const messagesByThreadId = new Map(sourceMessages);
-      const thread = threadDetail(
+      const detail = threadDetail(
         scope,
         target,
         runCount,
@@ -3591,6 +3668,11 @@ const make = Effect.gen(function* () {
           input.itemId === undefined &&
           (input.beforePosition === undefined || input.beforePosition >= timeline.totalItems),
       );
+      const isForeign = yield* BotMcpPolicy.foreignBotThreads(threadManagement, scope);
+      const thread =
+        detail.parentThreadId !== null && (yield* isForeign(detail.parentThreadId))
+          ? { ...detail, parentThreadId: null, relationshipToParent: null }
+          : detail;
       const recentRuns = target.runs
         .toSorted((left, right) => right.ordinal - left.ordinal)
         .slice(0, runLimit)
@@ -3666,10 +3748,11 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadReadResult;
     }),
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {
+      yield* BotMcpPolicy.assertNonBot(scope, "send");
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId, ["runs"]);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* assertTargetWithinLimits(limits, target.thread);
-
+      yield* BotMcpPolicy.assertNoAgentInput(target.thread.id, "send");
       const mode = input.mode ?? "auto";
       const key = yield* requestKey(input.clientRequestId);
       const messageId = stableOperationMessageId({
@@ -3782,6 +3865,7 @@ const make = Effect.gen(function* () {
     }),
     interruptThread: Effect.fn("OrchestratorMcpService.interruptThread")(function* (scope, input) {
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId, ["runs"]);
+      yield* BotMcpPolicy.assertThreadWrite(scope, input.threadId);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* assertTargetWithinLimits(limits, target.thread);
       const key = yield* requestKey(input.clientRequestId);

@@ -10,6 +10,7 @@ import type {
   ServerProviderSkill,
   ServerProviderSlashCommand,
 } from "@t3tools/contracts";
+import type { BotAvatar, BotId } from "@t3tools/contracts";
 import type { ComposerTriggerKind } from "@t3tools/shared/composerTrigger";
 import { msg, useMessages } from "gt-react-native";
 import { memo } from "react";
@@ -25,6 +26,7 @@ import type { MessageResolver } from "../../i18n/messages";
 import { cn } from "../../lib/cn";
 import type { ModelOption } from "../../lib/modelOptions";
 import { pullRequestStatus } from "../pull-requests/pullRequestStatus";
+import { BotGlyph } from "../bots/BotGlyph";
 export type ComposerCommandItem =
   | {
       readonly id: string;
@@ -74,6 +76,14 @@ export type ComposerCommandItem =
       readonly id: string;
       readonly type: "skill";
       readonly skill: ServerProviderSkill;
+      readonly label: string;
+      readonly description: string;
+    }
+  | {
+      readonly id: string;
+      readonly type: "bot";
+      readonly botId: BotId;
+      readonly avatar: BotAvatar;
       readonly label: string;
       readonly description: string;
     }
@@ -131,6 +141,7 @@ function itemIcon(item: ComposerCommandItem): AppSymbolName | null {
       return SKILL_SOURCE_SYMBOL_BY_KIND[resolveProviderSkillSourceKind(item.skill)];
     case "path":
     case "model":
+    case "bot":
       return null;
     case "thread":
       return "text.bubble";
@@ -199,6 +210,8 @@ const CommandRow = memo(function CommandRow(props: {
     >
       {props.item.type === "path" ? (
         <PierreEntryIcon path={props.item.path} kind={props.item.kind} size={16} />
+      ) : props.item.type === "bot" ? (
+        <BotGlyph glyph={props.item.avatar} size={16} colorClassName="accent-icon-subtle" />
       ) : props.item.type === "model" ? (
         <ProviderIcon
           iconUrl={props.item.option.providerIconUrl}

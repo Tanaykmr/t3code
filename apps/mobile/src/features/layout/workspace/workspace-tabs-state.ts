@@ -1,3 +1,5 @@
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
   NAVIGATION_TAB_ORDER,
   navigationCustomizationAvailable,
@@ -38,10 +40,39 @@ function emptyTab(): WorkspaceTabState {
   return { query: "", searchMode: "resting", scrollOffset: 0, searchEntryOffset: 0 };
 }
 
-/** The list a workspace page belongs to. */
-export function workspaceTabOf(routeName: string | undefined): WorkspaceTab {
-  if (routeName === "Issue") return "issues";
-  return routeName === "PullRequest" ? "pullRequests" : "threads";
+/** Home keeps the active list when its detail closes. */
+export function workspaceTabOf(
+  route: { readonly name: string; readonly params?: object | undefined } | undefined,
+  botDms?: { readonly has: (key: string) => boolean },
+): WorkspaceTab | undefined {
+  switch (route?.name) {
+    case "Issue":
+      return "issues";
+    case "PullRequest":
+      return "pullRequests";
+    case "BotRoom":
+    case "ArchivedBots":
+      return "bots";
+    case "Thread": {
+      const params = route.params as Readonly<Record<string, unknown>> | undefined;
+      const { environmentId, threadId, botDm } = params ?? {};
+      if (
+        botDm === true ||
+        (typeof environmentId === "string" &&
+          typeof threadId === "string" &&
+          botDms?.has(
+            scopedThreadKey({
+              environmentId: environmentId as EnvironmentId,
+              threadId: threadId as ThreadId,
+            }),
+          ))
+      )
+        return "bots";
+      return "threads";
+    }
+    default:
+      return undefined;
+  }
 }
 
 export function initialWorkspaceTabsState(
@@ -52,6 +83,7 @@ export function initialWorkspaceTabsState(
     selectionRevision: 0,
     tabs: {
       threads: emptyTab(),
+      bots: emptyTab(),
       pullRequests: emptyTab(),
       issues: emptyTab(),
       workflows: emptyTab(),

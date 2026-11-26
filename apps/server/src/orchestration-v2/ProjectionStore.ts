@@ -1,5 +1,6 @@
 import type { ProjectThreadAwarenessV2Input } from "@t3tools/shared/agentAwareness";
 import { applyOrchestrationV2ThreadVisit, pendingGuestMessageCount } from "@t3tools/contracts";
+import { ensureBotDirectorySchema } from "../bots/botStore.ts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
@@ -64,6 +65,7 @@ import {
   OrchestrationV2ContextHandoffJson as OrchestrationV2ContextHandoffJsonSchema,
   OrchestrationV2ContextTransferJson as OrchestrationV2ContextTransferJsonSchema,
   OrchestrationV2ConversationMessageJson as OrchestrationV2ConversationMessageJsonSchema,
+  OrchestrationV2LatestVisibleMessageSummaryJson,
   OrchestrationV2ExecutionNodeJson as OrchestrationV2ExecutionNodeJsonSchema,
   OrchestrationV2PlanArtifact as OrchestrationV2PlanArtifactSchema,
   OrchestrationV2ProviderSessionJson as OrchestrationV2ProviderSessionJsonSchema,
@@ -1283,6 +1285,7 @@ type ShellThreadRow = {
   readonly pending_request_payload_json: string | null;
   readonly pending_secret_request_payload_json: string | null;
   readonly pending_link_request_payload_json: string | null;
+  readonly bot_reply_preview_json: string | null;
   readonly latest_user_message_at: string | null;
   readonly latest_user_authored_message_at: string | null;
   readonly has_actionable_proposed_plan: number;
@@ -1473,6 +1476,9 @@ const decodeRuntimeRequestPayload = Schema.decodeUnknownEffect(
 );
 const decodeMessagePayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2ConversationMessageJsonSchema),
+);
+const decodeBotReplyPreview = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(OrchestrationV2LatestVisibleMessageSummaryJson),
 );
 const decodePlanJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2PlanArtifactSchema),
@@ -2121,6 +2127,7 @@ type ShellThreadState = {
   readonly lastErrorCode: OrchestrationV2ThreadShell["lastErrorCode"];
   readonly usageLimitResetAt: OrchestrationV2ThreadShell["usageLimitResetAt"];
   readonly pendingRuntimeRequest: OrchestrationV2PendingRuntimeRequestSummary | null;
+  readonly botReplyPreview: OrchestrationV2ThreadShell["latestVisibleMessage"];
   readonly latestUserMessageAt: DateTime.Utc | null;
   readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
   readonly hasActionableProposedPlan: boolean;
@@ -2297,7 +2304,7 @@ function shellFromState(input: {
     usageLimitResetAt: input.state.usageLimitResetAt,
     pendingRuntimeRequest: input.state.pendingRuntimeRequest,
     pendingGuestMessageCount: pendingGuestMessageCount(input.state.thread.guestShare),
-    latestVisibleMessage: null,
+    latestVisibleMessage: input.state.botReplyPreview,
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
     hasActionableProposedPlan: input.state.hasActionableProposedPlan,
@@ -2352,6 +2359,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
   ProjectionStoreV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    yield* ensureBotDirectorySchema.pipe(Effect.orDie);
 
     // SQLite uses the partial conversation index of migration 082 only for this exact predicate.
     const CONVERSATION_INDEX_EXCLUDED_TYPES = sql.literal(
@@ -8538,6 +8546,24 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ORDER BY link.updated_at DESC, link.turn_item_id DESC
                 LIMIT 1
               ) AS pending_link_request_payload_json,
+              -- Bot inboxes get one bounded, completed reply from the private DM.
+              CASE WHEN EXISTS (SELECT 1 FROM bots WHERE dm_thread_id = t.thread_id) THEN (
+                SELECT json_object(
+                  'id', message.message_id, 'role', message.role, 'updatedAt', message.updated_at,
+                  'text', substr(trim(COALESCE(message.search_text, json_extract(message.payload_json, '$.text'))), 1, 180)
+                )
+                FROM orchestration_v2_projection_messages AS message
+                  INDEXED BY orchestration_v2_projection_messages_thread_created_idx
+                LEFT JOIN orchestration_v2_projection_runs AS run ON run.run_id = message.run_id
+                WHERE message.thread_id = t.thread_id
+                  AND message.role = 'assistant'
+                  AND message.streaming = 0
+                  AND (run.status IS NULL OR run.status <> 'rolled_back')
+                  AND (message.node_id IS NULL OR message.node_id = json_extract(run.payload_json, '$.rootNodeId'))
+                  AND trim(COALESCE(message.search_text, json_extract(message.payload_json, '$.text'))) <> ''
+                ORDER BY message.created_at DESC, message.message_id DESC
+                LIMIT 1
+              ) END AS bot_reply_preview_json,
               (
                 SELECT message.updated_at
                 FROM orchestration_v2_projection_messages message
@@ -9229,6 +9255,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             row.last_error,
           ),
           pendingRuntimeRequest,
+          botReplyPreview:
+            row.bot_reply_preview_json === null
+              ? null
+              : yield* decodeBotReplyPreview(row.bot_reply_preview_json),
           latestUserMessageAt:
             row.latest_user_message_at === null
               ? null

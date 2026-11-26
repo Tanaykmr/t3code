@@ -2,6 +2,9 @@ import { msg, useGT, useMessages } from "gt-react-native";
 import { useActiveNewTask } from "../../../state/active-new-task";
 import { Toolbar } from "../../../components/ui/Toolbar";
 import { useFocusEffect, useIsFocused, useNavigationState } from "@react-navigation/native";
+import { Text } from "react-native";
+import { useEnvironmentBots } from "../../../state/bots";
+import { useBotCreation } from "../../bots/useBotCreation";
 import { use, useCallback, useEffect, useRef } from "react";
 import { isDuoDevice } from "../../../lib/device-type";
 import { useDeviceType } from "../../../native/native-layout-metrics";
@@ -27,6 +30,7 @@ const SEARCH_LABELS = {
   threads: msg("Search threads"),
   pullRequests: msg("Search pull requests"),
   issues: msg("Search issues"),
+  bots: msg("Search bots"),
   settings: msg("Search settings"),
 } as const;
 
@@ -56,6 +60,10 @@ export function WorkspaceToolbar(props: {
   // The Settings list takes the selected tab's place, so search follows it.
   const selectedTab = workspace.settingsOpen ? "settings" : workspace.state.selectedTab;
   const tab = workspace.state.tabs[selectedTab];
+  const bots = selectedTab === "bots";
+  const showBotActions = useEnvironmentBots(bots).length > 0 || tab.searchMode !== "resting";
+  const createBot = useBotCreation("bot", undefined, bots);
+  const botsSearch = bots && deviceType === "phone";
   const searchLabel = m(
     SEARCH_LABELS[selectedTab === "usage" || selectedTab === "workflows" ? "threads" : selectedTab],
   );
@@ -64,10 +72,11 @@ export function WorkspaceToolbar(props: {
   const isTabActive = (tab: typeof selectedTab) =>
     tab === "settings" ? tabActive : isListTabActive(tab);
   const foldedSearch = deviceType === "duo-folded";
+  const buttonSearch = foldedSearch || botsSearch;
   const primaryColumn = use(NativePrimaryColumnContext);
   // UIKit hosts integrated search outside the sidebar's sliding content.
   // Mount it after native appearance so it cannot precede the pane's reveal.
-  const searchVisible = foldedSearch
+  const searchVisible = buttonSearch
     ? tab.searchMode !== "resting"
     : deviceType !== "duo-unfolded" || primaryColumn?.presented !== false;
   const enterSearch = useCallback(() => {
@@ -80,8 +89,8 @@ export function WorkspaceToolbar(props: {
     if (props.sidebar && !panes.primarySidebarVisible) togglePrimarySidebar();
   }, [workspace, selectedTab, props.sidebar, panes.primarySidebarVisible, togglePrimarySidebar]);
   const focusSearch = () => {
-    if (!isTabActive(selectedTab)) return false;
-    if (duoSearch || !NATIVE_LIQUID_GLASS_SUPPORTED) enterSearch();
+    if (!isTabActive(selectedTab) || (bots && !showBotActions)) return false;
+    if (duoSearch || botsSearch || !NATIVE_LIQUID_GLASS_SUPPORTED) enterSearch();
     searchRef.current?.focus();
     return true;
   };
@@ -109,10 +118,11 @@ export function WorkspaceToolbar(props: {
       searchRef.current?.setText(tab.query);
       // Integrated search collapses to its button when its screen reappears,
       // which would hide the query that still filters the list.
-      if (NATIVE_LIQUID_GLASS_SUPPORTED) {
+      if (NATIVE_LIQUID_GLASS_SUPPORTED && !botsSearch) {
         searchRef.current?.setActive(true);
-        if (tab.searchMode === "active") searchRef.current?.focus();
       }
+      if ((NATIVE_LIQUID_GLASS_SUPPORTED || botsSearch) && tab.searchMode === "active")
+        searchRef.current?.focus();
     }
   };
   useFocusEffect(
@@ -137,15 +147,16 @@ export function WorkspaceToolbar(props: {
       separateBackground
     />
   ) : null;
-  const searchButton = foldedSearch ? (
-    <Toolbar.Button
-      identifier="workspace-search"
-      accessibilityLabel={searchVisible ? gt("Close search") : searchLabel}
-      icon={searchVisible ? "xmark" : "magnifyingglass"}
-      onPress={searchVisible ? () => searchRef.current?.cancelSearch() : focusSearch}
-      separateBackground
-    />
-  ) : null;
+  const searchButton =
+    (!bots || showBotActions) && (foldedSearch || (botsSearch && !searchVisible)) ? (
+      <Toolbar.Button
+        identifier="workspace-search"
+        accessibilityLabel={searchVisible ? gt("Close search") : searchLabel}
+        icon={searchVisible ? "xmark" : "magnifyingglass"}
+        onPress={searchVisible ? () => searchRef.current?.cancelSearch() : focusSearch}
+        separateBackground
+      />
+    ) : null;
   return (
     <>
       <NativeStackScreenOptions
@@ -158,7 +169,8 @@ export function WorkspaceToolbar(props: {
             (NATIVE_LIQUID_GLASS_SUPPORTED ||
               tab.searchMode !== "resting" ||
               workspace.settingsOpen) &&
-            searchVisible
+            searchVisible &&
+            (!bots || showBotActions)
               ? {
                   ref: searchRef,
                   autoFocus: tab.searchMode === "active",
@@ -166,11 +178,12 @@ export function WorkspaceToolbar(props: {
                   hideNavigationBar: false,
                   hideWhenScrolling: false,
                   obscureBackground: false,
-                  placement: NATIVE_LIQUID_GLASS_SUPPORTED
-                    ? bottomSearch
-                      ? "integrated"
-                      : "integratedButton"
-                    : "stacked",
+                  placement:
+                    NATIVE_LIQUID_GLASS_SUPPORTED && !botsSearch
+                      ? bottomSearch
+                        ? "integrated"
+                        : "integratedButton"
+                      : "stacked",
                   allowToolbarIntegration:
                     NATIVE_LIQUID_GLASS_SUPPORTED &&
                     deviceType !== "phone" &&
@@ -191,6 +204,19 @@ export function WorkspaceToolbar(props: {
               : undefined,
         }}
       />
+      {botsSearch ? (
+        <Toolbar placement="left">
+          <Toolbar.Custom>
+            <Text
+              accessibilityRole="header"
+              className="text-3xl text-foreground"
+              style={{ fontWeight: "700" }}
+            >
+              {gt("Bots")}
+            </Text>
+          </Toolbar.Custom>
+        </Toolbar>
+      ) : null}
       {/* UIKit lays trailing items out from the edge inward. */}
       {workspace.settingsOpen ? (
         <Toolbar placement="right">
@@ -199,6 +225,17 @@ export function WorkspaceToolbar(props: {
         </Toolbar>
       ) : (
         <Toolbar placement="right">
+          {bots && showBotActions && (!botsSearch || !searchVisible) ? (
+            createBot.menu !== undefined ? (
+              createNativeHeaderMenu(createBot.menu)
+            ) : createBot.onPress !== undefined ? (
+              <Toolbar.Button
+                accessibilityLabel={createBot.title}
+                icon="plus"
+                onPress={createBot.onPress}
+              />
+            ) : null
+          ) : null}
           {searchButton}
           {nativeToolbarCompose && foldedSearch ? <Toolbar.Spacer width={8} /> : null}
           {composeButton}
@@ -213,7 +250,7 @@ export function WorkspaceToolbar(props: {
               onPress={compose.onPress}
             />
           )}
-          {NATIVE_LIQUID_GLASS_SUPPORTED ? null : (
+          {NATIVE_LIQUID_GLASS_SUPPORTED || botsSearch || (bots && !showBotActions) ? null : (
             <Toolbar.Button
               accessibilityLabel={searchLabel}
               icon="magnifyingglass"

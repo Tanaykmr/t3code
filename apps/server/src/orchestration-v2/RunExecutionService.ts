@@ -41,6 +41,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as BotTurnContext from "../bots/BotTurnContext.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -723,6 +724,7 @@ export const layer: Layer.Layer<
     const providerEventIngestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const mcpAppModelContext = yield* McpAppModelContext.McpAppModelContext;
+    const botTurnContext = yield* BotTurnContext.optional;
     const previewAgentActivity = yield* PreviewAgentActivity.PreviewAgentActivity;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
@@ -1155,7 +1157,7 @@ export const layer: Layer.Layer<
           failure,
           threadDisposition: "reusable",
         });
-        const responseStreamingMode = yield* Effect.gen(function* () {
+        const preparation = yield* Effect.gen(function* () {
           const responseStreamingMode = yield* serverSettings.getSettings.pipe(
             Effect.map(
               (settings) =>
@@ -1170,7 +1172,8 @@ export const layer: Layer.Layer<
           ) {
             return null;
           }
-          return responseStreamingMode;
+          const botContext = yield* BotTurnContext.forProvider(botTurnContext, input.run.threadId);
+          return { responseStreamingMode, botContext };
         }).pipe(
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
@@ -1214,9 +1217,10 @@ export const layer: Layer.Layer<
               }),
           ),
         );
-        if (responseStreamingMode === null) {
+        if (preparation === null) {
           return;
         }
+        const { responseStreamingMode, botContext } = preparation;
         const terminalEvent = yield* Ref.make<ProviderTerminalEvent | null>(null);
         const latestTurnItemOrdinal = yield* Ref.make(input.providerTurnOrdinal * 100);
         const latestProviderThread = yield* Ref.make(input.providerThread);
@@ -2271,10 +2275,10 @@ export const layer: Layer.Layer<
           }),
         );
         yield* touchMcpCredential;
-        const appContext = yield* McpAppModelContext.forProvider(
-          mcpAppModelContext,
-          input.run.threadId,
-        );
+        const appContext = [
+          ...botContext,
+          ...(yield* McpAppModelContext.forProvider(mcpAppModelContext, input.run.threadId)),
+        ];
         const turnInput = {
           appThread: input.appThread,
           threadId: input.run.threadId,

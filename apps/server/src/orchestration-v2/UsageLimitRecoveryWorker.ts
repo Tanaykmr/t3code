@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
+import { RoomSeatMessageThread } from "../bots/botStore.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -128,7 +129,9 @@ const makeSweep = Effect.gen(function* () {
             limitRecovery: command.limitRecovery,
           });
         } else {
-          yield* threads.dispatch(command);
+          yield* threads
+            .dispatch(command)
+            .pipe(Effect.provideService(RoomSeatMessageThread, thread.id));
         }
       }).pipe(
         Effect.catchCause((cause) =>

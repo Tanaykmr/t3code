@@ -43,6 +43,7 @@ import {
   threadPullRequestsOf,
   visibleThreadPullRequests,
 } from "../../../sourceControl/threadPullRequests.ts";
+import * as BotMcpPolicy from "../../BotMcpPolicy.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { threadNotFound } from "../../threadAccess.ts";
@@ -295,6 +296,7 @@ const make = Effect.gen(function* () {
       Effect.map(Option.fromNullishOr),
       Effect.mapError((cause) => new Failure({ cause })),
     );
+    yield* BotMcpPolicy.assertThreadRead(engine, scope, threadId, Option.getOrNull(thread));
     if (Option.isNone(thread) || thread.value.deletedAt !== null) {
       return yield* threadNotFound(engine, scope, threadId, `Thread ${threadId} was not found.`);
     }

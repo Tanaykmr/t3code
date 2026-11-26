@@ -10,6 +10,8 @@ import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/at
 import { pastedTextDisposition, replaceTextSelection } from "@t3tools/client-runtime/text-paste";
 import {
   AuthOrchestrationOperateScope,
+  type Bot,
+  BotMessageId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ChatAttachment,
@@ -28,7 +30,7 @@ import { StackActions, useFocusEffect, useNavigation } from "@react-navigation/n
 import { msg, T, useGT, useMessages } from "gt-react-native";
 import type { ReactNode } from "react";
 import { useEffect, useEffectEvent, useRef, useState, type RefObject } from "react";
-import { Keyboard, Platform, View } from "react-native";
+import { AccessibilityInfo, Keyboard, Platform, View } from "react-native";
 import { composerImageGallery } from "../../lib/composerImageGallery";
 import { filePreviewGallery } from "../../lib/filePreviewGallery";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
@@ -106,6 +108,21 @@ import {
 } from "./composerSendPresentation";
 import { useSubmitAfterNativeImages } from "./useSubmitAfterNativeImages";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
+import {
+  addBotMentionChip,
+  botMentionsIn,
+  clearBotMentionChips,
+  handoffIdFor,
+} from "../bots/bot-mention-chips";
+import { resolveBotHandoff } from "@t3tools/client-runtime/state/bots";
+import { withoutBotDms } from "../bots/bot-list";
+import { botDmThreadKeysAtom, useBotForThread, useEnvironmentBots } from "../../state/bots";
+import { serverEnvironment } from "../../state/server";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { uuidv4 } from "../../lib/uuid";
+
+const NO_BOTS: ReadonlyArray<Bot> = [];
+const HANDOFF_NOTICE_MS = 3_000;
 import { ComposerPopoverAnchor } from "./ComposerPopoverAnchor";
 import { ComposerQueuedEditAttachments } from "./ComposerQueuedEdit";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
@@ -422,11 +439,35 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     undefined,
     props.selectedThread.projectId,
   );
+  const dmBot = useBotForThread({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+  });
+  const environmentBots = useEnvironmentBots();
+  const botMentions =
+    dmBot === null
+      ? NO_BOTS
+      : environmentBots
+          .filter(
+            (entry) => entry.environmentId === dmBot.environmentId && entry.bot.archivedAt === null,
+          )
+          .map((entry) => entry.bot);
+  // Bot DMs and room seats are reached through their bots, not as threads.
+  const mentionableThreadShells = withoutBotDms(
+    useVisibleThreadShells(),
+    useAtomValue(botDmThreadKeysAtom),
+  );
+  const handoffToBots = useAtomCommand(serverEnvironment.handoffToBots, { reportFailure: false });
+  const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
   const composerMenu = useComposerCommandMenu({
     draftMessage: draftMessage,
     ownerKey: composerDraftKey,
     environmentId: props.environmentId,
-    threadShells: useVisibleThreadShells(),
+    threadShells: mentionableThreadShells,
+    botMentions,
+    onPickBot: (mention) => {
+      if (composerDraftKey !== null) addBotMentionChip(composerDraftKey, mention);
+    },
     environments: offersLinkedEnvironments(props.serverConfig)
       ? mentionableEnvironments
       : NO_MACHINES,
@@ -557,6 +598,53 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     if (usageLimitsOffered && isUsageLimitsCommand(draftMessage) && draftAttachments.length === 0) {
       if (openUsageLimits()) onChangeDraftMessage("");
       return;
+    }
+    // A bot DM's picked @-chips go to those bots; the DM's own bot runs only when picked too.
+    if (dmBot !== null && composerDraftKey !== null && followUp === undefined) {
+      const { handoff, skipThread, blocked } = resolveBotHandoff(
+        botMentionsIn(composerDraftKey, draftMessage),
+        dmBot.bot.id,
+        draftAttachments.length > 0,
+      );
+      if (blocked) {
+        Dialog.alert(
+          gt("Attachments can't go to another bot"),
+          gt("Remove them, or send without picking another bot."),
+        );
+        return;
+      }
+      if (handoff.length > 0) {
+        const result = await handoffToBots({
+          environmentId: dmBot.environmentId,
+          input: {
+            botId: dmBot.bot.id,
+            messageId: BotMessageId.make(
+              handoffIdFor(composerDraftKey, draftMessage.trim(), handoff, uuidv4),
+            ),
+            text: draftMessage.trim(),
+            mentions: handoff,
+          },
+        });
+        if (AsyncResult.isFailure(result)) {
+          const cause = squashAtomCommandFailure(result);
+          Dialog.alert(
+            gt("Could not hand off to the bot"),
+            cause instanceof Error ? cause.message : undefined,
+          );
+          return;
+        }
+        clearBotMentionChips(composerDraftKey);
+        const notice = gt("Sent to {bots}", {
+          bots: handoff.map((mention) => mention.label).join(", "),
+        });
+        setHandoffNotice(notice);
+        AccessibilityInfo.announceForAccessibility(notice);
+        setTimeout(() => setHandoffNotice(null), HANDOFF_NOTICE_MS);
+        if (skipThread) {
+          onChangeDraftMessage("");
+          return;
+        }
+      }
     }
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
@@ -752,6 +840,9 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         style={{ maxWidth: props.contentMaxWidth }}
       >
         {props.draftControls}
+        {handoffNotice === null ? null : (
+          <Text className="px-4 pb-1 text-xs text-foreground-muted">{handoffNotice}</Text>
+        )}
         {!isSubmissionLocked &&
         composerMenu.trigger &&
         (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request") ? (

@@ -18,6 +18,8 @@ import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { appAtomRegistry } from "./atom-registry";
+import { botDmThreadKeysAtom } from "./bots";
+import { withoutBotDms } from "../features/bots/bot-list";
 import {
   pendingThreadCreationOutcomesAtom,
   selectThreadCreationDetail,
@@ -59,11 +61,15 @@ const steadyShells = createSteadyShellAtoms({
  * changes once when environments connect, not once per environment.
  */
 export const steadyShellsHoldingAtom = steadyShells.holdingAtom;
-export const steadyNavigationThreadShellsAtom = createEnvironmentThreadShellAtoms({
+const steadyNavigationAllThreadShellsAtom = createEnvironmentThreadShellAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   snapshotAtom: steadyShells.snapshotAtom,
   hiddenThreadTagsAtom: serverEnvironment.hiddenThreadTagsAtom,
 }).navigationThreadShellsAtom;
+/** Bot DMs live in the Bots tab, not among a project's threads. */
+export const steadyNavigationThreadShellsAtom = Atom.make((get) =>
+  withoutBotDms(get(steadyNavigationAllThreadShellsAtom), get(botDmThreadKeysAtom)),
+).pipe(Atom.withLabel("mobile-steady-navigation-thread-shells"));
 export const childThreadApprovalsAtom = createChildThreadApprovalsAtom({
   childThreadInputsAtom: environmentThreadShells.childThreadInputsAtom,
   pendingRequestsAtom: environmentThreadDetails.pendingRequestsAtom,
