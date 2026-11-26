@@ -23,7 +23,7 @@ const localBoat = Effect.fn("BoatMcp.localBoat")(function* () {
 });
 
 export const layer = McpToolAccess.toLayer(BoatToolkit, {
-  t3_boat_list: McpToolAccess.writesEnvironment(() =>
+  t3_boat_list: McpToolAccess.readsAsCaller(() =>
     Effect.gen(function* () {
       const boat = yield* localBoat();
       const snapshot = yield* Stream.runHead(boat.snapshots);

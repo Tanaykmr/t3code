@@ -22,7 +22,8 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { liveThreadsLayer } from "../mcp/McpToolAccess.testkit.ts";
+import { liveThreadShell, liveThreadsLayer } from "../mcp/McpToolAccess.testkit.ts";
+import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { BoatApi, BoatApiError, type BoatKey } from "./BoatApi.ts";
 import {
@@ -103,10 +104,11 @@ const mcpClient = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
-const boatTools = McpHttpServer.layerBoatToolkit.pipe(
-  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-  Layer.provide(liveThreadsLayer),
-);
+const boatTools = (threads = liveThreadsLayer) =>
+  McpHttpServer.layerBoatToolkit.pipe(
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provide(threads),
+  );
 const callBoatTool = (name: string, args: Record<string, unknown>, caller = boatCaller) =>
   McpServer.McpServer.use((mcp) => mcp.callTool({ name, arguments: args })).pipe(
     Effect.provideService(McpInvocationContext.McpInvocationContext, caller),
@@ -171,8 +173,50 @@ describe("Boat MCP lifecycle", () => {
       expect(deleted.structuredContent).toMatchObject({ managedId, kind: "delete" });
       yield* settle;
       expect(fake.sandboxes.size).toBe(0);
-    }).pipe(Effect.provide(boatTools.pipe(Layer.provideMerge(layer))));
+    }).pipe(Effect.provide(boatTools().pipe(Layer.provideMerge(layer))));
   });
+
+  it.effect.each(["approval-required", "auto"] as const)(
+    "lets a local %s thread list Boat machines while keeping lifecycle writes gated",
+    (runtimeMode) => {
+      const { layer, fake } = setup();
+      const threads = Layer.mock(ThreadManagementService)({
+        getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId, { runtimeMode })),
+      });
+      return Effect.gen(function* () {
+        yield* configure;
+        const { managedId } = yield* createSmall;
+        yield* settle;
+
+        const list = yield* callBoatTool("t3_boat_list", {});
+        expect(list.structuredContent).toMatchObject({
+          servers: [{ managedId, lifecycle: "running" }],
+        });
+        const denied = {
+          isError: true,
+          content: [{ type: "text", text: expect.stringContaining('"capability_denied"') }],
+        };
+        expect(
+          yield* callBoatTool(
+            "t3_boat_list",
+            {},
+            {
+              ...boatCaller,
+              environmentId: EnvironmentId.make("other-controller"),
+            },
+          ),
+        ).toMatchObject(denied);
+        expect(
+          yield* callBoatTool("t3_boat_lifecycle", {
+            action: "stop",
+            managedId,
+            requestId: requestId(),
+          }),
+        ).toMatchObject(denied);
+        expect(fake.calls).not.toContain("stop");
+      }).pipe(Effect.provide(boatTools(threads).pipe(Layer.provideMerge(layer))));
+    },
+  );
 
   it.effect.each([true, null, "invalid-key"] as const)(
     "refuses a stop from an agent when retention or the key is unsafe (%s)",
@@ -211,7 +255,7 @@ describe("Boat MCP lifecycle", () => {
           stage: "failed",
           failure: blocked === "invalid-key" ? "unauthorized" : "provider-rejected",
         });
-      }).pipe(Effect.provide(boatTools.pipe(Layer.provideMerge(layer))));
+      }).pipe(Effect.provide(boatTools().pipe(Layer.provideMerge(layer))));
     },
   );
 });
