@@ -133,6 +133,7 @@ import Migration0119 from "./Migrations/119_WorkflowRunSubject.ts";
 import Migration0120 from "./Migrations/120_BoatEnvironments.ts";
 import Migration0121 from "./Migrations/121_BoatEnvironmentName.ts";
 import Migration0122 from "./Migrations/122_BoatCleanupAccess.ts";
+import Migration0123 from "./Migrations/123_Boards.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -258,6 +259,7 @@ const migrationEntries = [
   [120, "BoatEnvironments", Migration0120],
   [121, "BoatEnvironmentName", Migration0121],
   [122, "BoatCleanupAccess", Migration0122],
+  [123, "Boards", Migration0123],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -272,8 +274,13 @@ const makeMigrationLoader = (throughId?: number) =>
   );
 
 const FIRST_V2_MIGRATION_ID = 55;
-const legacyBoatMigrations = ["BoatEnvironments", "BoatEnvironmentName", "BoatCleanupAccess"];
-const FIRST_LEGACY_BOAT_ID = 112;
+const legacyForkMigrations = [
+  "BoatEnvironments",
+  "BoatEnvironmentName",
+  "BoatCleanupAccess",
+  "Boards",
+];
+const FIRST_FORK_MIGRATION_ID = 112;
 
 export function skippedV2Migrations(
   recorded: ReadonlyArray<{ readonly id: number; readonly name: string }>,
@@ -308,32 +315,35 @@ const prepareV2MigrationHistory = Effect.fn("prepareV2MigrationHistory")(functio
   }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
   let recorded = yield* readHistory;
   if (
-    (throughId === undefined || throughId >= FIRST_LEGACY_BOAT_ID) &&
+    (throughId === undefined || throughId >= FIRST_FORK_MIGRATION_ID) &&
     recorded.some(
-      (row) => row.migration_id === FIRST_LEGACY_BOAT_ID && row.name === legacyBoatMigrations[0],
+      (row) =>
+        row.migration_id === FIRST_FORK_MIGRATION_ID &&
+        (row.name === legacyForkMigrations[0] || row.name === "Boards"),
     )
   ) {
     recorded = yield* sql.withTransaction(
       Effect.gen(function* () {
         const current = yield* readHistory;
-        const tail = current.filter((row) => row.migration_id >= FIRST_LEGACY_BOAT_ID);
+        const tail = current.filter((row) => row.migration_id >= FIRST_FORK_MIGRATION_ID);
         const previous = current.slice(0, current.length - tail.length);
+        const expectedTail = tail[0]?.name === "Boards" ? ["Boards"] : legacyForkMigrations;
         if (
           tail.length === 0 ||
           !tail.every(
             (row, index) =>
-              row.migration_id === FIRST_LEGACY_BOAT_ID + index &&
-              row.name === legacyBoatMigrations[index],
+              row.migration_id === FIRST_FORK_MIGRATION_ID + index &&
+              row.name === expectedTail[index],
           ) ||
           skippedV2Migrations(
             current.map((row) => ({ id: row.migration_id, name: row.name })),
-            FIRST_LEGACY_BOAT_ID - 1,
+            FIRST_FORK_MIGRATION_ID - 1,
           ).length > 0
         ) {
           return current;
         }
-        // Boat's renumbered migrations can replay against the existing schema after upstream runs.
-        yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= ${FIRST_LEGACY_BOAT_ID}`;
+        // Renumbered fork migrations replay against existing tables after upstream runs.
+        yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= ${FIRST_FORK_MIGRATION_ID}`;
         return previous;
       }),
     );

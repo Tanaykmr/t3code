@@ -21,6 +21,7 @@ import { migrationManifest, runMigrations } from "./Migrations.ts";
 import boatEnvironments from "./Migrations/120_BoatEnvironments.ts";
 import boatEnvironmentName from "./Migrations/121_BoatEnvironmentName.ts";
 import boatCleanupAccess from "./Migrations/122_BoatCleanupAccess.ts";
+import createBoards from "./Migrations/123_Boards.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
 const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
@@ -42,63 +43,105 @@ const v2TableCount = Effect.gen(function* () {
 });
 
 describe("runMigrations", () => {
-  it.effect.each([112, 113, 114])("preserves Boat data when upgrading from migration %s", (id) =>
+  it.effect("upgrades the preview Boards migration without losing data or skipping Boat", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 111 });
-      yield* boatEnvironments;
-      yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (112, 'BoatEnvironments')`;
+      yield* createBoards;
       yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name) VALUES (112, 'Boards')
+      `;
+      yield* sql`
+        INSERT INTO board (board_id, thread_id, scene_format_version, revision,
+          order_revision, view_background_color, created_at, updated_at)
+        VALUES ('board-1', 'thread-1', 1, 2, 1, '#fff', '', '')
+      `;
+
+      assert.deepStrictEqual(
+        yield* runMigrations(),
+        migrationManifest.filter(([id]) => id > 111),
+      );
+      assert.deepStrictEqual(yield* history, migrationManifest);
+      assert.deepStrictEqual(yield* sql`SELECT board_id, revision FROM board`, [
+        { board_id: "board-1", revision: 2 },
+      ]);
+      assert.deepStrictEqual(yield* sql`SELECT * FROM boat_servers`, []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect.each([112, 113, 114, 115])(
+    "preserves fork data when upgrading from migration %s",
+    (id) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 111 });
+        yield* boatEnvironments;
+        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (112, 'BoatEnvironments')`;
+        yield* sql`
         INSERT INTO boat_servers (
           managed_id, account_id, display_name, size, ttl_seconds, lifecycle, retention, created_at
         ) VALUES ('machine', 'account', 'Boat machine', 'small', 3600, 'ready', 'retain', '2026-11-26')
       `;
-      yield* sql`
+        yield* sql`
         INSERT INTO boat_operations (
           request_id, managed_id, kind, payload_json, stage, created_at, updated_at
         ) VALUES ('request', 'machine', 'resume', '{}', 'pending', '2026-11-26', '2026-11-26')
       `;
-      yield* sql`
+        yield* sql`
         INSERT INTO boat_account (id, account_id, label, status, zero_data_retention)
         VALUES (1, 'account', 'Boat account', 'active', 1)
       `;
-      if (id >= 113) {
-        yield* boatEnvironmentName;
-        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (113, 'BoatEnvironmentName')`;
-        yield* sql`UPDATE boat_servers SET boat_environment = 'machine-scope'`;
-        yield* sql`UPDATE boat_account SET boat_environment = 'account-scope'`;
-      }
-      if (id >= 114) {
-        yield* boatCleanupAccess;
-        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (114, 'BoatCleanupAccess')`;
-        yield* sql`UPDATE boat_servers SET cleanup_denied = 1`;
-      }
+        if (id >= 113) {
+          yield* boatEnvironmentName;
+          yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (113, 'BoatEnvironmentName')`;
+          yield* sql`UPDATE boat_servers SET boat_environment = 'machine-scope'`;
+          yield* sql`UPDATE boat_account SET boat_environment = 'account-scope'`;
+        }
+        if (id >= 114) {
+          yield* boatCleanupAccess;
+          yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (114, 'BoatCleanupAccess')`;
+          yield* sql`UPDATE boat_servers SET cleanup_denied = 1`;
+        }
 
-      const upstream = yield* runMigrations({ toMigrationInclusive: 119 });
-      const boat = yield* runMigrations();
-      assert.deepStrictEqual(
-        [...upstream, ...boat],
-        migrationManifest.filter(([migrationId]) => migrationId > 111),
-      );
-      assert.deepStrictEqual(yield* history, migrationManifest);
-      assert.deepStrictEqual(
-        yield* sql`SELECT managed_id, boat_environment, cleanup_denied FROM boat_servers`,
-        [
-          {
-            managed_id: "machine",
-            boat_environment: id >= 113 ? "machine-scope" : null,
-            cleanup_denied: id >= 114 ? 1 : 0,
-          },
-        ],
-      );
-      assert.deepStrictEqual(yield* sql`SELECT account_id, boat_environment FROM boat_account`, [
-        { account_id: "account", boat_environment: id >= 113 ? "account-scope" : null },
-      ]);
-      assert.deepStrictEqual(yield* sql`SELECT request_id, stage FROM boat_operations`, [
-        { request_id: "request", stage: "pending" },
-      ]);
-      assert.deepStrictEqual(yield* runMigrations(), []);
-    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+        if (id === 115) {
+          yield* createBoards;
+          yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (115, 'Boards')`;
+          yield* sql`
+          INSERT INTO board (board_id, thread_id, scene_format_version, revision,
+            order_revision, view_background_color, created_at, updated_at)
+          VALUES ('board-1', 'thread-1', 1, 2, 1, '#fff', '', '')
+        `;
+        }
+
+        const upstream = yield* runMigrations({ toMigrationInclusive: 119 });
+        const boat = yield* runMigrations();
+        assert.deepStrictEqual(
+          [...upstream, ...boat],
+          migrationManifest.filter(([migrationId]) => migrationId > 111),
+        );
+        assert.deepStrictEqual(yield* history, migrationManifest);
+        assert.deepStrictEqual(
+          yield* sql`SELECT managed_id, boat_environment, cleanup_denied FROM boat_servers`,
+          [
+            {
+              managed_id: "machine",
+              boat_environment: id >= 113 ? "machine-scope" : null,
+              cleanup_denied: id >= 114 ? 1 : 0,
+            },
+          ],
+        );
+        assert.deepStrictEqual(yield* sql`SELECT account_id, boat_environment FROM boat_account`, [
+          { account_id: "account", boat_environment: id >= 113 ? "account-scope" : null },
+        ]);
+        assert.deepStrictEqual(yield* sql`SELECT request_id, stage FROM boat_operations`, [
+          { request_id: "request", stage: "pending" },
+        ]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT board_id, revision FROM board`,
+          id === 115 ? [{ board_id: "board-1", revision: 2 }] : [],
+        );
+        assert.deepStrictEqual(yield* runMigrations(), []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect("refuses to start when another migration took a V2 id", () =>

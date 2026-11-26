@@ -104,6 +104,8 @@ import * as ToolSearchHandlers from "./toolkits/toolSearch/handlers.ts";
 import { ToolSearchToolkit } from "./toolkits/toolSearch/tools.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import * as IssuesHandlers from "./toolkits/issues/handlers.ts";
+import * as BoardHandlers from "./toolkits/board/handlers.ts";
+import { BoardToolkit } from "./toolkits/board/tools.ts";
 import { IssuesToolkit } from "./toolkits/issues/tools.ts";
 import * as DeviceHandlers from "./toolkits/device/handlers.ts";
 import {
@@ -1521,6 +1523,8 @@ export const layerPullRequestsToolkit = toolkitRegistration(
 
 const layerIssuesToolkit = toolkitRegistration(IssuesToolkit, IssuesHandlers.layer);
 
+const layerBoardToolkit = toolkitRegistration(BoardToolkit, BoardHandlers.layer);
+
 const layerDeviceStandardToolkitRegistration = toolkitRegistration(
   DeviceStandardToolkit,
   DeviceHandlers.layerStandard,
@@ -1581,6 +1585,7 @@ export const layerTools = Layer.mergeAll(
   layerWorktreeToolkitRegistration,
   layerPullRequestsToolkit,
   layerIssuesToolkit,
+  layerBoardToolkit,
   layerDeviceToolkit,
   layerHtmlToolkit,
   layerMessageToolkit,

@@ -244,6 +244,7 @@ import * as ThreadIssueService from "./orchestration-v2/ThreadIssueService.ts";
 import * as RunFinalizationService from "./orchestration-v2/RunFinalizationService.ts";
 import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStoreV2 from "./orchestration-v2/ProjectionStore.ts";
+import * as BoardService from "./board/BoardService.ts";
 import { makePersistedServerRuntimeState } from "./serverRuntimeState.ts";
 import { closeNonPrivateNetworkConnections, loopbackUrlHostForAddress } from "./startupAccess.ts";
 import * as OrchestrationHttp from "./orchestration-v2/http.ts";
@@ -649,7 +650,11 @@ const layerTaskFolders = TaskFolders.layer.pipe(
   Layer.provide(layerGitWorkflow),
 );
 
+// One instance: board locks and live streams are shared with thread-deletion cleanup.
+const layerBoard = BoardService.layer.pipe(Layer.provide(ProjectionStoreV2.layer));
+
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
+  Layer.provide(layerBoard),
   Layer.provide(
     WorkflowForge.layer.pipe(
       Layer.provide(layerIssueService),
@@ -742,6 +747,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
   StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
+  layerBoard,
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),
     Layer.provide(layerServerRestart),

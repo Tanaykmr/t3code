@@ -9,6 +9,7 @@ export const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   '[role="textbox"]',
 ].join(",");
 const TYPE_TO_FOCUS_INTERACTIVE_SELECTOR = [
+  "[data-excalidraw-panel]",
   "button",
   "a[href]",
   "summary",

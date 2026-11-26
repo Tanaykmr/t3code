@@ -145,6 +145,7 @@ import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as FeedbackStore from "./feedback/FeedbackStore.ts";
+import * as BoardService from "./board/BoardService.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
 import {
   bufferShellLiveStream,
@@ -1538,6 +1539,7 @@ export const layerWsRpc = (
       const secretRequests = yield* SecretRequests.SecretRequests;
       const feedbackStore = yield* FeedbackStore.FeedbackStore;
       const guestShares = yield* GuestShareService.GuestShareService;
+      const boards = yield* BoardService.BoardService;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const issues = yield* IssueService.IssueService;
       const threadIssues = yield* ThreadIssueService.ThreadIssueService;
@@ -2536,6 +2538,11 @@ export const layerWsRpc = (
             Effect.andThen(secretRequests.answer(input)),
           ),
         [WS_METHODS.agentFeedbackAnswerRequest]: (input) => feedbackStore.answer(input),
+        [WS_METHODS.boardGet]: (input) => boards.get(input.threadId),
+        [WS_METHODS.boardCreate]: (input) => boards.create(input.threadId),
+        [WS_METHODS.boardApply]: (batch) => boards.apply({ actor: currentSessionId, batch }),
+        [WS_METHODS.boardGetFiles]: (input) => boards.getFiles(input),
+        [WS_METHODS.boardSubscribe]: (input) => boards.subscribe(input.threadId),
         [WS_METHODS.scheduledTasksListWebhookDeliveries]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.listWebhookDeliveries(input)),

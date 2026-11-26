@@ -8,6 +8,7 @@ import {
   preventTerminalCloseShortcut,
 } from "../../lib/terminalCloseShortcut";
 import { isInSideChatPane } from "../../lib/sideChatPane";
+import { isInExcalidrawPanel } from "../excalidraw/excalidrawFocus";
 import { getTerminalFocusOwner, type TerminalFocusOwner } from "../../lib/terminalFocus";
 import type { ComposerHandleRef } from "../../composerHandleContext";
 import type { BranchToolbarHandle } from "../BranchToolbar";
@@ -65,6 +66,7 @@ export function useChatShortcuts(input: ChatShortcutsInput) {
     if (event.target instanceof Element && event.target.closest("[data-keybinding-capture]")) {
       return;
     }
+    if (isInExcalidrawPanel(event.target)) return;
     const { keybindings } = input;
     if (preventRepeatedTerminalCloseShortcut(event, keybindings)) {
       event.stopPropagation();
@@ -120,6 +122,7 @@ export function useChatShortcuts(input: ChatShortcutsInput) {
       event.isComposing ||
       event.keyCode === 229 ||
       isCommandPaletteOpen() ||
+      isInExcalidrawPanel(event.target) ||
       isInSideChatPane(event.target) !== embedded
     )
       return;

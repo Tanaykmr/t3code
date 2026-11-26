@@ -51,6 +51,7 @@ import {
   Files,
   Globe2,
   MessagesSquare,
+  PencilRuler,
   Plus,
   TerminalSquare,
   Volume2Icon,
@@ -600,6 +601,8 @@ function surfaceTitle(
       return resolve(msg("Diff"));
     case "files":
       return resolve(msg("Files"));
+    case "excalidraw":
+      return resolve(msg("Excalidraw"));
     case "file":
       return surface.relativePath.slice(
         Math.max(surface.relativePath.lastIndexOf("/"), surface.relativePath.lastIndexOf("\\")) + 1,
@@ -693,6 +696,8 @@ function SurfaceIcon({
       return <FileDiff className="size-3 shrink-0" />;
     case "files":
       return <Files className="size-3 shrink-0" />;
+    case "excalidraw":
+      return <PencilRuler className="size-3 shrink-0" />;
     case "file":
       return (
         <PierreEntryIcon
