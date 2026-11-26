@@ -455,6 +455,7 @@ import {
 } from "./scheduledTask.ts";
 import {
   BoatCreateInput,
+  BoatDeleteInput,
   BoatError,
   BoatForgetInput,
   BoatLifecycleInput,
@@ -2447,7 +2448,7 @@ const WsBoatResumeRpc = Rpc.make(WS_METHODS.boatResume, {
 });
 
 const WsBoatDeleteRpc = Rpc.make(WS_METHODS.boatDelete, {
-  payload: BoatLifecycleInput,
+  payload: BoatDeleteInput,
   success: BoatOperationReceipt,
   error: BoatRpcError,
 });

@@ -166,6 +166,12 @@ export const BoatLifecycleInput = Schema.Struct({
 });
 export type BoatLifecycleInput = typeof BoatLifecycleInput.Type;
 
+export const BoatDeleteInput = Schema.Struct({
+  ...BoatLifecycleInput.fields,
+  confirmed: Schema.Literal(true),
+});
+export type BoatDeleteInput = typeof BoatDeleteInput.Type;
+
 export const BoatForgetInput = Schema.Struct({
   managedId: BoatManagedId,
   confirmed: Schema.Literal(true),

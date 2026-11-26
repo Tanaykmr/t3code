@@ -199,10 +199,15 @@ function BoatRowView({
     const result =
       action === "forget"
         ? await forget({ environmentId, input: { managedId, confirmed: true } })
-        : await (action === "stop" ? stop : action === "resume" ? resume : remove)({
-            environmentId,
-            input: { requestId: newRequestId(), managedId },
-          });
+        : action === "delete"
+          ? await remove({
+              environmentId,
+              input: { requestId: newRequestId(), managedId, confirmed: true },
+            })
+          : await (action === "stop" ? stop : resume)({
+              environmentId,
+              input: { requestId: newRequestId(), managedId },
+            });
     setBusy(null);
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       toastManager.add({

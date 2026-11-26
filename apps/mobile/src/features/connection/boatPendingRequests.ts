@@ -12,6 +12,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   AuthEnvironmentMaintainScope,
+  type BoatDeleteInput,
   type BoatLifecycleInput,
   type BoatOperationReceipt,
   type EnvironmentId,
@@ -33,9 +34,14 @@ const AUTOMATIC_REPLAY_WINDOW_MS = 60 * 60 * 1000;
 type BoatPendingRequest =
   | BoatCreateRequest
   | {
-      readonly kind: "stop" | "resume" | "delete";
+      readonly kind: "stop" | "resume";
       readonly environmentId: EnvironmentId;
       readonly input: BoatLifecycleInput;
+    }
+  | {
+      readonly kind: "delete";
+      readonly environmentId: EnvironmentId;
+      readonly input: BoatDeleteInput;
     };
 
 export function selectBoatCreateController<

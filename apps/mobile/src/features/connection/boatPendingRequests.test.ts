@@ -123,7 +123,7 @@ describe("Boat pending requests", () => {
     await sendBoatRequest({
       kind: "delete",
       environmentId: CONTROLLER,
-      input: { requestId: create.input.requestId, managedId: receipt.managedId },
+      input: { requestId: create.input.requestId, managedId: receipt.managedId, confirmed: true },
     });
     expect(saved()).toEqual([]);
   });

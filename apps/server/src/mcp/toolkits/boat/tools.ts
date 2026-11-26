@@ -1,5 +1,6 @@
 import {
   BoatCreateInput,
+  BoatDeleteInput,
   BoatError,
   BoatLifecycleInput,
   BoatOperationReceipt,
@@ -41,11 +42,7 @@ const lifecycle = Tool.make("t3_boat_lifecycle", {
     Schema.Struct({ action: Schema.Literal("create"), ...BoatCreateInput.fields }),
     Schema.Struct({ action: Schema.Literal("stop"), ...BoatLifecycleInput.fields }),
     Schema.Struct({ action: Schema.Literal("resume"), ...BoatLifecycleInput.fields }),
-    Schema.Struct({
-      action: Schema.Literal("delete"),
-      ...BoatLifecycleInput.fields,
-      confirmed: Schema.Literal(true),
-    }),
+    Schema.Struct({ action: Schema.Literal("delete"), ...BoatDeleteInput.fields }),
   ]),
   success: BoatOperationReceipt,
 })

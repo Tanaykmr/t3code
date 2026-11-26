@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
     >(),
   setKey: vi.fn(),
   forget: vi.fn(),
+  remove: vi.fn(),
 }));
 
 vi.mock(import("../../state/environments"), async (original) => ({
@@ -127,7 +128,9 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
       ? mocks.forget
       : options.label === "boat set api key"
         ? mocks.setKey
-        : mocks.create) as never,
+        : options.label === "boat delete"
+          ? mocks.remove
+          : mocks.create) as never,
 }));
 
 import { ConfirmDialogHost } from "../ConfirmDialogHost";
@@ -220,6 +223,47 @@ it("requires confirmation before forgetting a Boat record locally", async () => 
     expect(mocks.forget).toHaveBeenCalledExactlyOnceWith({
       environmentId,
       input: { managedId: "old-machine", confirmed: true },
+    }),
+  );
+});
+
+it("sends deletion confirmation only after the user accepts the warning", async () => {
+  const environmentId = EnvironmentId.make("controller-recovery");
+  mocks.environments = [
+    {
+      environmentId,
+      label: "Owner",
+      serverConfig: { boatEnvironments: true },
+      connection: { phase: "connected" },
+    },
+  ];
+  mocks.remove
+    .mockReset()
+    .mockResolvedValue(AsyncResult.success({ managedId: "old-machine", kind: "delete" }));
+  await using screen = await render(
+    <RegistryProvider>
+      <BoatSettings />
+      <ConfirmDialogHost />
+    </RegistryProvider>,
+  );
+
+  const remove = screen.getByRole("button", { name: "Delete", exact: true });
+  const dialog = page.getByRole("alertdialog");
+  await userEvent.click(remove);
+  await expect.element(dialog).toBeVisible();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(dialog).not.toBeInTheDocument();
+  expect(mocks.remove).not.toHaveBeenCalled();
+
+  await userEvent.click(remove);
+  const confirm = dialog.getByRole("button", { name: "Confirm" });
+  await expect.element(confirm).toBeVisible();
+  (confirm.element() as HTMLButtonElement).focus();
+  await userEvent.keyboard("{Enter}");
+  await vi.waitFor(() =>
+    expect(mocks.remove).toHaveBeenCalledExactlyOnceWith({
+      environmentId,
+      input: { requestId: expect.any(String), managedId: "old-machine", confirmed: true },
     }),
   );
 });

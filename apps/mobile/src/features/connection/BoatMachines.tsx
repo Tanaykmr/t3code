@@ -183,11 +183,13 @@ function BoatMachineRow({
       }
       return;
     }
-    const outcome = await sendBoatRequest({
-      kind: action,
-      environmentId: row.controllerEnvironmentId,
-      input: { requestId: newRequestId(), managedId: server.managedId },
-    });
+    const environmentId = row.controllerEnvironmentId;
+    const input = { requestId: newRequestId(), managedId: server.managedId };
+    const outcome = await sendBoatRequest(
+      action === "delete"
+        ? { kind: action, environmentId, input: { ...input, confirmed: true } }
+        : { kind: action, environmentId, input },
+    );
     setBusy(false);
     if (!outcome.ok && outcome.error !== null) {
       Dialog.alert(gt("Could not update {name}", { name: server.displayName }), outcome.error);
