@@ -31,7 +31,7 @@ jobs:
   fingerprint:
     name: Native fingerprint diff
     if: github.event.action != 'edited' || github.event.changes.base
-    runs-on: ${{ vars.CI_RUNNER_LARGE || 'boat-small' }}
+    runs-on: ${{ vars.CI_RUNNER_LARGE || 'ubuntu-latest' }}
     permissions:
       contents: read
     env:
